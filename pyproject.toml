@@ -1,0 +1,8 @@
+[project]
+name = "rax-plio-qdx"
+version = "0.1.0"
+description = "Reference specifications and simulation for the RAX PLIO bus and QDX queued-device model"
+requires-python = ">=3.11"
+
+[tool.unittest]
+start-directory = "tests"
