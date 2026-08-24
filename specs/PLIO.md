@@ -1,4 +1,4 @@
-# PLIO v0.3 — Peripheral Lighting I/O
+# PLIO v0.4 — Peripheral Lighting I/O
 
 **Status:** Draft
 
@@ -19,6 +19,7 @@ PLIO defines:
 - bus-manager arbitration,
 - programmed MMIO access,
 - protected DMA access to system memory,
+- **bounded 32-bit DMA bursts of 1, 4, 8, or 16 longwords**,
 - **message-signalled device notifications with no per-device IRQ wire**,
 - basic error/timeout behavior,
 - device reset and discovery registers.
@@ -44,6 +45,7 @@ PLIO does **not** define:
 - **host** — the RAX CPU/memory complex behind the PLIO controller.
 - **DMA capability channel** — a controller-owned mapping granting one slot bounded read/write access to one host physical-memory region.
 - **DMA generation** — a small controller-managed version number attached to a DMA capability channel and carried in each device-visible DMA address to reject stale references after revocation/rebinding.
+- **burst** — one host-memory DMA transaction with one address phase followed by 1, 4, 8, or 16 sequential 32-bit data beats under one bus grant.
 - **notification channel** — one controller-owned pending source associated with a slot. A device signals it by issuing a PLIO notification write.
 
 ## 4. Topology
@@ -125,6 +127,8 @@ Required `FLAGS` bits:
 
 A device that generates asynchronous PLIO notifications MUST implement bus-manager capability, because notification is a bus transaction rather than a dedicated pin.
 
+Any device that performs host-memory DMA MUST implement the burst rules in section 10, including all four baseline burst lengths.
+
 ## 7. Electrical/logical signal model
 
 ### 7.1 Shared signals
@@ -137,9 +141,21 @@ A device that generates asynchronous PLIO notifications MUST implement bus-manag
 | `AS*` | manager -> bus | address phase valid |
 | `RD` | manager -> bus | 1=read, 0=write |
 | `BE[3:0]` | manager -> bus | byte enables |
+| `BLEN[1:0]` | manager -> bus | burst length code, valid in address phase |
 | `DS*` | manager -> bus | data phase valid |
-| `ACK*` | worker/controller -> manager | transfer accepted |
-| `ERR*` | worker/controller -> manager | transfer failed |
+| `ACK*` | worker/controller -> manager | current transfer beat accepted |
+| `ERR*` | worker/controller -> manager | transaction failed |
+
+`BLEN[1:0]` encodes:
+
+| `BLEN` | Data beats | Payload |
+|---:|---:|---:|
+| `00` | 1 | 4 bytes maximum |
+| `01` | 4 | 16 bytes |
+| `10` | 8 | 32 bytes |
+| `11` | 16 | 64 bytes |
+
+All programmed MMIO, notification writes, and sub-32-bit transactions MUST use `BLEN=00`.
 
 ### 7.2 Per-slot signals
 
@@ -173,7 +189,7 @@ A host access is injected by the PLIO controller as a bus-manager transaction.
 
 ### 9.1 Address phase
 
-On a rising edge the manager drives `AD[31:0]` with the byte address, drives `RD` and `BE[3:0]`, and asserts `AS*`.
+On a rising edge the manager drives `AD[31:0]` with the byte address, drives `RD`, `BE[3:0]`, and `BLEN=00`, and asserts `AS*`.
 
 The controller decodes host-injected MMIO addresses and asserts the selected `SEL[n]*`.
 
@@ -185,7 +201,11 @@ For a write the manager drives data and asserts `DS*`; for a read the selected w
 
 `BE[3:0]` defines valid bytes. The baseline requires naturally aligned 8-, 16-, and 32-bit transfers. Unaligned multi-byte accesses are not required.
 
-## 10. Bus-manager arbitration
+Programmed MMIO is always a single-beat transaction in PLIO v0.4. Worker-side burst MMIO is not part of the baseline.
+
+## 10. Bus-manager arbitration and burst DMA
+
+### 10.1 Arbitration
 
 A DMA/notification-capable slot requests the bus by asserting `BR[n]*`.
 
@@ -193,9 +213,92 @@ The PLIO controller MUST provide fair arbitration among requesting managers. The
 
 A grant is communicated by `BG[n]*`. Only one slot may own a grant at a time.
 
-The manager MUST release ownership after each transaction in the baseline protocol. Multi-word burst ownership is reserved for a later extension.
+A grant covers exactly one PLIO transaction. A transaction is either:
+
+- one single-beat programmed/notification transaction, or
+- one host-memory DMA burst containing 1, 4, 8, or 16 32-bit data beats.
+
+At the end of the transaction the controller MUST withdraw the grant and perform arbitration again. A manager with more work MAY keep `BR[n]*` asserted and may be granted the next transaction if no fairness rule selects another requester.
 
 The controller always knows the physical source slot of a manager transaction from the active grant. A device therefore cannot claim to be another slot when performing DMA or notification.
+
+### 10.2 Burst scope
+
+PLIO v0.4 burst transfer is defined only for **bus-manager DMA to or from host memory** through a DMA capability channel.
+
+Burst transfers MUST:
+
+- use naturally aligned 32-bit words,
+- use `BE=1111` for every data beat,
+- contain exactly 1, 4, 8, or 16 data beats as selected by `BLEN`,
+- access consecutive addresses increasing by four bytes per accepted beat,
+- remain wholly within one `(slot, channel, generation)` DMA capability mapping.
+
+A notification transaction is always one 32-bit write with `BLEN=00`.
+
+### 10.3 Burst address and capability validation
+
+During the address phase the manager places the device-visible DMA address of the **first longword** on `AD[31:0]` and supplies `RD`, `BE=1111`, and `BLEN`.
+
+Before accepting the first data beat, the PLIO controller MUST validate the entire burst extent:
+
+```text
+transfer_length = burst_words * 4
+
+valid == 1
+request_generation == entry_generation
+offset is 32-bit aligned
+offset + transfer_length <= capability_length
+required permission is granted
+```
+
+If this check fails, the controller MUST return `ERR*` and no data beat may be committed.
+
+After successful validation the controller computes:
+
+```text
+host_address = host_physical_base + offset
+```
+
+and increments the translated host address by four after every successfully acknowledged beat. The capability lookup need not be repeated for every beat, but revocation rules in section 11.3 remain authoritative.
+
+### 10.4 Data beats, wait states, and faults
+
+Each data beat uses `DS*` and is individually acknowledged.
+
+For a device-to-host write:
+
+1. the manager presents one 32-bit word and asserts `DS*`,
+2. the controller/memory path asserts `ACK*` when that word is accepted,
+3. the manager advances to the next word only after `ACK*`.
+
+For a host-to-device read, the controller/memory path presents one 32-bit word and asserts `ACK*` when it is valid.
+
+The target MAY insert wait states on any beat by asserting neither `ACK*` nor `ERR*`.
+
+If `ERR*` occurs on any beat, or a beat times out, the remaining burst MUST be aborted and the grant released. Data beats already acknowledged before the fault are not rolled back; higher-level device protocols such as QDX MUST report or recover from the partial transfer.
+
+The baseline timeout is 256 PLIO clocks **per outstanding address/data beat**.
+
+### 10.5 Fairness and bounded ownership
+
+The maximum burst is 16 longwords = 64 bytes. A bus manager MUST NOT retain a grant beyond that transaction.
+
+This bound deliberately creates an arbitration opportunity at least every 64 payload bytes. It prevents storage or graphics DMA from monopolizing the shared bus and bounds the time a notification request can sit behind one already-granted bulk transfer.
+
+At PLIO-5, a no-wait 16-word burst has 3.2 microseconds of data-beat time. With one arbitration opportunity and one address phase per burst, an idealized 16-word sequence approaches 17.8 MB/s of payload while retaining bounded fairness. This figure is a design target, not a guaranteed system throughput.
+
+### 10.6 Baseline implementation cost
+
+A baseline burst-capable interface requires only modest additional state beyond single-transfer PLIO:
+
+- a 2-bit burst-length latch,
+- a 4-bit beat counter,
+- sequential address incrementing in the PLIO controller,
+- grant-retention state until the last beat or abort,
+- per-beat `ACK*`/`ERR*`/timeout handling.
+
+A FIFO is useful for some devices but is not required by the bus protocol. QDX storage/network/graphics controllers may burst directly from their existing local buffers.
 
 ## 11. DMA capability channels
 
@@ -259,7 +362,7 @@ The generation field is not a secret and is not an authentication token. Its pur
 
 Only privileged platform/kernel software may bind, modify, or revoke a hardware DMA capability channel.
 
-### 11.3 Binding, revocation, and generation lifecycle
+### 11.3 Binding, revocation, generation, and active bursts
 
 A channel follows this lifecycle:
 
@@ -269,7 +372,9 @@ UNBOUND -> BOUND(generation N) -> REVOKED -> BOUND(generation N+1)
 
 A new binding MUST use a generation different from the immediately preceding binding of the same `(slot, channel)`. Increment modulo 16 is the baseline policy.
 
-Revocation MUST clear `valid` before the backing physical memory may be reassigned to a different protection domain. Any DMA request carrying the revoked generation then fails even if the channel is later rebound with another generation.
+Revocation MUST clear `valid` before the backing physical memory may be reassigned to a different protection domain. Any new DMA request carrying the revoked generation then fails even if the channel is later rebound with another generation.
+
+If revocation occurs while a burst using that channel is active, the controller MUST interlock revocation with the active transaction. It MAY allow the currently acknowledged beat to complete, but no later beat may access the revoked mapping after revocation becomes effective. The burst then terminates with a DMA protection error. Privileged software MUST NOT treat revocation as complete or reassign the backing memory until the controller reports that no active transfer remains for the mapping.
 
 Because the generation field is finite, generation values eventually wrap. Before privileged software reuses a generation value for a channel, it MUST ensure that no stale device request or descriptor carrying that old generation can still be issued. Quiescing and resetting the slot is always sufficient. A platform MAY prove quiescence by stronger device-specific means, but it MUST NOT allow unsafe generation reuse.
 
@@ -294,7 +399,7 @@ PLIO does not require tagged capability words in the device and does not require
 
 ### 11.5 Scatter/gather
 
-QDX scatter/gather descriptors MAY reference several device-visible `(channel, generation, offset)` addresses. PLIO itself still performs only one protected translation per bus transaction.
+QDX scatter/gather descriptors MAY reference several device-visible `(channel, generation, offset)` addresses. Each individual PLIO burst MUST remain wholly within one capability mapping. A QDX engine may issue successive bursts against successive scatter/gather entries.
 
 ### 11.6 Peer-to-peer
 
@@ -327,7 +432,7 @@ To notify the host a device:
 1. finishes and publishes any completion/status data to host-visible memory,
 2. requests bus ownership with `BR[n]*`,
 3. receives `BG[n]*`,
-4. performs a 32-bit write to its desired notification-channel address,
+4. performs one 32-bit write with `BLEN=00` to its desired notification-channel address,
 5. releases the bus after the transaction.
 
 The controller derives the **source slot from the active bus grant**. The device does not place a trusted slot ID, CPU vector, privilege, or priority in the message.
@@ -364,15 +469,16 @@ See `RAX-INTERRUPTS.md` for kernel integration.
 
 A worker/controller signals a transaction failure with `ERR*`.
 
-The controller MUST time out a transaction that receives neither `ACK*` nor `ERR*` within the implementation-defined interval. The baseline RAX platform timeout is 256 PLIO clocks.
+The controller MUST time out an address or data beat that receives neither `ACK*` nor `ERR*` within the implementation-defined interval. The baseline RAX platform timeout is 256 PLIO clocks per outstanding beat.
 
-A timeout records source/target/address/operation and returns an error to the initiating CPU or bus manager.
+A timeout records source/target/address/operation and, for a burst, the failing beat number. It returns an error to the initiating CPU or bus manager and terminates the transaction.
 
 ## 14. Reset
 
 On `RESET*` assertion:
 
 - bus managers MUST release `BR[n]*`,
+- active bursts MUST terminate,
 - QDX queues MUST be disabled,
 - device DMA MUST cease,
 - devices MUST enter a discoverable but inactive state.
@@ -383,7 +489,9 @@ After a device reset has guaranteed that no pre-reset DMA request can survive, p
 
 ## 15. Memory ordering
 
-The PLIO controller must preserve ordering for accesses from one manager unless the standard explicitly permits otherwise.
+The PLIO controller MUST preserve ordering for accesses from one manager unless the standard explicitly permits otherwise.
+
+Data beats within one burst are strongly ordered in increasing address order.
 
 For QDX submission:
 
@@ -405,10 +513,12 @@ A notification MUST NOT become observable by the CPU before preceding completion
 
 ## 16. Required conformance
 
-A PLIO worker MUST support reset, configuration area, geographic slot selection, 8/16/32-bit MMIO accesses, and `ACK*`/`ERR*` behavior.
+A PLIO worker MUST support reset, configuration area, geographic slot selection, 8/16/32-bit single-beat MMIO accesses, and `ACK*`/`ERR*` behavior.
 
 A PLIO bus manager additionally MUST support request/grant arbitration and protected DMA-channel faults, including generation validation.
 
-A PLIO device advertising notification capability MUST be capable of issuing the notification write transaction.
+Any PLIO bus manager that performs host-memory DMA MUST support `BLEN` values for 1-, 4-, 8-, and 16-word DMA bursts, per-beat wait states, and burst abort on error/timeout.
+
+A PLIO device advertising notification capability MUST be capable of issuing the single-write notification transaction.
 
 A QDX device additionally MUST implement `specs/QDX.md` and its declared profile.

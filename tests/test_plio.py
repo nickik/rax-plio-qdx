@@ -60,6 +60,36 @@ class PLIOTests(unittest.TestCase):
         generation = self.plio.bind_dma_channel(2, 0, DMAChannel(0x400, 0x100))
         self.assertEqual(generation, 0)
 
+    def test_burst_length_encoding(self) -> None:
+        self.assertEqual([self.plio.burst_words(code) for code in range(4)], [1, 4, 8, 16])
+        self.assertEqual([self.plio.burst_code(words) for words in (1, 4, 8, 16)], [0, 1, 2, 3])
+        with self.assertRaises(ValueError):
+            self.plio.burst_code(2)
+        with self.assertRaises(ValueError):
+            self.plio.burst_words(4)
+
+    def test_16_word_dma_burst(self) -> None:
+        address = self.addr(0, self.gen0, 0x80)
+        payload = bytes(range(64))
+        self.plio.dma_write_burst(2, address, payload)
+        self.assertEqual(self.memory.read(0x480, 64), payload)
+        self.assertEqual(self.plio.dma_read_burst(2, address, 16), payload)
+        self.assertEqual(self.plio.BURST_MAX_BYTES, 64)
+
+    def test_burst_requires_alignment_and_baseline_length(self) -> None:
+        with self.assertRaises(ValueError):
+            self.plio.dma_read_burst(2, self.addr(0, self.gen0, 0x82), 4)
+        with self.assertRaises(ValueError):
+            self.plio.dma_read_burst(2, self.addr(0, self.gen0, 0x80), 2)
+        with self.assertRaises(ValueError):
+            self.plio.dma_write_burst(2, self.addr(0, self.gen0, 0x80), b"123456")
+
+    def test_burst_validates_whole_capability_extent(self) -> None:
+        self.plio.revoke_dma_channel(2, 0)
+        generation = self.plio.bind_dma_channel(2, 0, DMAChannel(0x400, 64))
+        with self.assertRaises(DMAFault):
+            self.plio.dma_read_burst(2, self.addr(0, generation, 4), 16)
+
     def test_notification_priority_masking_and_claim(self) -> None:
         self.plio.configure_notification(1, 0, notify_class=1)
         self.plio.configure_notification(3, 0, notify_class=3)

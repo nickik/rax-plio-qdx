@@ -28,6 +28,9 @@ The design target is a late-1970s RAX system. The project deliberately favors a 
 - Central PLIO controller.
 - Eight logical slots with geographic MMIO windows.
 - Per-slot request/grant for bus-manager ownership.
+- **Baseline host-memory DMA bursts of 1, 4, 8, or 16 32-bit words.**
+- A grant may cover one bounded burst, with arbitration repeated after at most 16 longwords / 64 bytes.
+- Programmed MMIO and notification transactions remain single-beat.
 - **No dedicated device interrupt lines.**
 - Normal device completion uses **message-signalled PLIO notifications**: a bus-manager write to a controller-owned notification aperture.
 - Four controller-assigned normal notification classes; the device cannot choose privilege or priority.
@@ -45,6 +48,8 @@ The design target is a late-1970s RAX system. The project deliberately favors a 
 ## Capability rule
 
 PLIO devices never receive unrestricted host physical-memory access. Privileged system software binds a host memory region and permissions to one of the device's DMA capability channels. The card addresses only `(channel, generation, offset)`; the PLIO controller performs generation, bounds, permission, and physical-address translation checks.
+
+A PLIO burst is validated as one bounded authority use: the complete 1/4/8/16-word span must fit inside one active capability mapping before the first beat is accepted. The controller then increments the translated host address per acknowledged beat.
 
 The operating system may represent authority to create, bind, revoke, or use those channels as capability objects. The hardware contract is the small protected per-slot channel table, not device-side page-table walking.
 
@@ -73,10 +78,12 @@ python -m unittest discover -s tests -v
 PYTHONPATH=. python -m sim.plio_sim.scenario
 ```
 
-The current Python model is functional rather than cycle accurate. The next major step is the explicit clock-by-clock PLIO transaction state machine described in `docs/SIMULATION.md`.
+The current Python model is functional rather than cycle accurate. The next major step is the explicit clock-by-clock PLIO transaction and burst state machine described in `docs/SIMULATION.md`.
 
 ## Design rule
 
 PLIO's notification mechanism is **MSI-like in principle but intentionally much smaller than PCI MSI/MSI-X**. A device writes to one fixed controller aperture; the controller derives the source from bus ownership and supplies policy such as class/masking. Devices do not program arbitrary interrupt target addresses or CPU vectors.
+
+PLIO burst mode is likewise deliberately small: two `BLEN` control bits select only 1/4/8/16 longwords, bursts are host-memory DMA only, and every grant is bounded to at most 64 bytes before arbitration resumes.
 
 This repository does not copy PCI Express, NVMe, or other later standards wholesale. Every mechanism must justify its hardware and protocol cost for the target RAX system.

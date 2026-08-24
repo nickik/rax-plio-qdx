@@ -46,6 +46,12 @@ class PLIOController:
     DMA_OFFSET_MASK = (1 << DMA_OFFSET_BITS) - 1
     DMA_MAX_LENGTH = DMA_OFFSET_MASK + 1
 
+    BURST_WORD_BYTES = 4
+    BURST_WORD_COUNTS = (1, 4, 8, 16)
+    BURST_CODE_TO_WORDS = (1, 4, 8, 16)
+    BURST_MAX_WORDS = 16
+    BURST_MAX_BYTES = BURST_MAX_WORDS * BURST_WORD_BYTES
+
     NOTIFY_CHANNELS = 4
     NOTIFY_CLASSES = 4
 
@@ -108,6 +114,29 @@ class PLIOController:
         ) & cls.DMA_GENERATION_MASK
         offset = device_address & cls.DMA_OFFSET_MASK
         return channel, generation, offset
+
+    @classmethod
+    def burst_words(cls, blen: int) -> int:
+        """Decode the two-bit PLIO BLEN field."""
+        if not 0 <= blen < len(cls.BURST_CODE_TO_WORDS):
+            raise ValueError("PLIO BLEN must be 0..3")
+        return cls.BURST_CODE_TO_WORDS[blen]
+
+    @classmethod
+    def burst_code(cls, words: int) -> int:
+        """Encode a baseline burst length as the two-bit PLIO BLEN field."""
+        try:
+            return cls.BURST_CODE_TO_WORDS.index(words)
+        except ValueError as exc:
+            raise ValueError("PLIO burst must contain 1, 4, 8, or 16 words") from exc
+
+    @classmethod
+    def _burst_length(cls, device_address: int, words: int) -> int:
+        cls.burst_code(words)
+        _, _, offset = cls.decode_dma_address(device_address)
+        if offset % cls.BURST_WORD_BYTES:
+            raise ValueError("PLIO burst address must be 32-bit aligned")
+        return words * cls.BURST_WORD_BYTES
 
     def bind_dma_channel(self, slot: int, channel: int, mapping: DMAChannel) -> int:
         """Bind an unbound channel and return the generation for device DMA handles."""
@@ -179,6 +208,19 @@ class PLIOController:
         """Device writes host memory through a protected capability channel."""
         host_address = self._translate(slot, device_address, len(data), write_to_host=True)
         self.memory.write(host_address, data)
+
+    def dma_read_burst(self, slot: int, device_address: int, words: int) -> bytes:
+        """Functional model of one 1/4/8/16-word host-to-device PLIO burst."""
+        length = self._burst_length(device_address, words)
+        return self.dma_read(slot, device_address, length)
+
+    def dma_write_burst(self, slot: int, device_address: int, data: bytes) -> None:
+        """Functional model of one 1/4/8/16-word device-to-host PLIO burst."""
+        if len(data) % self.BURST_WORD_BYTES:
+            raise ValueError("PLIO burst payload must contain whole 32-bit words")
+        words = len(data) // self.BURST_WORD_BYTES
+        self._burst_length(device_address, words)
+        self.dma_write(slot, device_address, data)
 
     def configure_notification(
         self,
