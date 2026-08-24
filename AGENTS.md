@@ -2,7 +2,7 @@
 
 ## Project purpose
 
-This repository specifies and simulates the RAX **PLIO** I/O bus and **QDX** queued-device model, with QDX-B block storage as the first complete profile.
+This repository specifies and simulates the RAX **PLIO** I/O bus and **QDX** queued-device model, including block storage, streaming, GNET, 2D graphics, and DSP profiles.
 
 The architecture is being designed as if it were started in the mid-1970s for a 1978-class RAX system. Preserve that constraint.
 
@@ -22,6 +22,11 @@ The architecture is being designed as if it were started in the mid-1970s for a 
 - QDX is above PLIO. PLIO defines transport/electrical/MMIO/DMA/notification behavior; QDX defines queues and device commands.
 - QDX baseline requires only one SQ and one CQ per device.
 - QDX-B supports multiple namespaces behind one controller.
+- **QDX-G graphics and QDX-DSP are normal QDX/PLIO devices, not a second CPU-local accelerator architecture.** They reuse the standard SQ/CQ, capability-DMA, and message-signalled completion model.
+- QDX-G v0.1 MUST support graphics surfaces in ordinary host RAM. CPU software and QDX-G may operate on the same host-memory surface with explicit visibility/synchronization because PLIO is not cache coherent.
+- Graphics/DSP local SRAM is an implementation detail unless a later optional profile explicitly exposes something else. Do not make SRAM size, banking, or addresses part of the portable host ABI.
+- QDX-DSP models computation on buffers; QDX-S models physical/sequential stream endpoints. A device may implement both profiles, but do not merge the semantics.
+- A later QDX-G device may add private VRAM, scanout, or 3D acceleration without changing the base QDX queue and PLIO protection model.
 
 ## Simplicity rule
 
@@ -59,4 +64,5 @@ Python simulation code must use only the standard library unless strongly justif
 5. Add QDX-B scatter/gather execution across DMA capability channels.
 6. Add namespace IDENTIFY structures and tests.
 7. Add user/kernel notification-latency scenarios using the RAX normal/critical event model.
-8. Only then create a small SystemVerilog PLIO controller and compare traces to the Python reference model.
+8. Add functional QDX-G and QDX-DSP reference-model coverage after their command layouts are frozen.
+9. Only then create a small SystemVerilog PLIO controller and compare traces to the Python reference model.

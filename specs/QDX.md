@@ -134,4 +134,12 @@ Reset discards outstanding queue state. After reset DMA is stopped, notification
 
 ## 13. Profiles
 
-QDX core defines queue transport only. Current profiles are QDX-B/BA, QDX-S/SA, and QDX-GNET/GNETA.
+QDX core defines queue transport only. Current profiles are:
+
+- QDX-B / QDX-BA — block storage and optional block acceleration,
+- QDX-S / QDX-SA — stream endpoints and optional stream acceleration,
+- QDX-GNET / QDX-GNETA — GNET frame I/O and optional network acceleration,
+- QDX-G — asynchronous 2D graphics acceleration, including shared-host-memory surfaces,
+- QDX-DSP — buffer-oriented digital signal-processing acceleration.
+
+QDX-G and QDX-DSP deliberately reuse the normal QDX queue, PLIO capability-DMA, and message-signalled completion mechanisms. They do not define a second CPU-local accelerator bus or a separate unrestricted DMA architecture.

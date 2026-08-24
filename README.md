@@ -14,6 +14,8 @@ The design target is a late-1970s RAX system. The project deliberately favors a 
 - [`specs/QDX-SA.md`](specs/QDX-SA.md) — optional streaming acceleration.
 - [`specs/QDX-GNET.md`](specs/QDX-GNET.md) — basic GNET frame I/O profile.
 - [`specs/QDX-GNETA.md`](specs/QDX-GNETA.md) — optional GNET acceleration.
+- [`specs/QDX-G.md`](specs/QDX-G.md) — asynchronous 2D graphics profile.
+- [`specs/QDX-DSP.md`](specs/QDX-DSP.md) — buffer-oriented DSP accelerator profile.
 - [`specs/RAX-INTERRUPTS.md`](specs/RAX-INTERRUPTS.md) — RAX/PLIO notification integration.
 - [`docs/DESIGN-RATIONALE.md`](docs/DESIGN-RATIONALE.md) — architectural reasoning.
 - [`docs/SIMULATION.md`](docs/SIMULATION.md) — simulation strategy.
@@ -32,9 +34,11 @@ The design target is a late-1970s RAX system. The project deliberately favors a 
 - Separate critical platform handling outside ordinary PLIO device notification.
 - Four protected **DMA capability channels** per bus-manager slot.
 - Device DMA addresses encode a channel number plus offset; the controller maps that capability to host physical memory and permissions.
-- QDX uses one submission queue and one completion queue in v0.1.
+- QDX uses one submission queue and one completion queue in the baseline.
 - Base profiles define the minimum device abstraction; `A` profiles are optional acceleration only.
 - QDX-B supports multiple block namespaces.
+- QDX-G defines asynchronous 2D acceleration and MUST support host-RAM graphics surfaces; optional device SRAM is an implementation detail.
+- QDX-DSP defines asynchronous block-oriented signal processing over capability-scoped host buffers.
 
 ## Capability rule
 
@@ -44,9 +48,17 @@ The operating system may represent authority to create, bind, revoke, or use tho
 
 ## Profile rule
 
-QDX-B/QDX-S/QDX-GNET define what a device class can do. QDX-BA/QDX-SA/QDX-GNETA let more intelligent hardware perform equivalent work more efficiently.
+QDX-B/QDX-S/QDX-GNET/QDX-G/QDX-DSP define device-class contracts above the same QDX queue and PLIO DMA/notification mechanisms. Optional `A` profiles let more intelligent block/stream/network hardware perform equivalent work more efficiently.
 
-Correctness must remain possible using the base profile. Acceleration profiles must not absorb higher-level filesystem, networking, graphics, or application policy.
+QDX-G and QDX-DSP do **not** introduce a second accelerator interconnect. Graphics and DSP may be soldered to the motherboard or placed on expansion cards, but software sees normal QDX devices either way.
+
+Correctness must remain possible using the base profile. Acceleration profiles must not absorb higher-level filesystem, networking, graphics, audio, or application policy.
+
+## Graphics and DSP model
+
+The baseline graphics model keeps framebuffer surfaces in ordinary host RAM so CPU software and QDX-G can operate on the same objects. A display server normally owns the QDX-G capability and chooses between CPU rendering and queued hardware operations. A QDX-G implementation may use private SRAM internally to tile and pipeline work, but software does not address that SRAM directly.
+
+The baseline DSP model similarly treats the DSP as a queued computational worker. It consumes and produces capability-scoped host buffers and may use private local SRAM, coefficient memory, or microcode internally. QDX-S remains the profile for physical stream endpoints such as audio I/O; QDX-DSP is the profile for computation on buffers.
 
 ## Run the reference model
 
