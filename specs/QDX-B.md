@@ -1,4 +1,4 @@
-# QDX-B v0.1 — Block Storage Profile
+# QDX-B v0.2 — Block Storage Profile
 
 **Status:** Draft
 
@@ -12,7 +12,7 @@ The initial RAX storage design expects a PLIO QDX-B controller to attach one or 
 
 ## 2. Required capabilities
 
-A QDX-B v0.1 controller MUST support:
+A QDX-B v0.2 controller MUST support:
 
 - one QDX submission/completion queue pair,
 - at least one namespace,
@@ -46,7 +46,7 @@ All multibyte fields use the RAX platform byte order.
 | `0x18` | 4 | `command_arg` |
 | `0x1C` | 4 | reserved |
 
-Reserved fields MUST be written as zero and ignored by a v0.1 device.
+Reserved fields MUST be written as zero and ignored by a v0.2 device.
 
 ## 4. Opcodes
 
@@ -74,7 +74,7 @@ Namespace IDs need not be physically contiguous, but simple controllers SHOULD a
 
 ## 6. Block addressing
 
-QDX-B v0.1 uses a 32-bit logical block address.
+QDX-B v0.2 uses a 32-bit logical block address.
 
 The namespace identifies its logical block size.
 
@@ -160,9 +160,11 @@ For READ:
 3. DMA-writes the data into host buffers,
 4. writes the CQ completion,
 5. advances `CQ_TAIL`,
-6. asserts IRQ if enabled/needed.
+6. sends a PLIO normal notification when QDX notification rules require one.
 
 The completion MUST NOT become visible before the DMA data it reports as complete is visible to the host.
+
+A PLIO notification MUST NOT become observable by the host before the completion it announces is globally visible.
 
 ## 13. WRITE
 
@@ -181,15 +183,19 @@ A `SUCCESS` completion for WRITE means the data has reached the persistence leve
 
 A controller with no volatile write cache may complete FLUSH immediately after ordering requirements are satisfied.
 
-## 15. Interrupt behavior
+## 15. Notification behavior
 
-QDX-B v0.1 uses the one PLIO IRQ line assigned to its slot.
+QDX-B uses the common QDX message-signalled notification mechanism defined by `QDX.md` and transported by PLIO.
 
-The controller SHOULD assert the line when the CQ transitions from no-notification-needed to notification-needed.
+There is **no dedicated PLIO IRQ line** for a QDX-B controller.
 
-While the IRQ remains asserted, additional completions do not require additional interrupt events.
+A QDX-B controller that generates asynchronous notifications MUST be a PLIO bus manager. To notify the host it requests bus ownership, receives its grant, and writes to the controller-owned PLIO notification aperture. The PLIO controller derives the trusted source slot from the active bus grant.
 
-The host drains the CQ before acknowledging the device interrupt condition.
+QDX-B normally uses notification channel 0 unless a later profile assigns another channel. Notification class, masking, and host delivery policy are configured by privileged software in the PLIO controller; the device does not choose its CPU vector or priority.
+
+The normal QDX rule is to send a notification when the CQ transitions from empty to non-empty. Additional completions MAY be added while the CQ remains non-empty without additional notification transactions. PLIO controller pending state may additionally coalesce repeated notifications.
+
+The host drains completions from the CQ. When the CQ becomes empty, the device is rearmed to notify on the next empty-to-non-empty transition. Polling the CQ remains legal.
 
 ## 16. Ordering
 
