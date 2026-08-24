@@ -1,4 +1,4 @@
-# RAX / PLIO Notification and Interrupt Integration v0.3
+# RAX / PLIO Notification and CPU Interrupt Integration v0.4
 
 **Status:** Draft integration note
 
@@ -8,14 +8,16 @@ The RAX/Cosmic microkernel is optimized for short kernel paths and deliberately 
 
 PLIO therefore separates:
 
-- **normal device notifications**, sent as PLIO bus-local controller messages and normally deferred during kernel execution,
-- **critical platform events**, such as machine-check/power-fail/watchdog conditions, which are outside ordinary PLIO notification and may interrupt kernel execution.
+- **PLIO Notifications** — normal device notifications sent as bus-local PLIO controller transactions and normally deferred during kernel execution,
+- **critical platform events** — machine-check, power-fail, watchdog, and similar conditions outside ordinary PLIO Notification handling that may interrupt kernel execution.
 
 There are no dedicated device-to-controller interrupt wires on PLIO.
 
-## 2. Device signalling
+The canonical device-to-host term is **PLIO Notification**. PLIO specifications should not describe this mechanism as MSI or an MSI-like interrupt mechanism.
 
-A normal device event is a single-beat PLIO controller-local transaction defined by `PLIO.md`:
+## 2. PLIO Notification signalling
+
+A normal device event is one single-beat PLIO controller-local transaction defined by `PLIO.md`:
 
 ```text
 SPACE = CONTROLLER
@@ -25,7 +27,7 @@ AD    = 0x0000_0000 + 4 * notification_channel
 
 These are bus-local controller offsets, not RAX CPU physical addresses.
 
-The central controller derives source identity from the currently granted bus manager. The message therefore does not carry a trusted slot identity.
+The central controller derives source identity from the currently granted bus manager. The PLIO Notification therefore does not carry a trusted slot identity.
 
 For each physical slot, four notification channels are available. Privileged software configures each channel's enable/mask/class state.
 
@@ -40,7 +42,7 @@ pending
 masked
 ```
 
-A notification write sets `pending`. Repeated writes may coalesce while pending.
+A PLIO Notification write sets `pending`. Repeated writes may coalesce while pending.
 
 The controller chooses the highest-class enabled/unmasked pending source and uses rotating round-robin among equal-class sources.
 
@@ -50,25 +52,31 @@ The class is host policy. A device cannot elevate itself.
 
 PLIO itself defines no CPU interrupt vector and no device interrupt pins.
 
-The RAX host profile exposes an aggregate `normal_notification_pending` condition from the PLIO controller to the CPU/memory complex. In a TTL RAX implementation this may be an internal controller-to-CPU signal; later implementations may integrate it differently.
+The RAX host profile exposes one aggregate CPU-side interrupt condition named:
 
-This signal is **not part of the PLIO card/backplane interface**.
+```text
+NOTIFY_PENDING_INTERRUPT
+```
 
-A future SIA/RAX `BIP target` (Branch if Interrupt Pending) instruction may sample the aggregate condition directly. PLIO does not require that instruction.
+`NOTIFY_PENDING_INTERRUPT` is asserted by the RAX PLIO controller whenever at least one enabled, unmasked normal PLIO Notification is pending and eligible for delivery.
 
-Critical platform events are handled separately by platform/machine-check logic and are not ordinary PLIO messages.
+This is an **internal host-controller-to-CPU condition**, not a PLIO card/backplane signal. A later RAX implementation may integrate the same architectural condition without a literal package pin or board trace.
+
+A future SIA/RAX `BIP target` (Branch if Interrupt Pending) instruction may sample `NOTIFY_PENDING_INTERRUPT` directly. PLIO does not require that instruction.
+
+Critical platform events are handled separately by platform/machine-check logic and are not ordinary PLIO Notifications.
 
 ## 5. CPU behavior
 
 ### User mode
 
-If a normal device notification is pending and normal asynchronous delivery is enabled, the CPU enters the kernel's normal device-event vector.
+If `NOTIFY_PENDING_INTERRUPT` is asserted and normal asynchronous delivery is enabled, the CPU enters the kernel's normal device-event vector.
 
 ### Kernel mode
 
-Normal asynchronous device delivery is normally deferred.
+Normal asynchronous PLIO Notification delivery is normally deferred.
 
-The aggregate pending state remains observable. Long or restartable kernel operations may explicitly test it at bounded preemption points.
+`NOTIFY_PENDING_INTERRUPT` remains observable. Long or restartable kernel operations may explicitly test it at bounded preemption points.
 
 ### Critical platform event
 
@@ -88,7 +96,7 @@ The kernel may then mask the source and signal the user-space driver's notificat
 
 The driver drains QDX completions or services device state, then invokes the kernel notification-complete operation. The kernel unmasks the source.
 
-If a new device message arrived while the source was masked, `pending` remains set and becomes deliverable immediately after unmask. This is the no-lost-wakeup rule.
+If a new PLIO Notification arrived while the source was masked, `pending` remains set and becomes deliverable immediately after unmask. This is the no-lost-wakeup rule.
 
 ## 7. Four classes
 
@@ -101,7 +109,7 @@ Suggested defaults:
 | 1 | normal | QDX-B storage completion |
 | 0 | background | terminal/printer/management |
 
-Class is configured by privileged host software, not by the device message.
+Class is configured by privileged host software, not by the device notification.
 
 ## 8. Capability relationship
 
@@ -113,4 +121,4 @@ This mirrors DMA capability channels: PLIO enforces a small hardware authority t
 
 The RAX host-controller CSR reservation is defined by `PLIO-RAX.md` and is CPU-visible privileged state only.
 
-A PLIO card MUST NOT know or write the RAX `0xEFFF_F000` host-controller CSR address. Card signalling is entirely through the bus-local `SPACE=CONTROLLER` transaction above.
+A PLIO card MUST NOT know or write the RAX `0xEFFF_F000` host-controller CSR address. Card signalling is entirely through the bus-local `SPACE=CONTROLLER` PLIO Notification transaction above.
