@@ -11,7 +11,7 @@ The design target is a late-1970s implementation, but PLIO is deliberately struc
 - [`specs/PLIO-RAX.md`](specs/PLIO-RAX.md) — RAX host address/notification integration profile.
 - [`specs/QDX.md`](specs/QDX.md) — common queued-device model and canonical little-endian ABI.
 - [`specs/QDX-B.md`](specs/QDX-B.md) — basic block-storage profile.
-- [`specs/QDX-BA.md`](specs/QDX-BA.md) — optional block acceleration.
+- [`specs/QDX-BA.md`](specs/QDX-BA.md) — optional block acceleration with `READ_OR`, `WRITE_OR`, `MULTI_WRITE`, and controller-local `COPY`.
 - [`specs/QDX-S.md`](specs/QDX-S.md) — basic streaming-device profile.
 - [`specs/QDX-SA.md`](specs/QDX-SA.md) — optional streaming acceleration.
 - [`specs/QDX-GNET.md`](specs/QDX-GNET.md) — basic GNET frame I/O profile.
@@ -19,6 +19,7 @@ The design target is a late-1970s implementation, but PLIO is deliberately struc
 - [`specs/QDX-G.md`](specs/QDX-G.md) — asynchronous 2D graphics profile.
 - [`specs/QDX-DSP.md`](specs/QDX-DSP.md) — buffer-oriented DSP accelerator profile.
 - [`specs/RAX-INTERRUPTS.md`](specs/RAX-INTERRUPTS.md) — RAX/PLIO Notification and CPU interrupt integration.
+- [`docs/ZFS-LIKE-STORAGE.md`](docs/ZFS-LIKE-STORAGE.md) — how QDX-B/BA supports copy-on-write, checksummed, ZFS-like storage while keeping filesystem policy in Cosmic.
 - [`docs/DESIGN-RATIONALE.md`](docs/DESIGN-RATIONALE.md) — architectural reasoning.
 - [`docs/SIMULATION.md`](docs/SIMULATION.md) — simulation strategy.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — open design decisions and implementation work.
@@ -99,6 +100,21 @@ A capability-oriented microkernel may represent authority to the device, memory 
 
 QDX-B/QDX-S/QDX-GNET/QDX-G/QDX-DSP define device-class contracts above the same QDX queue and PLIO DMA/notification mechanisms. Optional `A` profiles let more intelligent hardware accelerate equivalent work without making correctness depend on proprietary features.
 
+QDX-BA is the clearest example:
+
+```text
+base software behavior             QDX-BA acceleration
+----------------------             -------------------
+try READ A, then READ B             READ_OR
+try WRITE A, then WRITE B           WRITE_OR
+WRITE same buffer to A, B, C        MULTI_WRITE
+READ source + WRITE destination     COPY
+```
+
+QDX-BA returns exact per-target results but does not implement mirrors, RAID, pools, checksums, snapshots, or transaction policy.
+
+That makes it useful for a future copy-on-write/checksummed storage stack: Cosmic can own end-to-end correctness and crash-consistency policy while a capable controller removes unnecessary host DMA and command traffic.
+
 QDX-G and QDX-DSP do not introduce a second accelerator interconnect. Graphics and DSP may be onboard or plug-in PLIO devices while presenting the same software contract.
 
 ## Run the reference model
@@ -109,6 +125,8 @@ Requires Python 3.11+ and no third-party dependencies.
 python -m unittest discover -s tests -v
 PYTHONPATH=. python -m sim.plio_sim.scenario
 ```
+
+The functional model now includes QDX-BA opcode and parameter/result binary-format helpers. Full functional execution of the advanced commands remains a roadmap item.
 
 The current Python model is functional rather than fully cycle-accurate. The next major step is the explicit clock-by-clock PLIO transaction/arbitration/burst model described in `docs/SIMULATION.md`.
 
