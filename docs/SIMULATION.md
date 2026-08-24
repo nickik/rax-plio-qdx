@@ -9,7 +9,7 @@ The repository includes functional models for:
 - host memory,
 - PLIO DMA capability channels and generation tags,
 - complete-range burst validation,
-- PLIO transaction-space constants and bus-local notification offsets,
+- PLIO transaction-space constants and bus-local PLIO Notification offsets,
 - RAX host-profile geographic MMIO mapping,
 - QDX canonical little-endian integer encoding,
 - notification class selection,
@@ -53,7 +53,7 @@ The cycle model must distinguish transaction spaces:
 ```text
 WORKER      host-injected slot-relative MMIO
 HOST_DMA    protected host-memory DMA
-CONTROLLER  bus-local notification/controller operation
+CONTROLLER  bus-local PLIO Notification/controller operation
 RESERVED
 ```
 
@@ -84,18 +84,24 @@ direction permission
 
 The model must also support revocation interlock during an active burst so later beats cannot continue after authority is revoked.
 
-### Notification timing rule
+### PLIO Notification timing rule
 
-A PLIO notification is a real one-beat:
+A **PLIO Notification** is a real one-beat transaction:
 
 ```text
 SPACE = CONTROLLER
 AD = 0x0 / 0x4 / 0x8 / 0xC
 ```
 
-transaction issued by a granted manager. It is not a write to a RAX CPU physical address.
+issued by a granted manager. It is not a write to a RAX CPU physical address.
 
-The RAX host profile separately models how controller pending/claim state reaches the CPU/kernel.
+The RAX host profile separately models how controller pending/claim state reaches the CPU/kernel. Aggregate eligible pending state is presented to the RAX CPU as:
+
+```text
+NOTIFY_PENDING_INTERRUPT
+```
+
+That signal/condition is host-internal and must never be modeled as a PLIO card/backplane pin.
 
 ### Metrics to collect
 
@@ -103,9 +109,9 @@ The RAX host profile separately models how controller pending/claim state reache
 - clocks per 512-byte and larger disk DMA,
 - payload efficiency for BLEN 1/4/8/16,
 - arbitration wait per manager,
-- maximum notification delay behind a 64-byte burst,
+- maximum PLIO Notification delay behind a 64-byte burst,
 - host MMIO latency under DMA load,
-- notification-to-kernel-observation latency,
+- PLIO Notification-to-kernel-observation latency,
 - bus utilization,
 - wait-state and timeout behavior,
 - revoke-to-no-further-access latency.
@@ -115,20 +121,20 @@ The RAX host profile separately models how controller pending/claim state reache
 1. QDX-B sequential read/write using repeated 16-longword bursts.
 2. Two storage controllers contending for PLIO.
 3. GNet + storage contention.
-4. Graphics/DSP DMA + latency-sensitive notification traffic.
+4. Graphics/DSP DMA + latency-sensitive PLIO Notification traffic.
 5. CPU worker MMIO while DMA controllers request the bus.
-6. class-3 notification arriving while class-1 is pending.
+6. class-3 PLIO Notification arriving while class-1 is pending.
 7. notification request arriving immediately after another device starts a maximum burst.
 8. DMA attempted after channel revocation.
 9. revocation during an active burst.
-10. notification arriving while a source is masked, then delivered after unmask.
+10. PLIO Notification arriving while a source is masked, then delivered after unmask.
 11. RAX CPU address decoding to `(slot, slot_offset)` without placing the CPU physical address on PLIO.
 
 ## Layer 3 — system/microkernel simulator
 
 Add a minimal host execution/event model rather than a complete CPU initially.
 
-For the RAX profile, model events including IPC call/reply, page fault, normal PLIO notification, critical platform event, kernel preemption point, and kernel exit.
+For the RAX profile, model events including IPC call/reply, page fault, normal PLIO Notification, `NOTIFY_PENDING_INTERRUPT`, critical platform event, kernel preemption point, and kernel exit.
 
 Keep the RAX CPU-facing claim/vector behavior outside the generic PLIO card model.
 
@@ -142,7 +148,7 @@ Recommended first RTL blocks:
 2. transaction-space/address decoder,
 3. burst-length latch / beat counter,
 4. transaction timeout engine,
-5. controller-local notification decoder/state,
+5. controller-local PLIO Notification decoder/state,
 6. DMA capability lookup/bounds/generation/permission logic,
 7. RAX host-profile worker-MMIO mapper.
 
