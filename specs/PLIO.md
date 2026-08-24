@@ -10,7 +10,7 @@ PLIO is deliberately an **I/O bus**, not a processor bus, memory bus, cache-cohe
 
 A PLIO segment contains exactly one host-side PLIO controller and up to eight logical peripheral slots. Processor and memory nodes are not peers on the PLIO backplane. A non-RAX computer may use PLIO by implementing its own host profile and PLIO host controller.
 
-The baseline remains implementable with late-1970s TTL/SSI/MSI logic and modest LSI interface devices.
+The baseline remains implementable with late-1970s TTL/SSI/MSI (**medium-scale integration**) logic and modest LSI interface devices.
 
 ## 2. Architectural scope
 
@@ -22,7 +22,7 @@ PLIO defines:
 - bus-manager arbitration,
 - bounded 1/4/8/16-longword host-memory DMA bursts,
 - protected DMA capability channels,
-- bus-local message-signalled notification transactions,
+- **PLIO Notification**, the bus-local device-to-host asynchronous notification mechanism,
 - basic timeout/error/reset behavior,
 - a standard device identification/configuration header,
 - separation between bus semantics, host profiles, and physical/mechanical profiles.
@@ -55,8 +55,11 @@ A future host may contain multiple CPUs behind one PLIO controller, but that is 
 - **physical profile** — mechanical, connector, power, and pin assignment standard for a PLIO implementation.
 - **DMA capability channel** — controller-owned mapping granting one slot bounded device-read/device-write access to one host physical-memory region.
 - **DMA generation** — controller-managed version tag carried in device-visible DMA addresses to reject stale references after revoke/rebind.
-- **notification channel** — one of four controller-owned pending sources per slot.
+- **PLIO Notification** — one bus-local `SPACE=CONTROLLER` write by a granted peripheral that sets controller-owned pending state for one notification channel.
+- **notification channel** — one of four controller-owned pending sources per slot used by PLIO Notification.
 - **transaction space** — interpretation of `AD[31:0]` selected by `SPACE[1:0]` during the address phase.
+
+The device-to-host mechanism defined by this specification is called **PLIO Notification**. Normative PLIO text does not use PCI-derived MSI/MSI-X terminology for it.
 
 ## 4. Topology
 
@@ -126,7 +129,7 @@ Required `FLAGS` bits:
 - bit 3: QDX capability
 - bits 4..7: reserved
 
-A device that generates asynchronous PLIO notifications MUST implement bus-manager capability because notification is a PLIO bus transaction.
+A device that generates asynchronous PLIO Notifications MUST implement bus-manager capability because PLIO Notification is a PLIO bus transaction.
 
 Any device that performs host-memory DMA MUST implement all four baseline DMA burst lengths.
 
@@ -172,7 +175,7 @@ A host profile may expose PLIO-controller CSRs to its CPU at any host-specific a
 | `10` | 8 | 32 bytes |
 | `11` | 16 | 64 bytes |
 
-All programmed MMIO, controller-local notification writes, and sub-32-bit transactions MUST use `BLEN=00`.
+All programmed MMIO, controller-local PLIO Notification writes, and sub-32-bit transactions MUST use `BLEN=00`.
 
 ### 8.2 Per-slot signals
 
@@ -186,7 +189,7 @@ For each slot `n`:
 
 **There is no `IRQ[n]` signal.**
 
-A worker-only card MAY omit active drive circuitry for `BR[n]*`; such a card cannot generate asynchronous notifications and is normally polled.
+A worker-only card MAY omit active drive circuitry for `BR[n]*`; such a card cannot generate asynchronous PLIO Notifications and is normally polled.
 
 The normative Eurocard implementation is defined by `PLIO-E.md`.
 
@@ -218,7 +221,7 @@ The controller:
 
 ### 10.2 Data phase
 
-For a write, the controller drives the data and asserts `DS*`. For a read, the selected worker drives the data. The selected worker eventually asserts `ACK*` or `ERR*`.
+For a write, the controller drives the data and asserts `DS*`. For a read, the selected worker drives data. The selected worker eventually asserts `ACK*` or `ERR*`.
 
 A worker MAY insert wait states by asserting neither response.
 
@@ -240,7 +243,7 @@ A grant is communicated by `BG[n]*`. Only one slot may own a grant at a time.
 
 A grant covers exactly one PLIO transaction:
 
-- one single-beat controller-local transaction, or
+- one single-beat controller-local transaction, including PLIO Notification, or
 - one host-memory DMA burst of 1, 4, 8, or 16 longwords.
 
 At the end of the transaction the controller MUST withdraw the grant and arbitrate again. A manager with additional work MAY keep `BR[n]*` asserted.
@@ -305,7 +308,7 @@ The maximum burst is 16 longwords = 64 bytes. No peripheral may retain a grant l
 
 At PLIO-5, sixteen no-wait data beats require 3.2 microseconds of data-beat time. With one arbitration opportunity and one address phase per burst, an idealized large transfer approaches 17.8 MB/s payload. This is a design ceiling, not guaranteed application throughput.
 
-The 64-byte bound provides a predictable arbitration opportunity for latency-sensitive traffic and message-signalled notifications.
+The 64-byte bound provides a predictable arbitration opportunity for latency-sensitive traffic and PLIO Notification traffic.
 
 ## 12. DMA capability channels
 
@@ -389,13 +392,13 @@ QDX scatter/gather descriptors MAY reference several `(channel, generation, offs
 
 Peripheral-to-peripheral DMA is not supported by PLIO v0.5. Device bus managers target host memory or the PLIO controller only.
 
-## 13. Bus-local message-signalled notifications
+## 13. PLIO Notification
 
 ### 13.1 No dedicated interrupt wires
 
-Normal asynchronous peripheral notification is a **controller-local PLIO write transaction**. There is no per-slot IRQ signal and no host physical interrupt address in the PLIO standard.
+Normal asynchronous peripheral signalling uses **PLIO Notification**, a controller-local PLIO write transaction. There is no per-slot IRQ signal and no host physical interrupt address in the PLIO standard.
 
-A device notification uses:
+A PLIO Notification uses:
 
 ```text
 SPACE = CONTROLLER
@@ -405,7 +408,7 @@ BE    = 1111
 AD    = 0x0000_0000 + 4 * notification_channel
 ```
 
-The baseline controller-local notification aperture is therefore bus-local offsets:
+The baseline PLIO Notification aperture is therefore the following bus-local controller offsets:
 
 ```text
 0x0000_0000   channel 0
@@ -416,21 +419,21 @@ The baseline controller-local notification aperture is therefore bus-local offse
 
 These are **PLIO controller-space offsets**, not CPU physical addresses. A host profile may expose unrelated CPU-visible controller-management registers wherever appropriate for that platform.
 
-### 13.2 Notification transaction
+### 13.2 PLIO Notification transaction
 
 To notify the host a device:
 
 1. publishes any completion/status writes to host-visible memory,
 2. asserts `BR[n]*`,
 3. receives `BG[n]*`,
-4. performs one `SPACE=CONTROLLER` 32-bit write to the chosen notification offset,
+4. performs one `SPACE=CONTROLLER` 32-bit write to the chosen PLIO Notification channel offset,
 5. releases the bus.
 
 The controller derives the source slot from the active grant. The device does not provide a trusted slot ID, host vector, privilege, CPU target, or priority.
 
 The write data MAY contain an advisory cause/cookie for diagnostics. Correctness MUST NOT depend on every payload being retained; queued devices put real completion information in the CQ.
 
-### 13.3 Controller notification state
+### 13.3 Controller PLIO Notification state
 
 For each `(slot, notification_channel)` the controller maintains privileged state including:
 
@@ -442,15 +445,17 @@ pending
 optional last-data/debug field
 ```
 
-Receiving an enabled notification sets `pending`. Repeated notifications while pending MAY coalesce.
+Receiving an enabled PLIO Notification sets `pending`. Repeated PLIO Notifications while pending MAY coalesce.
 
 The device cannot choose or elevate its class or CPU routing.
 
 ### 13.4 Host delivery
 
-PLIO defines only the pending/source state. The host profile defines how the PLIO controller presents aggregate pending state and claim operations to the CPU/kernel.
+PLIO defines only PLIO Notification pending/source state. The host profile defines how the PLIO controller presents aggregate pending state and claim operations to the CPU/kernel.
 
-Claiming a source MUST atomically return the selected `(slot, channel)` and clear that pending bit. If a new notification arrives afterward, the bit is set again. If a source is masked, arriving notifications still set pending and become deliverable after unmask.
+Claiming a source MUST atomically return the selected `(slot, channel)` and clear that pending bit. If a new PLIO Notification arrives afterward, the bit is set again. If a source is masked, arriving PLIO Notifications still set pending and become deliverable after unmask.
+
+For RAX, aggregate eligible PLIO Notification state is presented to the CPU as the host-internal condition **`NOTIFY_PENDING_INTERRUPT`**. This name belongs to the RAX host profile; it is not a PLIO backplane signal.
 
 For RAX integration see `PLIO-RAX.md` and `RAX-INTERRUPTS.md`.
 
@@ -471,7 +476,7 @@ On `RESET*` assertion:
 - device DMA MUST cease,
 - devices MUST enter a discoverable inactive state.
 
-The PLIO controller MUST invalidate all DMA capability channels and clear/mask normal notification state before releasing reset unless trusted platform firmware deliberately establishes bootstrap mappings.
+The PLIO controller MUST invalidate all DMA capability channels and clear/mask normal PLIO Notification state before releasing reset unless trusted platform firmware deliberately establishes bootstrap mappings.
 
 After reset has guaranteed that no pre-reset request can survive, generation allocation for that slot may restart.
 
@@ -492,10 +497,10 @@ For completion notification:
 ```text
 device DMA-writes completion(s)
     -> makes completion writes host-visible
-    -> issues SPACE=CONTROLLER notification write
+    -> issues PLIO Notification (`SPACE=CONTROLLER` write)
 ```
 
-A notification MUST NOT become observable by the host before preceding completion-memory writes by that manager are visible.
+A PLIO Notification MUST NOT become observable by the host before preceding completion-memory writes by that manager are visible.
 
 ## 17. Host and physical profiles
 
@@ -505,7 +510,7 @@ A **host profile** MUST define at least:
 
 - how CPU/software addresses map to PLIO `(slot, slot_offset)` worker transactions,
 - how privileged software programs DMA capability channels,
-- how aggregate notification pending/claim state reaches the host CPU/kernel,
+- how aggregate PLIO Notification pending/claim state reaches the host CPU/kernel,
 - cache/visibility operations required around DMA.
 
 The RAX profile is `PLIO-RAX.md`.
@@ -531,7 +536,7 @@ A PLIO bus manager additionally MUST support:
 - all 1/4/8/16-longword baseline burst lengths,
 - protected DMA faults including generation validation.
 
-A device advertising notification capability MUST be capable of issuing the single-beat `SPACE=CONTROLLER` notification transaction.
+A device advertising notification capability MUST be capable of issuing the single-beat `SPACE=CONTROLLER` **PLIO Notification** transaction.
 
 A QDX device additionally MUST implement `QDX.md` and its declared profile.
 
