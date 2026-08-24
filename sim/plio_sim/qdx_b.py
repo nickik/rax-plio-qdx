@@ -69,9 +69,17 @@ class Namespace:
 class BlockController:
     """QDX-B functional controller bound to one PLIO slot."""
 
-    def __init__(self, plio: PLIOController, slot: int, *, queue_depth: int = 32):
+    def __init__(
+        self,
+        plio: PLIOController,
+        slot: int,
+        *,
+        queue_depth: int = 32,
+        notification_channel: int = 0,
+    ):
         self.plio = plio
         self.slot = slot
+        self.notification_channel = notification_channel
         self.sq: SubmissionQueue[BlockCommand] = SubmissionQueue(queue_depth)
         self.cq: CompletionQueue[BlockCompletion] = CompletionQueue(queue_depth)
         self.namespaces: dict[int, Namespace] = {}
@@ -85,8 +93,10 @@ class BlockController:
         self.sq.push(command)
 
     def _complete(self, completion: BlockCompletion) -> None:
+        was_empty = self.cq.empty
         self.cq.push(completion)
-        self.plio.assert_irq(self.slot)
+        if was_empty:
+            self.plio.notify(self.slot, self.notification_channel)
 
     def process_one(self) -> bool:
         if self.sq.empty:
@@ -138,7 +148,4 @@ class BlockController:
         return True
 
     def reap(self) -> BlockCompletion:
-        completion = self.cq.pop()
-        if self.cq.empty:
-            self.plio.clear_irq(self.slot)
-        return completion
+        return self.cq.pop()

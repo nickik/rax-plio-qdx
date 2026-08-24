@@ -1,10 +1,10 @@
-# PLIO v0.1 — Peripheral Lighting I/O
+# PLIO v0.2 — Peripheral Lighting I/O
 
 **Status:** Draft
 
 ## 1. Purpose
 
-PLIO is the standard 32-bit peripheral interconnect for RAX systems. It connects the RAX memory/controller complex to storage, networking, graphics, terminal, accelerator, and bridge controllers.
+PLIO is the standard 32-bit peripheral interconnect for RAX/SIA systems. It connects the CPU/memory-controller complex to storage, networking, graphics, terminal, accelerator, and bridge controllers.
 
 PLIO is deliberately a **small-system shared bus**, not a switched fabric and not a coherent memory interconnect.
 
@@ -12,39 +12,38 @@ The intended implementation is a late-1970s TTL/SSI/MSI system with a modest num
 
 ## 2. Scope
 
-PLIO v0.1 defines:
+PLIO defines:
 
 - shared 32-bit address/data transfer behavior,
 - geographic device selection,
 - bus-manager arbitration,
 - programmed MMIO access,
-- DMA access to system memory,
+- protected DMA access to system memory,
+- **message-signalled device notifications with no per-device IRQ wire**,
 - basic error/timeout behavior,
-- device reset and discovery registers,
-- one physical normal interrupt request per slot,
-- four controller-assigned normal interrupt classes.
+- device reset and discovery registers.
 
-PLIO v0.1 does **not** define:
+PLIO does **not** define:
 
 - cache coherence,
 - hot insertion/removal,
 - a switched or serial fabric,
 - packet routing,
-- message-signalled interrupts,
+- dedicated device interrupt lines,
 - peer-to-peer device DMA,
 - device-side page-table walking,
 - mandatory device firmware bytecode,
 - multiprocessing cache protocols.
 
-These omissions are intentional.
-
 ## 3. Terminology
 
-- **PLIO controller** — centralized motherboard logic that arbitrates the bus, routes host accesses, validates DMA, selects workers, handles timeout, and aggregates interrupts.
+- **PLIO controller** — centralized motherboard logic that arbitrates the bus, routes host accesses, validates and translates DMA capability channels, selects workers, handles timeout, and accepts device notification messages.
 - **bus manager** — a device currently permitted to initiate a PLIO transaction.
 - **worker** — a PLIO endpoint responding to an MMIO transaction.
 - **slot** — one logical PLIO endpoint number. A slot may correspond to a plug-in card or an onboard controller.
 - **host** — the RAX CPU/memory complex behind the PLIO controller.
+- **DMA capability channel** — a controller-owned mapping granting one slot bounded read/write access to one host physical-memory region.
+- **notification channel** — one controller-owned pending source associated with a slot. A device signals it by issuing a PLIO notification write.
 
 ## 4. Topology
 
@@ -67,7 +66,7 @@ A PLIO segment contains one PLIO controller and at most eight logical slots.
 
 The CPU/memory path does not traverse PLIO.
 
-## 5. Address map
+## 5. Host MMIO address map
 
 PLIO uses a 32-bit host physical address model.
 
@@ -95,19 +94,15 @@ offset = address[24:0]
 | 6 | `0xFC00_0000` | `0xFDFF_FFFF` |
 | 7 | `0xFE00_0000` | `0xFFFF_FFFF` |
 
-There is no BAR/resource-allocation protocol in v0.1.
-
-The PLIO controller MUST generate a slot-select signal from the geographic address.
+There is no BAR/resource-allocation protocol in this baseline.
 
 ## 6. Configuration area
 
 Every populated PLIO slot MUST implement the first 256 bytes of its slot window as a standard configuration area.
 
-### 6.1 Required configuration registers
-
 | Offset | Width | Name | Meaning |
 |---:|---:|---|---|
-| `0x00` | 32 | `PLIO_ID` | ASCII-equivalent magic/version signature |
+| `0x00` | 32 | `PLIO_ID` | signature/version |
 | `0x04` | 16 | `VENDOR_ID` | vendor identifier |
 | `0x06` | 16 | `DEVICE_ID` | device identifier |
 | `0x08` | 16 | `REVISION` | hardware revision |
@@ -123,15 +118,13 @@ Required `FLAGS` bits:
 
 - bit 0: worker implemented
 - bit 1: bus-manager capability
-- bit 2: normal interrupt capability
+- bit 2: notification capability
 - bit 3: QDX capability
 - bits 4..7: reserved
 
-Unimplemented slots MUST read as all ones in `PLIO_ID` and MUST NOT assert `ACK*` for ordinary accesses outside discovery handling.
+A device that generates asynchronous PLIO notifications MUST implement bus-manager capability, because notification is a bus transaction rather than a dedicated pin.
 
 ## 7. Electrical/logical signal model
-
-PLIO v0.1 defines the following logical signals. Exact connector pin placement is a separate mechanical annex.
 
 ### 7.1 Shared signals
 
@@ -156,21 +149,22 @@ For each slot `n`:
 | `SEL[n]*` | controller -> slot | slot selected as worker |
 | `BR[n]*` | slot -> controller | request bus-manager ownership |
 | `BG[n]*` | controller -> slot | bus-manager grant |
-| `IRQ[n]*` | slot -> controller | level-triggered normal interrupt |
 
-A worker-only device MAY omit active drive circuitry for `BR[n]*`.
+**There is no `IRQ[n]` signal.**
+
+A worker-only device MAY omit active drive circuitry for `BR[n]*`, but such a device cannot generate asynchronous notifications and is normally polled.
 
 ## 8. Clocking
 
-PLIO is synchronous except for device interrupt inputs.
+PLIO is synchronous.
 
 - All normal bus control signals are sampled on the rising edge of `CLK`.
 - PLIO-5 systems operate at 5 MHz.
 - PLIO-10 systems operate at 10 MHz.
-- Every v0.1 device MUST operate at 5 MHz.
-- A device that declares PLIO-10 capability MUST also operate at 5 MHz.
+- Every baseline device MUST operate at 5 MHz.
+- A device declaring PLIO-10 capability MUST also operate at 5 MHz.
 
-The controller MUST synchronize asynchronous `IRQ[n]*` inputs before using them in synchronous logic.
+No asynchronous per-device interrupt inputs cross the PLIO backplane.
 
 ## 9. Programmed MMIO transaction
 
@@ -178,153 +172,192 @@ A host access is injected by the PLIO controller as a bus-manager transaction.
 
 ### 9.1 Address phase
 
-On a rising edge:
+On a rising edge the manager drives `AD[31:0]` with the byte address, drives `RD` and `BE[3:0]`, and asserts `AS*`.
 
-- the manager drives `AD[31:0]` with the byte address,
-- drives `RD`, `BE[3:0]`,
-- asserts `AS*`.
+The controller decodes host-injected MMIO addresses and asserts the selected `SEL[n]*`.
 
-The controller decodes the address and asserts the selected `SEL[n]*`.
+### 9.2 Data phase
 
-### 9.2 Data phase — write
+For a write the manager drives data and asserts `DS*`; for a read the selected worker drives data. The target eventually asserts `ACK*` or `ERR*`. A worker MAY insert wait states by asserting neither response.
 
-On the following data phase:
+### 9.3 Transfer sizes
 
-- manager drives write data on `AD[31:0]`,
-- manager asserts `DS*`,
-- selected worker eventually asserts `ACK*` or `ERR*`.
-
-A worker MAY insert wait states by asserting neither response.
-
-### 9.3 Data phase — read
-
-On the data phase:
-
-- manager releases `AD[31:0]`,
-- selected worker drives read data,
-- manager asserts `DS*`,
-- worker asserts `ACK*` with valid data or `ERR*`.
-
-### 9.4 Transfer sizes
-
-`BE[3:0]` defines valid bytes. v0.1 requires naturally aligned:
-
-- 8-bit,
-- 16-bit,
-- 32-bit transfers.
-
-Unaligned multi-byte accesses are not required.
+`BE[3:0]` defines valid bytes. The baseline requires naturally aligned 8-, 16-, and 32-bit transfers. Unaligned multi-byte accesses are not required.
 
 ## 10. Bus-manager arbitration
 
-A DMA-capable slot requests the bus by asserting `BR[n]*`.
+A DMA/notification-capable slot requests the bus by asserting `BR[n]*`.
 
-The PLIO controller MUST provide fair arbitration among requesting bus managers.
+The PLIO controller MUST provide fair arbitration among requesting managers. The baseline algorithm is rotating round-robin.
 
-The baseline algorithm is rotating round-robin.
+A grant is communicated by `BG[n]*`. Only one slot may own a grant at a time.
 
-A grant is communicated by `BG[n]*`. Only one slot may have an active grant at a time.
+The manager MUST release ownership after each transaction in the baseline protocol. Multi-word burst ownership is reserved for a later extension.
 
-The manager MUST release ownership after each transaction in v0.1. Multi-word burst ownership is reserved for a later extension.
+The controller always knows the physical source slot of a manager transaction from the active grant. A device therefore cannot claim to be another slot when performing DMA or notification.
 
-This rule deliberately bounds bus occupancy and keeps arbitration logic small.
+## 11. DMA capability channels
 
-## 11. DMA
+### 11.1 Principle
 
-A bus manager may initiate memory reads and writes after receiving a grant.
+PLIO devices MUST NOT receive unrestricted host physical addresses.
 
-### 11.1 No device virtual memory
+Each DMA-capable slot has **four controller-owned DMA capability channels**. Privileged system software binds a host physical-memory region and permissions to a channel. The device then addresses that memory using a channel number plus an offset.
 
-PLIO v0.1 devices do not walk CPU page tables and do not issue CPU virtual addresses.
+This is the hardware enforcement mechanism used by the OS capability model for device memory access.
 
-QDX and driver software express fragmented memory using scatter/gather descriptors when necessary.
+### 11.2 Device-visible DMA address
 
-### 11.2 DMA windows
-
-For a protected RAX system, every DMA-capable slot has four controller-owned DMA mapping windows.
-
-Each window contains:
+A 32-bit device DMA address is encoded as:
 
 ```text
-device_base
+31          30 29                              0
++--------------+--------------------------------+
+| channel 0..3 |       byte offset (30 bits)    |
++--------------+--------------------------------+
+```
+
+Thus:
+
+```text
+channel = address[31:30]
+offset  = address[29:0]
+```
+
+Each channel entry contains:
+
+```text
 host_physical_base
 length
-permissions: read / write
+permissions: device-read / device-write
 valid
 ```
 
-A manager-provided DMA address MUST match one enabled window. The controller translates:
+For a DMA transaction the controller selects the entry using `(source_slot, channel)`, verifies:
 
 ```text
-host_address = host_physical_base + (device_address - device_base)
+offset + transfer_length <= length
+required permission is granted
+valid == 1
 ```
 
-If no enabled window matches, the transaction fails with a DMA protection error.
-
-Only kernel-mode software may configure DMA windows.
-
-An unprotected small system MAY use a single identity-mapped window covering installed memory.
-
-### 11.3 Peer-to-peer transfers
-
-Bus-manager accesses to another PLIO slot are not supported by v0.1. DMA targets are host memory only.
-
-## 12. Interrupts
-
-PLIO v0.1 uses one dedicated, level-triggered `IRQ[n]*` input per slot.
-
-A device with one or more pending causes:
-
-1. writes all completion/status data to DMA-visible memory or its MMIO state,
-2. asserts `IRQ[n]*`,
-3. keeps `IRQ[n]*` asserted until software has serviced/acknowledged all causes that require the line.
-
-A device MUST NOT encode its own CPU priority on the wire.
-
-The PLIO interrupt controller assigns every slot one of four normal classes:
+and translates:
 
 ```text
-3  urgent
-2  high
-1  normal
-0  background
+host_address = host_physical_base + offset
 ```
 
-The class controls arbitration among simultaneously pending normal interrupts only.
+A failed check terminates the transaction with a DMA protection error.
 
-See `RAX-INTERRUPTS.md` for CPU integration.
+Only privileged platform/kernel software may bind, modify, or revoke a hardware DMA capability channel.
+
+### 11.3 OS capability relationship
+
+The hardware channel table is intentionally simple. Cosmic or another protected OS may expose higher-level capability objects such as:
+
+```text
+PLIO-device capability
+memory-region capability
+DMA-channel capability
+notification-channel capability
+```
+
+A driver possessing appropriate authority may ask the kernel to bind a memory region to one of its device's channels. The card receives only the resulting channel/offset address. Revocation invalidates the channel entry.
+
+PLIO does not require tagged capability words in the device and does not require the device to understand process virtual memory.
+
+### 11.4 Scatter/gather
+
+QDX scatter/gather descriptors MAY reference several device-visible channel/offset addresses. PLIO itself still performs only one protected translation per bus transaction.
+
+### 11.5 Peer-to-peer
+
+Manager accesses to another PLIO device are not supported by the baseline. DMA targets are host memory only.
+
+## 12. Message-signalled notifications
+
+### 12.1 No dedicated device interrupt wires
+
+Normal PLIO device interrupts are represented by **notification write transactions**. There is no per-slot interrupt signal.
+
+The RAX platform reserves the controller target aperture:
+
+```text
+0xEFFF_F000 .. 0xEFFF_F00F    PLIO normal notification aperture
+```
+
+The four aligned word addresses correspond to notification channels 0..3:
+
+```text
+0xEFFF_F000 + 4 * channel
+```
+
+This address range is intercepted by the PLIO controller before ordinary DMA translation.
+
+### 12.2 Notification transaction
+
+To notify the host a device:
+
+1. finishes and publishes any completion/status data to host-visible memory,
+2. requests bus ownership with `BR[n]*`,
+3. receives `BG[n]*`,
+4. performs a 32-bit write to its desired notification-channel address,
+5. releases the bus after the transaction.
+
+The controller derives the **source slot from the active bus grant**. The device does not place a trusted slot ID, CPU vector, privilege, or priority in the message.
+
+The 32-bit write data MAY contain an advisory cause/cookie for diagnostics, but correctness MUST NOT depend on retaining every message payload. QDX completion information belongs in the completion queue.
+
+### 12.3 Controller state
+
+For each `(slot, notification_channel)` the controller maintains privileged state including:
+
+```text
+enabled
+class: 0..3
+masked
+pending
+optional last-data/debug field
+```
+
+Receiving an enabled notification sets `pending`. Repeated notifications while pending MAY coalesce into the same pending bit.
+
+The device cannot choose or elevate its interrupt class. Privileged software configures class and any future CPU-routing policy.
+
+### 12.4 Host delivery and race rule
+
+The controller presents one aggregate **normal notification pending** condition to the CPU/memory complex. This is internal platform integration and is not a PLIO backplane interrupt line.
+
+When the kernel claims a source, the controller MUST atomically return the selected `(slot, channel)` and clear that source's pending bit. If a new device notification arrives afterward, the bit is set again. If the source is masked, new notifications still set pending and are delivered when unmasked.
+
+This prevents a completion arriving during driver service from being lost.
+
+See `RAX-INTERRUPTS.md` for kernel integration.
 
 ## 13. Error handling and timeout
 
-A worker signals a transaction failure with `ERR*`.
+A worker/controller signals a transaction failure with `ERR*`.
 
-The controller MUST time out a transaction that receives neither `ACK*` nor `ERR*` within the implementation-defined timeout interval.
+The controller MUST time out a transaction that receives neither `ACK*` nor `ERR*` within the implementation-defined interval. The baseline RAX platform timeout is 256 PLIO clocks.
 
-The baseline RAX platform timeout is 256 PLIO clocks.
-
-A timeout MUST:
-
-- terminate the bus transaction,
-- record slot/address/operation in controller error registers,
-- return an error to the initiating CPU or bus manager.
+A timeout records source/target/address/operation and returns an error to the initiating CPU or bus manager.
 
 ## 14. Reset
 
 On `RESET*` assertion:
 
 - bus managers MUST release `BR[n]*`,
-- devices MUST deassert `IRQ[n]*`,
 - QDX queues MUST be disabled,
 - device DMA MUST cease,
 - devices MUST enter a discoverable but inactive state.
 
-The PLIO controller MUST disable all DMA windows before releasing reset unless platform firmware explicitly establishes an identity-mapped unprotected environment.
+The PLIO controller MUST invalidate all DMA capability channels and clear/mask all device notification state before releasing reset, unless explicitly configured by trusted platform firmware.
 
 ## 15. Memory ordering
 
 The PLIO controller must preserve ordering for accesses from one manager unless the standard explicitly permits otherwise.
 
-For QDX use, software follows this rule:
+For QDX submission:
 
 ```text
 write descriptors to memory
@@ -332,22 +365,22 @@ write descriptors to memory
     -> write QDX doorbell MMIO register
 ```
 
-A doorbell write MUST NOT become visible to a worker before preceding host memory writes from the same CPU have become visible to PLIO DMA.
+For QDX completion notification:
 
-## 16. Required v0.1 conformance
+```text
+DMA-write completion(s)
+    -> ensure completion writes are globally visible
+    -> issue PLIO notification write
+```
 
-A PLIO worker MUST support:
+A notification MUST NOT become observable by the CPU before preceding completion-memory writes by the same device have become visible.
 
-- reset,
-- configuration area,
-- geographic slot selection,
-- 8/16/32-bit MMIO accesses,
-- `ACK*` and `ERR*` behavior.
+## 16. Required conformance
 
-A PLIO bus manager additionally MUST support:
+A PLIO worker MUST support reset, configuration area, geographic slot selection, 8/16/32-bit MMIO accesses, and `ACK*`/`ERR*` behavior.
 
-- request/grant arbitration,
-- 32-bit memory DMA reads/writes,
-- controller DMA-window faults.
+A PLIO bus manager additionally MUST support request/grant arbitration and protected DMA-channel faults.
+
+A PLIO device advertising notification capability MUST be capable of issuing the notification write transaction.
 
 A QDX device additionally MUST implement `specs/QDX.md` and its declared profile.
