@@ -33,6 +33,20 @@ class PLIOController:
     """Aggregate functional model of the central PLIO controller."""
 
     SLOT_COUNT = 8
+    SLOT_WINDOW_SIZE = 32 * 1024 * 1024
+
+    SPACE_WORKER = 0b00
+    SPACE_HOST_DMA = 0b01
+    SPACE_CONTROLLER = 0b10
+    SPACE_RESERVED = 0b11
+
+    BURST_WORDS = (1, 4, 8, 16)
+    BURST_BYTES = tuple(words * 4 for words in BURST_WORDS)
+    MAX_BURST_WORDS = 16
+    MAX_BURST_BYTES = 64
+
+    CONTROLLER_NOTIFY_BASE = 0x00000000
+    CONTROLLER_NOTIFY_STRIDE = 4
 
     DMA_CHANNEL_BITS = 4
     DMA_GENERATION_BITS = 4
@@ -45,12 +59,6 @@ class PLIOController:
     DMA_GENERATION_MASK = DMA_GENERATIONS - 1
     DMA_OFFSET_MASK = (1 << DMA_OFFSET_BITS) - 1
     DMA_MAX_LENGTH = DMA_OFFSET_MASK + 1
-
-    BURST_WORD_BYTES = 4
-    BURST_WORD_COUNTS = (1, 4, 8, 16)
-    BURST_CODE_TO_WORDS = (1, 4, 8, 16)
-    BURST_MAX_WORDS = 16
-    BURST_MAX_BYTES = BURST_MAX_WORDS * BURST_WORD_BYTES
 
     NOTIFY_CHANNELS = 4
     NOTIFY_CLASSES = 4
@@ -91,6 +99,18 @@ class PLIOController:
             raise ValueError(f"invalid channel {channel}")
 
     @classmethod
+    def notification_offset(cls, channel: int) -> int:
+        if not 0 <= channel < cls.NOTIFY_CHANNELS:
+            raise ValueError("notification channel must be 0..3")
+        return cls.CONTROLLER_NOTIFY_BASE + cls.CONTROLLER_NOTIFY_STRIDE * channel
+
+    @classmethod
+    def burst_words(cls, blen: int) -> int:
+        if not 0 <= blen < len(cls.BURST_WORDS):
+            raise ValueError("BLEN must be 0..3")
+        return cls.BURST_WORDS[blen]
+
+    @classmethod
     def dma_address(cls, channel: int, generation: int, offset: int) -> int:
         if not 0 <= channel < cls.DMA_CHANNELS:
             raise ValueError("DMA channel must be 0..15")
@@ -114,29 +134,6 @@ class PLIOController:
         ) & cls.DMA_GENERATION_MASK
         offset = device_address & cls.DMA_OFFSET_MASK
         return channel, generation, offset
-
-    @classmethod
-    def burst_words(cls, blen: int) -> int:
-        """Decode the two-bit PLIO BLEN field."""
-        if not 0 <= blen < len(cls.BURST_CODE_TO_WORDS):
-            raise ValueError("PLIO BLEN must be 0..3")
-        return cls.BURST_CODE_TO_WORDS[blen]
-
-    @classmethod
-    def burst_code(cls, words: int) -> int:
-        """Encode a baseline burst length as the two-bit PLIO BLEN field."""
-        try:
-            return cls.BURST_CODE_TO_WORDS.index(words)
-        except ValueError as exc:
-            raise ValueError("PLIO burst must contain 1, 4, 8, or 16 words") from exc
-
-    @classmethod
-    def _burst_length(cls, device_address: int, words: int) -> int:
-        cls.burst_code(words)
-        _, _, offset = cls.decode_dma_address(device_address)
-        if offset % cls.BURST_WORD_BYTES:
-            raise ValueError("PLIO burst address must be 32-bit aligned")
-        return words * cls.BURST_WORD_BYTES
 
     def bind_dma_channel(self, slot: int, channel: int, mapping: DMAChannel) -> int:
         """Bind an unbound channel and return the generation for device DMA handles."""
@@ -181,7 +178,14 @@ class PLIOController:
         self._dma_generation[slot] = [0] * self.DMA_CHANNELS
         self._dma_ever_bound[slot] = [False] * self.DMA_CHANNELS
 
-    def _translate(self, slot: int, device_address: int, length: int, *, write_to_host: bool) -> int:
+    def _translate(
+        self,
+        slot: int,
+        device_address: int,
+        length: int,
+        *,
+        write_to_host: bool,
+    ) -> int:
         self._check_slot(slot)
         if not 0 <= device_address <= 0xFFFFFFFF:
             raise DMAFault("device DMA address outside 32-bit range")
@@ -199,6 +203,25 @@ class PLIOController:
             f"generation={generation} offset=0x{offset:x} length={length}"
         )
 
+    def validate_dma_burst(
+        self,
+        slot: int,
+        device_address: int,
+        blen: int,
+        *,
+        write_to_host: bool,
+    ) -> int:
+        """Validate the complete baseline burst and return its first host address."""
+        words = self.burst_words(blen)
+        if device_address & 0x3:
+            raise DMAFault("PLIO burst address must be 32-bit aligned")
+        return self._translate(
+            slot,
+            device_address,
+            words * 4,
+            write_to_host=write_to_host,
+        )
+
     def dma_read(self, slot: int, device_address: int, length: int) -> bytes:
         """Device reads host memory through a protected capability channel."""
         host_address = self._translate(slot, device_address, length, write_to_host=False)
@@ -208,19 +231,6 @@ class PLIOController:
         """Device writes host memory through a protected capability channel."""
         host_address = self._translate(slot, device_address, len(data), write_to_host=True)
         self.memory.write(host_address, data)
-
-    def dma_read_burst(self, slot: int, device_address: int, words: int) -> bytes:
-        """Functional model of one 1/4/8/16-word host-to-device PLIO burst."""
-        length = self._burst_length(device_address, words)
-        return self.dma_read(slot, device_address, length)
-
-    def dma_write_burst(self, slot: int, device_address: int, data: bytes) -> None:
-        """Functional model of one 1/4/8/16-word device-to-host PLIO burst."""
-        if len(data) % self.BURST_WORD_BYTES:
-            raise ValueError("PLIO burst payload must contain whole 32-bit words")
-        words = len(data) // self.BURST_WORD_BYTES
-        self._burst_length(device_address, words)
-        self.dma_write(slot, device_address, data)
 
     def configure_notification(
         self,
@@ -238,7 +248,7 @@ class PLIOController:
         self._notify_enabled[slot][channel] = enabled
 
     def notify(self, slot: int, channel: int = 0, data: int = 0) -> None:
-        """Model a device PLIO NOTIFY write; source slot is bus-controller context."""
+        """Model one bus-local SPACE=CONTROLLER notification write."""
         self._check_slot(slot)
         self._check_channel(channel, self.NOTIFY_CHANNELS)
         if not 0 <= data <= 0xFFFFFFFF:

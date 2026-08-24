@@ -1,4 +1,4 @@
-# RAX / PLIO Notification and Interrupt Integration v0.2
+# RAX / PLIO Notification and Interrupt Integration v0.3
 
 **Status:** Draft integration note
 
@@ -8,18 +8,26 @@ The RAX/Cosmic microkernel is optimized for short kernel paths and deliberately 
 
 PLIO therefore separates:
 
-- **normal device notifications**, sent as PLIO bus messages and normally deferred during kernel execution,
-- **critical platform events**, such as machine-check/power-fail/watchdog conditions, which are outside ordinary PLIO device notification and may interrupt kernel execution.
+- **normal device notifications**, sent as PLIO bus-local controller messages and normally deferred during kernel execution,
+- **critical platform events**, such as machine-check/power-fail/watchdog conditions, which are outside ordinary PLIO notification and may interrupt kernel execution.
 
 There are no dedicated device-to-controller interrupt wires on PLIO.
 
 ## 2. Device signalling
 
-A normal device event is a PLIO write to the controller-owned notification aperture defined by `PLIO.md`.
+A normal device event is a single-beat PLIO controller-local transaction defined by `PLIO.md`:
+
+```text
+SPACE = CONTROLLER
+BLEN  = 00
+AD    = 0x0000_0000 + 4 * notification_channel
+```
+
+These are bus-local controller offsets, not RAX CPU physical addresses.
 
 The central controller derives source identity from the currently granted bus manager. The message therefore does not carry a trusted slot identity.
 
-For each physical slot, up to four notification channels are available. Privileged software configures each channel's enable/mask/class state.
+For each physical slot, four notification channels are available. Privileged software configures each channel's enable/mask/class state.
 
 ## 3. Controller state
 
@@ -40,9 +48,11 @@ The class is host policy. A device cannot elevate itself.
 
 ## 4. CPU-facing integration
 
-PLIO itself defines no device interrupt pins.
+PLIO itself defines no CPU interrupt vector and no device interrupt pins.
 
-The PLIO controller exposes an aggregate `normal_notification_pending` condition to the CPU/memory complex. In a TTL RAX implementation this may be an internal controller-to-CPU signal; in later implementations it may be integrated differently. It is **not part of the PLIO card/backplane interface**.
+The RAX host profile exposes an aggregate `normal_notification_pending` condition from the PLIO controller to the CPU/memory complex. In a TTL RAX implementation this may be an internal controller-to-CPU signal; later implementations may integrate it differently.
+
+This signal is **not part of the PLIO card/backplane interface**.
 
 A future SIA/RAX `BIP target` (Branch if Interrupt Pending) instruction may sample the aggregate condition directly. PLIO does not require that instruction.
 
@@ -66,7 +76,7 @@ Critical platform handling may occur in user or kernel mode. It must not execute
 
 ## 6. Claim and delivery
 
-When the kernel services normal device events it asks the controller to **claim** the next source.
+When the kernel services normal device events it asks the PLIO host controller to **claim** the next source through privileged host-side controller state defined by the RAX platform profile.
 
 Claiming MUST atomically:
 
@@ -76,9 +86,9 @@ Claiming MUST atomically:
 
 The kernel may then mask the source and signal the user-space driver's notification object.
 
-The driver drains QDX completions or services device state, then invokes the kernel interrupt/notification-complete operation. The kernel unmasks the source.
+The driver drains QDX completions or services device state, then invokes the kernel notification-complete operation. The kernel unmasks the source.
 
-If a new device message arrived while the source was masked, `pending` remains set and becomes deliverable immediately after unmask. This is the required no-lost-wakeup rule.
+If a new device message arrived while the source was masked, `pending` remains set and becomes deliverable immediately after unmask. This is the no-lost-wakeup rule.
 
 ## 7. Four classes
 
@@ -91,10 +101,16 @@ Suggested defaults:
 | 1 | normal | QDX-B storage completion |
 | 0 | background | terminal/printer/management |
 
-Class is configured by privileged platform software, not by the device message.
+Class is configured by privileged host software, not by the device message.
 
 ## 8. Capability relationship
 
-The kernel may represent a device's right to notify as a capability associated with a PLIO slot/channel. A user-space driver can receive a notification object without receiving authority to reprogram the controller's class, source identity, or CPU routing.
+The kernel may represent a device's right to receive/deliver notification as a capability associated with a PLIO slot/channel. A user-space driver can receive a notification object without receiving authority to reprogram controller class, source identity, or CPU routing.
 
-This mirrors DMA capability channels: the controller enforces a small hardware authority table while Cosmic exposes higher-level capability objects to software.
+This mirrors DMA capability channels: PLIO enforces a small hardware authority table while Cosmic exposes higher-level capability objects to software.
+
+## 9. RAX host address separation
+
+The RAX host-controller CSR reservation is defined by `PLIO-RAX.md` and is CPU-visible privileged state only.
+
+A PLIO card MUST NOT know or write the RAX `0xEFFF_F000` host-controller CSR address. Card signalling is entirely through the bus-local `SPACE=CONTROLLER` transaction above.
