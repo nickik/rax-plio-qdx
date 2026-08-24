@@ -18,7 +18,7 @@ The design target is a late-1970s implementation, but PLIO is deliberately struc
 - [`specs/QDX-GNETA.md`](specs/QDX-GNETA.md) — optional GNET acceleration.
 - [`specs/QDX-G.md`](specs/QDX-G.md) — asynchronous 2D graphics profile.
 - [`specs/QDX-DSP.md`](specs/QDX-DSP.md) — buffer-oriented DSP accelerator profile.
-- [`specs/RAX-INTERRUPTS.md`](specs/RAX-INTERRUPTS.md) — RAX/PLIO notification integration.
+- [`specs/RAX-INTERRUPTS.md`](specs/RAX-INTERRUPTS.md) — RAX/PLIO Notification and CPU interrupt integration.
 - [`docs/DESIGN-RATIONALE.md`](docs/DESIGN-RATIONALE.md) — architectural reasoning.
 - [`docs/SIMULATION.md`](docs/SIMULATION.md) — simulation strategy.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — open design decisions and implementation work.
@@ -35,11 +35,11 @@ The design target is a late-1970s implementation, but PLIO is deliberately struc
 - Per-slot request/grant for bus-manager ownership.
 - Baseline host-memory DMA bursts of 1, 4, 8, or 16 32-bit words.
 - A grant covers at most one bounded 64-byte burst, after which arbitration resumes.
-- Programmed MMIO and notifications remain single-beat.
+- Programmed MMIO and PLIO Notifications remain single-beat.
 - **No dedicated device interrupt lines.**
-- Normal completion uses a **bus-local message-signalled PLIO notification** to controller-local space.
+- Normal device signalling uses **PLIO Notification**, a bus-local controller transaction to `CONTROLLER` space.
 - The controller derives source identity from the active grant.
-- Four controller-assigned notification channels/classes; cards do not choose CPU vectors or priority.
+- Four controller-owned notification channels per slot; notification class/priority is host policy and cards do not choose CPU vectors or targets.
 - Sixteen protected DMA capability channels per bus-manager slot.
 - 32-bit device DMA handle: **4-bit channel + 4-bit generation + 24-bit offset**.
 - The controller checks generation, bounds, direction permission, and complete burst extent before DMA begins.
@@ -62,9 +62,9 @@ The RAX host profile retains the historical geographic mapping:
 0xF000_0000 .. 0xFFFF_FFFF
 ```
 
-but this is now a RAX platform decision, not something a PLIO card must understand.
+but this is a RAX platform decision, not something a PLIO card must understand.
 
-Likewise, device notifications no longer use a host physical address such as the older draft's `0xEFFF_F000`. A card issues:
+Likewise, a PLIO Notification does not use a host physical address such as the older draft's `0xEFFF_F000`. A card issues:
 
 ```text
 SPACE = CONTROLLER
@@ -72,6 +72,14 @@ AD    = 0x0, 0x4, 0x8, or 0xC
 ```
 
 and the host profile decides how pending/claim state is represented to its CPU/kernel.
+
+For RAX, the aggregate CPU-side condition is named:
+
+```text
+NOTIFY_PENDING_INTERRUPT
+```
+
+This is an internal host-controller-to-CPU interrupt condition, not a PLIO backplane signal.
 
 ## QDX byte order
 
@@ -108,6 +116,6 @@ The current Python model is functional rather than fully cycle-accurate. The nex
 
 PLIO deliberately standardizes **peripheral I/O**, not processors. A RAX, PDP-derived, PACE, 68000, 8086, or other computer may host PLIO through its own controller/profile, but CPUs and coherent memory are not ordinary PLIO cards.
 
-PLIO's notification mechanism is MSI-like in principle but much smaller than PCI MSI/MSI-X: fixed controller-local offsets, source inferred from grant, small pending state, no arbitrary target addresses or card-selected CPU vectors.
+The canonical name for the device-to-host asynchronous signalling mechanism is **PLIO Notification**. It is deliberately small: fixed controller-local offsets, source inferred from the active grant, small pending state, no arbitrary target addresses, and no card-selected CPU vectors.
 
 The design deliberately avoids copying later fabrics wholesale. Every mechanism must remain defensible for a 1978 implementation.
