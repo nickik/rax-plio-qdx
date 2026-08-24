@@ -16,7 +16,12 @@ The architecture is being designed as if it were started in the mid-1970s for a 
 - Normal device notification is **message-signalled**: a bus manager writes to a fixed controller-owned notification aperture.
 - The controller derives source identity from the active bus grant. Devices do not choose their trusted slot ID, CPU vector, class, or privilege.
 - Normal notifications have controller-assigned classes; critical platform events are outside normal PLIO device notification.
-- Bus managers perform DMA through controller-programmed **DMA capability channels**. A 32-bit device DMA address encodes a channel selector plus offset.
+- Bus managers perform DMA through controller-programmed **DMA capability channels**.
+- Each DMA-capable slot has **16 DMA capability channels**.
+- A 32-bit device-visible DMA address encodes **4-bit channel + 4-bit generation + 24-bit offset**.
+- The controller validates `(source slot, channel, generation, offset, length, operation)` against a privileged mapping to host physical memory.
+- Revocation invalidates the mapping; rebinding advances the generation so stale DMA references cannot silently gain access to a replacement memory object.
+- Generation wrap requires proof that stale requests cannot survive; quiescing/resetting the slot is always sufficient.
 - Do not add device page-table walking or a modern IOMMU protocol to the baseline.
 - Privileged software binds/revokes DMA channels. The architecture should remain compatible with a capability-based microkernel where a driver holds authority to a device, memory object, DMA binding, and notification endpoint.
 - QDX is above PLIO. PLIO defines transport/electrical/MMIO/DMA/notification behavior; QDX defines queues and device commands.
@@ -64,5 +69,6 @@ Python simulation code must use only the standard library unless strongly justif
 5. Add QDX-B scatter/gather execution across DMA capability channels.
 6. Add namespace IDENTIFY structures and tests.
 7. Add user/kernel notification-latency scenarios using the RAX normal/critical event model.
-8. Add functional QDX-G and QDX-DSP reference-model coverage after their command layouts are frozen.
-9. Only then create a small SystemVerilog PLIO controller and compare traces to the Python reference model.
+8. Add generation-aware DMA capability tests to the cycle model, including stale-reference rejection and wrap/reset behavior.
+9. Add functional QDX-G and QDX-DSP reference-model coverage after their command layouts are frozen.
+10. Only then create a small SystemVerilog PLIO controller and compare traces to the Python reference model.

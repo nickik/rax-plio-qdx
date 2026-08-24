@@ -17,6 +17,7 @@ class DMAChannel:
     length: int
     readable: bool = True
     writable: bool = True
+    generation: int = 0
 
     def translate(self, offset: int, length: int, *, write_to_host: bool) -> int | None:
         if offset < 0 or length < 0 or offset + length > self.length:
@@ -32,9 +33,19 @@ class PLIOController:
     """Aggregate functional model of the central PLIO controller."""
 
     SLOT_COUNT = 8
-    DMA_CHANNELS = 4
-    DMA_CHANNEL_SHIFT = 30
-    DMA_OFFSET_MASK = (1 << DMA_CHANNEL_SHIFT) - 1
+
+    DMA_CHANNEL_BITS = 4
+    DMA_GENERATION_BITS = 4
+    DMA_OFFSET_BITS = 24
+    DMA_CHANNELS = 1 << DMA_CHANNEL_BITS
+    DMA_GENERATIONS = 1 << DMA_GENERATION_BITS
+    DMA_CHANNEL_SHIFT = DMA_GENERATION_BITS + DMA_OFFSET_BITS
+    DMA_GENERATION_SHIFT = DMA_OFFSET_BITS
+    DMA_CHANNEL_MASK = DMA_CHANNELS - 1
+    DMA_GENERATION_MASK = DMA_GENERATIONS - 1
+    DMA_OFFSET_MASK = (1 << DMA_OFFSET_BITS) - 1
+    DMA_MAX_LENGTH = DMA_OFFSET_MASK + 1
+
     NOTIFY_CHANNELS = 4
     NOTIFY_CLASSES = 4
 
@@ -42,6 +53,12 @@ class PLIOController:
         self.memory = memory
         self._dma_channels: list[list[DMAChannel | None]] = [
             [None] * self.DMA_CHANNELS for _ in range(self.SLOT_COUNT)
+        ]
+        self._dma_generation = [
+            [0] * self.DMA_CHANNELS for _ in range(self.SLOT_COUNT)
+        ]
+        self._dma_ever_bound = [
+            [False] * self.DMA_CHANNELS for _ in range(self.SLOT_COUNT)
         ]
         self._notify_pending = [
             [False] * self.NOTIFY_CHANNELS for _ in range(self.SLOT_COUNT)
@@ -68,38 +85,89 @@ class PLIOController:
             raise ValueError(f"invalid channel {channel}")
 
     @classmethod
-    def dma_address(cls, channel: int, offset: int) -> int:
+    def dma_address(cls, channel: int, generation: int, offset: int) -> int:
         if not 0 <= channel < cls.DMA_CHANNELS:
-            raise ValueError("DMA channel must be 0..3")
+            raise ValueError("DMA channel must be 0..15")
+        if not 0 <= generation < cls.DMA_GENERATIONS:
+            raise ValueError("DMA generation must be 0..15")
         if not 0 <= offset <= cls.DMA_OFFSET_MASK:
-            raise ValueError("DMA offset outside 30-bit range")
-        return (channel << cls.DMA_CHANNEL_SHIFT) | offset
+            raise ValueError("DMA offset outside 24-bit range")
+        return (
+            (channel << cls.DMA_CHANNEL_SHIFT)
+            | (generation << cls.DMA_GENERATION_SHIFT)
+            | offset
+        )
 
-    def bind_dma_channel(self, slot: int, channel: int, mapping: DMAChannel) -> None:
+    @classmethod
+    def decode_dma_address(cls, device_address: int) -> tuple[int, int, int]:
+        if not 0 <= device_address <= 0xFFFFFFFF:
+            raise ValueError("device DMA address outside 32-bit range")
+        channel = (device_address >> cls.DMA_CHANNEL_SHIFT) & cls.DMA_CHANNEL_MASK
+        generation = (
+            device_address >> cls.DMA_GENERATION_SHIFT
+        ) & cls.DMA_GENERATION_MASK
+        offset = device_address & cls.DMA_OFFSET_MASK
+        return channel, generation, offset
+
+    def bind_dma_channel(self, slot: int, channel: int, mapping: DMAChannel) -> int:
+        """Bind an unbound channel and return the generation for device DMA handles."""
         self._check_slot(slot)
         self._check_channel(channel, self.DMA_CHANNELS)
-        self._dma_channels[slot][channel] = mapping
+        if self._dma_channels[slot][channel] is not None:
+            raise RuntimeError("DMA channel must be revoked before it is rebound")
+        if mapping.length <= 0 or mapping.length > self.DMA_MAX_LENGTH:
+            raise ValueError("DMA capability length must be 1..16 MiB")
+
+        if self._dma_ever_bound[slot][channel]:
+            current = self._dma_generation[slot][channel]
+            if current == self.DMA_GENERATION_MASK:
+                raise RuntimeError(
+                    "DMA generation wrap requires slot quiesce/reset before rebinding"
+                )
+            generation = current + 1
+        else:
+            generation = 0
+
+        bound = DMAChannel(
+            mapping.host_base,
+            mapping.length,
+            mapping.readable,
+            mapping.writable,
+            generation,
+        )
+        self._dma_channels[slot][channel] = bound
+        self._dma_generation[slot][channel] = generation
+        self._dma_ever_bound[slot][channel] = True
+        return generation
 
     def revoke_dma_channel(self, slot: int, channel: int) -> None:
         self._check_slot(slot)
         self._check_channel(channel, self.DMA_CHANNELS)
         self._dma_channels[slot][channel] = None
 
+    def reset_dma_channels(self, slot: int) -> None:
+        """Model a slot reset that guarantees no pre-reset DMA request can survive."""
+        self._check_slot(slot)
+        self._dma_channels[slot] = [None] * self.DMA_CHANNELS
+        self._dma_generation[slot] = [0] * self.DMA_CHANNELS
+        self._dma_ever_bound[slot] = [False] * self.DMA_CHANNELS
+
     def _translate(self, slot: int, device_address: int, length: int, *, write_to_host: bool) -> int:
         self._check_slot(slot)
         if not 0 <= device_address <= 0xFFFFFFFF:
             raise DMAFault("device DMA address outside 32-bit range")
-        channel = (device_address >> self.DMA_CHANNEL_SHIFT) & 0x3
-        offset = device_address & self.DMA_OFFSET_MASK
+
+        channel, generation, offset = self.decode_dma_address(device_address)
         mapping = self._dma_channels[slot][channel]
-        if mapping is not None:
+        if mapping is not None and generation == mapping.generation:
             translated = mapping.translate(offset, length, write_to_host=write_to_host)
             if translated is not None:
                 return translated
+
         direction = "write" if write_to_host else "read"
         raise DMAFault(
             f"slot {slot} DMA {direction} not permitted: channel={channel} "
-            f"offset=0x{offset:x} length={length}"
+            f"generation={generation} offset=0x{offset:x} length={length}"
         )
 
     def dma_read(self, slot: int, device_address: int, length: int) -> bytes:

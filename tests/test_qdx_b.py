@@ -9,21 +9,46 @@ class QDXBTests(unittest.TestCase):
         self.memory = HostMemory(1 << 16)
         self.plio = PLIOController(self.memory)
         self.slot = 0
-        self.plio.bind_dma_channel(self.slot, 0, DMAChannel(0, self.memory.size))
+        self.dma_generation = self.plio.bind_dma_channel(
+            self.slot, 0, DMAChannel(0, self.memory.size)
+        )
         self.plio.configure_notification(self.slot, 0, notify_class=1)
         self.device = BlockController(self.plio, self.slot)
         self.device.add_namespace(1, Namespace(32))
 
+    def dma_addr(self, offset: int, *, generation: int | None = None) -> int:
+        if generation is None:
+            generation = self.dma_generation
+        return self.plio.dma_address(0, generation, offset)
+
     def test_write_then_read(self) -> None:
         payload = bytes((i & 0xFF for i in range(512)))
         self.memory.write(0x1000, payload)
-        self.device.submit(BlockCommand(BlockOpcode.WRITE, 10, 1, lba=2, block_count=1, buffer_address=0x1000))
+        self.device.submit(
+            BlockCommand(
+                BlockOpcode.WRITE,
+                10,
+                1,
+                lba=2,
+                block_count=1,
+                buffer_address=self.dma_addr(0x1000),
+            )
+        )
         self.assertTrue(self.device.process_one())
         self.assertEqual(self.plio.claim_notification(), (self.slot, 0))
         self.assertEqual(self.device.reap().status, BlockStatus.SUCCESS)
 
         self.memory.write(0x2000, bytes(512))
-        self.device.submit(BlockCommand(BlockOpcode.READ, 11, 1, lba=2, block_count=1, buffer_address=0x2000))
+        self.device.submit(
+            BlockCommand(
+                BlockOpcode.READ,
+                11,
+                1,
+                lba=2,
+                block_count=1,
+                buffer_address=self.dma_addr(0x2000),
+            )
+        )
         self.device.process_one()
         self.assertEqual(self.plio.claim_notification(), (self.slot, 0))
         completion = self.device.reap()
@@ -42,13 +67,34 @@ class QDXBTests(unittest.TestCase):
         self.device.reap()
 
     def test_invalid_namespace(self) -> None:
-        self.device.submit(BlockCommand(BlockOpcode.READ, 12, 99, lba=0, block_count=1, buffer_address=0x1000))
+        self.device.submit(
+            BlockCommand(
+                BlockOpcode.READ,
+                12,
+                99,
+                lba=0,
+                block_count=1,
+                buffer_address=self.dma_addr(0x1000),
+            )
+        )
         self.device.process_one()
         self.assertEqual(self.device.reap().status, BlockStatus.INVALID_NAMESPACE)
 
     def test_dma_fault(self) -> None:
-        self.plio.bind_dma_channel(self.slot, 0, DMAChannel(0, 128))
-        self.device.submit(BlockCommand(BlockOpcode.READ, 13, 1, lba=0, block_count=1, buffer_address=0))
+        self.plio.revoke_dma_channel(self.slot, 0)
+        small_generation = self.plio.bind_dma_channel(
+            self.slot, 0, DMAChannel(0, 128)
+        )
+        self.device.submit(
+            BlockCommand(
+                BlockOpcode.READ,
+                13,
+                1,
+                lba=0,
+                block_count=1,
+                buffer_address=self.dma_addr(0, generation=small_generation),
+            )
+        )
         self.device.process_one()
         self.assertEqual(self.device.reap().status, BlockStatus.DMA_FAULT)
 

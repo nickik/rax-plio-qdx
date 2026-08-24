@@ -1,4 +1,4 @@
-# QDX v0.2 — Queued Device Express Core
+# QDX v0.3 — Queued Device Express Core
 
 **Status:** Draft
 
@@ -55,7 +55,9 @@ QDX registers begin at PLIO slot offset `0x1000`.
 | `0x1034` | 16 | `CQ_TAIL` | device progress, read-only |
 | `0x1038` | 32 | `QDX_ERROR` | last queue/DMA protocol fault |
 
-Queue bases and all buffer addresses are **device-visible PLIO DMA addresses**. On the baseline bus, bits 31:30 select one of the slot's four protected DMA capability channels and bits 29:0 are offsets within that capability.
+Queue bases and all buffer addresses are **device-visible PLIO DMA capability addresses**. On PLIO v0.3, bits 31:28 select one of sixteen protected DMA capability channels, bits 27:24 carry that channel's generation, and bits 23:0 are the byte offset within the bound memory region.
+
+A QDX descriptor that retains an old DMA address after a channel is revoked cannot acquire authority to a later binding unless both the channel and generation match. PLIO defines the generation lifecycle and safe-wrap rule.
 
 ## 5. Queue size
 
@@ -124,7 +126,7 @@ If CQ space is exhausted, the device MUST stop publishing further completions an
 
 ## 11. DMA faults
 
-If a descriptor or buffer references an address rejected by the PLIO DMA capability-channel mechanism, the command completes with a DMA fault if possible.
+If a descriptor or buffer references an address rejected by the PLIO DMA capability-channel mechanism, including a generation mismatch, the command completes with a DMA fault if possible.
 
 If the CQ capability itself is inaccessible and the device cannot safely publish a completion, it enters `FAULT` and sends a PLIO notification if its notification path remains usable.
 

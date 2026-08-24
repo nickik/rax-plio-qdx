@@ -1,4 +1,4 @@
-# PLIO v0.2 — Peripheral Lighting I/O
+# PLIO v0.3 — Peripheral Lighting I/O
 
 **Status:** Draft
 
@@ -43,6 +43,7 @@ PLIO does **not** define:
 - **slot** — one logical PLIO endpoint number. A slot may correspond to a plug-in card or an onboard controller.
 - **host** — the RAX CPU/memory complex behind the PLIO controller.
 - **DMA capability channel** — a controller-owned mapping granting one slot bounded read/write access to one host physical-memory region.
+- **DMA generation** — a small controller-managed version number attached to a DMA capability channel and carried in each device-visible DMA address to reject stale references after revocation/rebinding.
 - **notification channel** — one controller-owned pending source associated with a slot. A device signals it by issuing a PLIO notification write.
 
 ## 4. Topology
@@ -202,56 +203,79 @@ The controller always knows the physical source slot of a manager transaction fr
 
 PLIO devices MUST NOT receive unrestricted host physical addresses.
 
-Each DMA-capable slot has **four controller-owned DMA capability channels**. Privileged system software binds a host physical-memory region and permissions to a channel. The device then addresses that memory using a channel number plus an offset.
+Each DMA-capable slot has **sixteen controller-owned DMA capability channels**. Privileged system software binds a host physical-memory region and permissions to a channel. The device then addresses that memory using a channel number, generation number, and byte offset.
 
 This is the hardware enforcement mechanism used by the OS capability model for device memory access.
 
 ### 11.2 Device-visible DMA address
 
-A 32-bit device DMA address is encoded as:
+A 32-bit device-visible DMA address is encoded as:
 
 ```text
-31          30 29                              0
-+--------------+--------------------------------+
-| channel 0..3 |       byte offset (30 bits)    |
-+--------------+--------------------------------+
+31          28 27          24 23                         0
++--------------+--------------+---------------------------+
+| channel 0..15| generation   | byte offset (24 bits)    |
++--------------+--------------+---------------------------+
 ```
 
 Thus:
 
 ```text
-channel = address[31:30]
-offset  = address[29:0]
+channel    = address[31:28]
+generation = address[27:24]
+offset     = address[23:0]
 ```
+
+Each capability can therefore describe up to **16 MiB** of host memory. Larger transfers use multiple capability mappings and/or scatter/gather descriptors.
 
 Each channel entry contains:
 
 ```text
 host_physical_base
-length
+length                    # 1 .. 16 MiB
 permissions: device-read / device-write
+generation: 0 .. 15
 valid
 ```
 
-For a DMA transaction the controller selects the entry using `(source_slot, channel)`, verifies:
+For a DMA transaction the controller selects the entry using `(source_slot, channel)` and verifies:
 
 ```text
+valid == 1
+request_generation == entry_generation
 offset + transfer_length <= length
 required permission is granted
-valid == 1
 ```
 
-and translates:
+It then translates:
 
 ```text
 host_address = host_physical_base + offset
 ```
 
-A failed check terminates the transaction with a DMA protection error.
+A failed generation, bounds, validity, or permission check terminates the transaction with a DMA protection error.
+
+The generation field is not a secret and is not an authentication token. Its purpose is temporal safety: a stale `(channel, generation, offset)` reference MUST NOT silently become valid for a newly bound memory object after revocation.
 
 Only privileged platform/kernel software may bind, modify, or revoke a hardware DMA capability channel.
 
-### 11.3 OS capability relationship
+### 11.3 Binding, revocation, and generation lifecycle
+
+A channel follows this lifecycle:
+
+```text
+UNBOUND -> BOUND(generation N) -> REVOKED -> BOUND(generation N+1)
+```
+
+A new binding MUST use a generation different from the immediately preceding binding of the same `(slot, channel)`. Increment modulo 16 is the baseline policy.
+
+Revocation MUST clear `valid` before the backing physical memory may be reassigned to a different protection domain. Any DMA request carrying the revoked generation then fails even if the channel is later rebound with another generation.
+
+Because the generation field is finite, generation values eventually wrap. Before privileged software reuses a generation value for a channel, it MUST ensure that no stale device request or descriptor carrying that old generation can still be issued. Quiescing and resetting the slot is always sufficient. A platform MAY prove quiescence by stronger device-specific means, but it MUST NOT allow unsafe generation reuse.
+
+The controller SHOULD expose the generation chosen for a new binding to privileged software so the driver can construct device-visible DMA addresses. Devices do not program the capability table.
+
+### 11.4 OS capability relationship
 
 The hardware channel table is intentionally simple. Cosmic or another protected OS may expose higher-level capability objects such as:
 
@@ -262,15 +286,17 @@ DMA-channel capability
 notification-channel capability
 ```
 
-A driver possessing appropriate authority may ask the kernel to bind a memory region to one of its device's channels. The card receives only the resulting channel/offset address. Revocation invalidates the channel entry.
+A driver possessing appropriate authority may ask the kernel to bind a memory region to one of its device's channels. The driver receives the channel/generation pair and constructs device-visible addresses as `(channel, generation, offset)`. The card never receives the host physical base.
+
+Revocation invalidates the channel entry. Rebinding uses a new generation so stale queued descriptors cannot acquire authority to the replacement memory object merely because the numeric channel was reused.
 
 PLIO does not require tagged capability words in the device and does not require the device to understand process virtual memory.
 
-### 11.4 Scatter/gather
+### 11.5 Scatter/gather
 
-QDX scatter/gather descriptors MAY reference several device-visible channel/offset addresses. PLIO itself still performs only one protected translation per bus transaction.
+QDX scatter/gather descriptors MAY reference several device-visible `(channel, generation, offset)` addresses. PLIO itself still performs only one protected translation per bus transaction.
 
-### 11.5 Peer-to-peer
+### 11.6 Peer-to-peer
 
 Manager accesses to another PLIO device are not supported by the baseline. DMA targets are host memory only.
 
@@ -353,6 +379,8 @@ On `RESET*` assertion:
 
 The PLIO controller MUST invalidate all DMA capability channels and clear/mask all device notification state before releasing reset, unless explicitly configured by trusted platform firmware.
 
+After a device reset has guaranteed that no pre-reset DMA request can survive, privileged software MAY restart generation allocation for that slot.
+
 ## 15. Memory ordering
 
 The PLIO controller must preserve ordering for accesses from one manager unless the standard explicitly permits otherwise.
@@ -379,7 +407,7 @@ A notification MUST NOT become observable by the CPU before preceding completion
 
 A PLIO worker MUST support reset, configuration area, geographic slot selection, 8/16/32-bit MMIO accesses, and `ACK*`/`ERR*` behavior.
 
-A PLIO bus manager additionally MUST support request/grant arbitration and protected DMA-channel faults.
+A PLIO bus manager additionally MUST support request/grant arbitration and protected DMA-channel faults, including generation validation.
 
 A PLIO device advertising notification capability MUST be capable of issuing the notification write transaction.
 

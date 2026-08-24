@@ -32,8 +32,10 @@ The design target is a late-1970s RAX system. The project deliberately favors a 
 - Normal device completion uses **message-signalled PLIO notifications**: a bus-manager write to a controller-owned notification aperture.
 - Four controller-assigned normal notification classes; the device cannot choose privilege or priority.
 - Separate critical platform handling outside ordinary PLIO device notification.
-- Four protected **DMA capability channels** per bus-manager slot.
-- Device DMA addresses encode a channel number plus offset; the controller maps that capability to host physical memory and permissions.
+- Sixteen protected **DMA capability channels** per bus-manager slot.
+- A 32-bit device DMA address encodes **4-bit channel + 4-bit generation + 24-bit offset**.
+- The controller maps `(source slot, channel)` to host physical memory and checks generation, bounds, and device-read/device-write permissions.
+- Revocation invalidates a channel; rebinding advances its generation so stale queued DMA references cannot silently acquire authority to replacement memory.
 - QDX uses one submission queue and one completion queue in the baseline.
 - Base profiles define the minimum device abstraction; `A` profiles are optional acceleration only.
 - QDX-B supports multiple block namespaces.
@@ -42,9 +44,11 @@ The design target is a late-1970s RAX system. The project deliberately favors a 
 
 ## Capability rule
 
-PLIO devices never receive unrestricted host physical-memory access. Privileged system software binds a host memory region and permissions to one of the device's DMA capability channels. The card addresses only `(channel, offset)`; the PLIO controller performs bounds/permission checks and translation.
+PLIO devices never receive unrestricted host physical-memory access. Privileged system software binds a host memory region and permissions to one of the device's DMA capability channels. The card addresses only `(channel, generation, offset)`; the PLIO controller performs generation, bounds, permission, and physical-address translation checks.
 
 The operating system may represent authority to create, bind, revoke, or use those channels as capability objects. The hardware contract is the small protected per-slot channel table, not device-side page-table walking.
+
+Generation values are for stale-reference rejection, not secrecy. Before a finite generation value is safely reused, software must guarantee that old requests carrying that value cannot survive; resetting/quiescing the slot is sufficient.
 
 ## Profile rule
 
