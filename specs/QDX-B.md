@@ -1,4 +1,4 @@
-# QDX-B v0.3 — Block Storage Profile
+# QDX-B v0.4 — Block Storage Profile
 
 **Status:** Draft
 
@@ -14,7 +14,7 @@ All multibyte QDX-B control fields use the canonical **little-endian** QDX byte 
 
 ## 2. Required capabilities
 
-A QDX-B v0.3 controller MUST support:
+A QDX-B v0.4 controller MUST support:
 
 - one QDX submission/completion queue pair,
 - at least one namespace,
@@ -26,6 +26,8 @@ A QDX-B v0.3 controller MUST support:
 - completion status reporting,
 - direct contiguous buffers,
 - scatter/gather lists of up to 16 segments.
+
+QDX-BA is an optional acceleration extension. Base QDX-B correctness MUST NOT depend on QDX-BA.
 
 ## 3. Command descriptor
 
@@ -46,7 +48,7 @@ Every QDX-B submission entry is 32 bytes.
 | `0x18` | 4 | `command_arg` |
 | `0x1C` | 4 | reserved |
 
-Reserved fields MUST be written as zero and ignored by a v0.3 device.
+Reserved fields MUST be written as zero and ignored by a v0.4 device.
 
 A naturally aligned 32-byte command descriptor fits one PLIO 8-longword DMA burst when its DMA capability mapping also permits the complete burst.
 
@@ -62,6 +64,8 @@ A naturally aligned 32-byte command descriptor fits one PLIO 8-longword DMA burs
 | `0x12` | `FLUSH` | make previously completed writes durable as supported by media |
 | `0x13` | `GET_HEALTH` | return current namespace/controller health data |
 
+Opcodes `0x20..0x2F` are reserved for QDX-BA when that extension is advertised.
+
 Other opcodes are reserved.
 
 ## 5. Namespace identifiers
@@ -76,7 +80,7 @@ Namespace IDs need not be contiguous, but simple controllers SHOULD assign them 
 
 ## 6. Block addressing
 
-QDX-B v0.3 uses a 32-bit logical block address.
+QDX-B v0.4 uses a 32-bit logical block address.
 
 The namespace identifies its logical block size.
 
@@ -151,15 +155,68 @@ A 16-byte completion fits one PLIO 4-longword DMA burst when alignment/capabilit
 | `0x0009` | `QUEUE_ERROR` |
 | `0x000A` | `INTERNAL_ERROR` |
 
-## 10. Identify controller data
+Status range `0x0100..0x01FF` is reserved for QDX-BA extension completions.
 
-`IDENTIFY_CONTROLLER` writes a 64-byte little-endian QDX control structure containing QDX-B version, namespace count, SG limit, capability bits, maximum transfer size, model identifier, serial/controller identifier, and reserved space.
+## 10. IDENTIFY_CONTROLLER data
 
-Character/string byte arrays inside the structure are opaque byte sequences and are not byte-swapped.
+`IDENTIFY_CONTROLLER` writes exactly 64 bytes to the normal QDX-B data buffer.
 
-## 11. Identify namespace data
+Layout:
 
-`IDENTIFY_NAMESPACE` writes a 64-byte little-endian control structure containing namespace ID, flags, block size, total logical blocks, recommended alignment, model/media identifier, serial identifier, and reserved space.
+| Offset | Size | Field | Meaning |
+|---:|---:|---|---|
+| `0x00` | 2 | `profile_revision` | QDX-B revision, `0x0004` for this profile |
+| `0x02` | 2 | `namespace_count` | currently exposed namespaces |
+| `0x04` | 2 | `max_sg_entries` | MUST be at least 16 for v0.4 |
+| `0x06` | 2 | `controller_flags` | controller behavior flags |
+| `0x08` | 4 | `max_transfer_blocks` | maximum block_count accepted by one READ/WRITE |
+| `0x0C` | 4 | `capability_bits` | optional profile/features |
+| `0x10` | 16 | `model_id` | opaque ASCII-compatible byte field |
+| `0x20` | 16 | `serial_id` | opaque controller identifier byte field |
+| `0x30` | 16 | reserved | zero |
+
+All integer fields are little-endian. `model_id` and `serial_id` are byte arrays and are not byte-swapped.
+
+### 10.1 controller_flags
+
+| Bit | Name | Meaning |
+|---:|---|---|
+| 0 | `VOLATILE_WRITE_CACHE` | one or more namespaces may report WRITE completion before durable media; FLUSH is required for durability |
+| 1..15 | reserved | zero |
+
+### 10.2 capability_bits
+
+| Bit | Name | Meaning |
+|---:|---|---|
+| 0 | `QDX_B_CAP_QDX_BA` | controller implements the complete advertised QDX-BA profile |
+| 1..31 | reserved | zero |
+
+If `QDX_B_CAP_QDX_BA` is set, software may use `QDX-BA.md` after checking its supported revision through the normal QDX/PLIO profile revision mechanism.
+
+## 11. IDENTIFY_NAMESPACE data
+
+`IDENTIFY_NAMESPACE` writes exactly 64 bytes.
+
+Layout:
+
+| Offset | Size | Field | Meaning |
+|---:|---:|---|---|
+| `0x00` | 2 | `namespace_id` | namespace being described |
+| `0x02` | 2 | `flags` | namespace flags |
+| `0x04` | 4 | `block_size` | logical block size in bytes |
+| `0x08` | 4 | `total_blocks` | total addressable logical blocks |
+| `0x0C` | 4 | `recommended_alignment` | preferred host I/O alignment in bytes, zero if none |
+| `0x10` | 16 | `model_media_id` | opaque media/model byte field |
+| `0x20` | 16 | `serial_id` | opaque namespace/media identifier |
+| `0x30` | 16 | reserved | zero |
+
+Namespace flags:
+
+| Bit | Name | Meaning |
+|---:|---|---|
+| 0 | `READ_ONLY` | namespace rejects WRITE |
+| 1 | `VOLATILE_WRITE_CACHE` | WRITE completion may precede durable media; FLUSH establishes durability |
+| 2..15 | reserved | zero |
 
 ## 12. READ
 
@@ -170,11 +227,11 @@ For READ:
 3. DMA-writes data into host buffers,
 4. writes the CQ completion,
 5. advances `CQ_TAIL`,
-6. sends a PLIO normal notification when QDX notification rules require one.
+6. sends a PLIO Notification when QDX notification rules require one.
 
 The completion MUST NOT become visible before the DMA data it reports as complete is host-visible.
 
-A PLIO notification MUST NOT become observable before the completion it announces is host-visible.
+A PLIO Notification MUST NOT become observable before the completion it announces is host-visible.
 
 ## 13. WRITE
 
@@ -185,7 +242,11 @@ For WRITE:
 3. writes data to media/controller buffering,
 4. completes according to the namespace write-completion policy.
 
-A `SUCCESS` completion for WRITE means data has reached the persistence level advertised by the controller. If volatile write buffering exists, `FLUSH` makes the durability boundary explicit.
+A `SUCCESS` completion for WRITE means data has reached the persistence level advertised by the namespace/controller.
+
+If `VOLATILE_WRITE_CACHE` is clear for that namespace, successful WRITE completion is durable with respect to the storage device contract.
+
+If `VOLATILE_WRITE_CACHE` is set, the host uses `FLUSH` when it needs a durability boundary.
 
 ## 14. FLUSH
 
@@ -193,30 +254,38 @@ A `SUCCESS` completion for WRITE means data has reached the persistence level ad
 
 A controller with no volatile write cache may complete FLUSH immediately after ordering requirements are satisfied.
 
-## 15. Notification behavior
+A successful FLUSH is a durability barrier for writes to that namespace that completed before the FLUSH was submitted after their completions were observed by software.
 
-QDX-B uses the common QDX message-signalled notification mechanism transported by PLIO.
+For software transactions spanning several namespaces, software must FLUSH each namespace whose durability is required.
+
+## 15. PLIO Notification behavior
+
+QDX-B uses the common QDX completion-notification mechanism. On PLIO the mechanism is called **PLIO Notification**.
 
 There is **no dedicated PLIO IRQ line** for a QDX-B controller.
 
-A QDX-B controller that generates asynchronous notifications MUST be a PLIO bus manager. To notify the host it requests ownership, receives its grant, and issues one bus-local `SPACE=CONTROLLER` write to the PLIO notification offset for its channel.
+A QDX-B controller that generates asynchronous notifications MUST be a PLIO bus manager. To notify the host it requests ownership, receives its grant, and issues one bus-local `SPACE=CONTROLLER` PLIO Notification to the configured notification channel.
 
-The PLIO controller derives the trusted source slot from the active grant. The QDX-B device does not choose host CPU vector, privilege, interrupt class, or CPU routing.
+The PLIO controller derives the trusted source slot from the active grant. The QDX-B device does not choose host CPU vector, privilege, notification class, or CPU routing.
 
-QDX-B normally uses notification channel 0 unless a later profile assigns another channel.
+QDX-B normally uses PLIO notification channel 0 unless a later profile assigns another channel.
 
-The normal QDX rule is to notify when the CQ transitions from empty to non-empty. Additional completions MAY accumulate while the CQ remains non-empty without additional notification transactions. PLIO pending state may coalesce repeated notifications.
+The normal QDX rule is to send a PLIO Notification when the CQ transitions from empty to non-empty. Additional completions MAY accumulate while the CQ remains non-empty without additional notification transactions. PLIO pending state may coalesce repeated Notifications.
 
 The host drains CQ entries. When the CQ becomes empty, the device is rearmed to notify on the next empty-to-non-empty transition. Polling remains legal.
 
 ## 16. Ordering
 
-Commands may complete out of order unless semantics impose a dependency or the host uses FLUSH to establish a durability boundary.
+Commands may complete out of order unless semantics impose a dependency or the host uses completion observation plus FLUSH to establish a durability boundary.
 
 A controller MUST preserve data integrity for overlapping commands even if it reorders them internally.
+
+Higher-level crash-consistent software MUST NOT infer atomicity across several independent WRITE commands merely because they were submitted together or completed close together.
 
 ## 17. Reset and media state
 
 QDX reset discards outstanding commands but does not imply destructive media reset.
 
 After reset the host must rediscover namespaces before assuming they are ready.
+
+Reset does not turn partially completed media writes into transactions. Higher software layers remain responsible for recovery from interruption between block operations.
