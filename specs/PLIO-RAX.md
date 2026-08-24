@@ -1,4 +1,4 @@
-# PLIO-RAX v0.1 — RAX Host Profile
+# PLIO-RAX v0.2 — RAX Host Profile
 
 **Status:** Draft
 
@@ -60,7 +60,7 @@ The exact CSR layout for DMA-channel bind/revoke state, notification claim/mask 
 
 Earlier PLIO drafts treated `0xEFFF_F000 .. 0xEFFF_F00F` as an address written directly by devices to signal notifications. That model is obsolete.
 
-In PLIO v0.5 a device sends a notification using the bus-local controller transaction:
+In PLIO v0.5 a device sends a **PLIO Notification** using the bus-local controller transaction:
 
 ```text
 SPACE = CONTROLLER
@@ -89,11 +89,19 @@ The user-space driver receives only the resulting `(channel, generation)` handle
 
 Revocation and active-burst interlock follow PLIO v0.5.
 
-## 5. Notification integration
+## 5. PLIO Notification integration
 
-PLIO normal device notifications remain bus-local messages. The RAX PLIO controller records pending state indexed by `(slot, channel)`.
+Normal device signalling uses **PLIO Notification** transactions. The RAX PLIO controller records pending state indexed by `(slot, channel)`.
 
-The controller exposes an aggregate internal `normal_notification_pending` condition to the RAX CPU/memory complex. This internal platform signal is not a PLIO backplane pin.
+The RAX controller exposes one aggregate CPU-side interrupt condition named:
+
+```text
+NOTIFY_PENDING_INTERRUPT
+```
+
+`NOTIFY_PENDING_INTERRUPT` is asserted whenever at least one enabled, unmasked normal PLIO Notification is pending and eligible for delivery.
+
+This is an internal RAX platform condition between the PLIO controller and CPU/memory complex. It is **not** a PLIO backplane pin and is not generated directly by any card.
 
 The kernel claims the next source through privileged controller state and receives `(slot, channel)` atomically while clearing that pending source.
 
