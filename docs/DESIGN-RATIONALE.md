@@ -53,7 +53,7 @@ A device-visible DMA handle can use all 32 bits without colliding with a magic n
 
 The hardware cost is two control pins and a small decode.
 
-## Why bus-local message-signalled notification is preferable
+## Why PLIO Notification is preferable
 
 The earliest draft used one level-triggered IRQ wire per slot. That was rejected.
 
@@ -67,11 +67,15 @@ device requests bus
     -> controller records pending(slot, channel)
 ```
 
+This mechanism is named **PLIO Notification**.
+
 There is no host physical notification address in the card protocol. The source slot comes from the active grant, so the card cannot spoof another slot. The card also cannot choose CPU vector, privilege, priority, or routing.
 
-This is MSI-like in principle but intentionally much smaller than later PCI MSI/MSI-X.
+PLIO Notification is intentionally smaller than a general interrupt-message facility: it has four fixed controller-local channel offsets, trusted source identity from the active grant, and a small controller-owned pending table.
 
-QDX puts real completion data in the CQ. The notification merely says work is available, so repeated notifications can safely coalesce.
+QDX puts real completion data in the CQ. A PLIO Notification merely says work is available, so repeated notifications can safely coalesce.
+
+On RAX, aggregate eligible PLIO Notification state reaches the CPU as the host-internal `NOTIFY_PENDING_INTERRUPT` condition. That CPU-side interrupt condition is not part of the PLIO backplane.
 
 ## Why bounded burst DMA is in the baseline
 
@@ -87,9 +91,9 @@ Two `BLEN` bits select the size. One grant covers one bounded transaction and ar
 
 At PLIO-5 the raw 32-bit data phase is 20 MB/s. An idealized 16-longword sequence with one arbitration opportunity and one address phase approaches 17.8 MB/s payload before memory waits/contention.
 
-The 64-byte maximum balances bulk efficiency with deterministic fairness and bounds how long a notification can sit behind one already-granted transfer.
+The 64-byte maximum balances bulk efficiency with deterministic fairness and bounds how long a PLIO Notification can sit behind one already-granted transfer.
 
-Burst is restricted to protected host-memory DMA. Simple worker MMIO and controller notifications remain single-beat, so inexpensive cards do not need worker-side block-transfer machinery.
+Burst is restricted to protected host-memory DMA. Simple worker MMIO and PLIO Notifications remain single-beat, so inexpensive cards do not need worker-side block-transfer machinery.
 
 ## Why capability-scoped DMA channels
 
@@ -152,7 +156,7 @@ Using standard mechanics allows independent chassis, backplane, industrial, tele
 
 ## Why QDX is separate
 
-PLIO defines electrical/logical transport, worker MMIO, protected DMA, arbitration, and notification.
+PLIO defines electrical/logical transport, worker MMIO, protected DMA, arbitration, and PLIO Notification.
 
 QDX defines queues, commands, completions, tags, and device-class profiles.
 
@@ -162,9 +166,9 @@ QDX also benefits directly from PLIO burst sizing: a 32-byte QDX-B submission de
 
 ## Why not copy VME/VAXBI wholesale
 
-VME and VAXBI contain useful lessons about multi-master arbitration, block transfer, diagnostics, identification, and merchant ecosystems, but both address broader system-bus roles than PLIO needs.
+VME and VAXBI contain useful lessons about multi-manager arbitration, block transfer, diagnostics, identification, and merchant ecosystems, but both address broader system-bus roles than PLIO needs.
 
-PLIO intentionally avoids processor/memory-node semantics and distributed coherence concerns. That lets the host controller remain the trusted boundary for DMA capability enforcement and message source identity.
+PLIO intentionally avoids processor/memory-node semantics and distributed coherence concerns. That lets the host controller remain the trusted boundary for DMA capability enforcement and PLIO Notification source identity.
 
 ## Source material used as design references
 
