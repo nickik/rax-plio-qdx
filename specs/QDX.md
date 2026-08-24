@@ -1,4 +1,4 @@
-# QDX v0.4 — Queued Device Express Core
+# QDX v0.5 — Queued Device Express Core
 
 **Status:** Draft
 
@@ -6,7 +6,7 @@
 
 QDX is a standard software/device contract for asynchronous devices. It sits above PLIO and is intentionally independent of any one CPU's physical address map or native byte order.
 
-PLIO answers how a controller performs MMIO, protected DMA, and notification transactions. QDX answers how software submits asynchronous work and receives completions.
+PLIO answers how a controller performs MMIO, protected DMA, and **PLIO Notification** transactions. QDX answers how software submits asynchronous work and receives completions.
 
 The same QDX queue/profile semantics may later be transported over another interconnect without redefining device classes.
 
@@ -104,9 +104,9 @@ For each completed command the device:
 3. advances `CQ_TAIL`,
 4. sends the interconnect's normal notification when required.
 
-On PLIO the normal notification is a bus-local `SPACE=CONTROLLER` message-signalled transaction.
+On PLIO this is a **PLIO Notification**: one bus-local `SPACE=CONTROLLER` notification transaction.
 
-The normal QDX coalescing rule is **notify on CQ empty -> non-empty transition**. Additional completions may be added while the CQ remains non-empty without additional notification transactions.
+The normal QDX coalescing rule is **notify on CQ empty -> non-empty transition**. Additional completions may be added while the CQ remains non-empty without additional PLIO Notification transactions.
 
 The host processes entries from `CQ_HEAD` through `CQ_TAIL` and writes the new consumed position to `CQ_HEAD`.
 
@@ -122,19 +122,19 @@ A device MAY complete commands out of order unless its profile imposes ordering.
 
 ## 10. Notification behavior
 
-QDX does not require one notification per command.
+QDX does not require one PLIO Notification per command.
 
 ```text
 CQ empty
   -> completion A written
-  -> normal notification
+  -> PLIO Notification
   -> completions B..H written while CQ remains non-empty
-  -> no extra notification required
+  -> no extra PLIO Notification required
 host drains A..H
 CQ empty/rearmed
 ```
 
-PLIO controller pending bits may additionally coalesce repeated messages.
+PLIO controller pending bits may additionally coalesce repeated PLIO Notifications.
 
 A QDX device normally uses PLIO notification channel 0 unless a profile/later multi-queue extension assigns another channel. The device does not choose host CPU priority, vector, or privilege.
 
@@ -150,7 +150,7 @@ If CQ space is exhausted, the device MUST stop publishing further completions an
 
 If a descriptor or buffer references a handle rejected by the PLIO DMA capability mechanism, including generation, bounds, direction, or active-revocation failure, the command completes with a DMA fault if possible.
 
-If the CQ mapping itself is inaccessible and the device cannot safely publish a completion, it enters `FAULT` and sends a notification if that path remains usable.
+If the CQ mapping itself is inaccessible and the device cannot safely publish a completion, it enters `FAULT` and sends a PLIO Notification if that path remains usable.
 
 ## 13. Reset
 
@@ -168,4 +168,4 @@ QDX core defines queue transport only. Current profiles are:
 
 All profiles inherit the canonical little-endian control-structure rule unless a particular payload field is explicitly defined as opaque or as having an external media/network format.
 
-QDX-G and QDX-DSP reuse the normal QDX queue, PLIO capability-DMA, and message-signalled completion mechanisms. They do not define a second CPU-local accelerator bus or an unrestricted DMA architecture.
+QDX-G and QDX-DSP reuse the normal QDX queue, PLIO capability-DMA, and **PLIO Notification** completion mechanisms. They do not define a second CPU-local accelerator bus or an unrestricted DMA architecture.
