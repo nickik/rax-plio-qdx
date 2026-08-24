@@ -10,14 +10,16 @@
 - [ ] Confirm 5 MHz required / 10 MHz optional clock profiles.
 - [x] Adopt one transaction per grant, where a transaction may be a bounded 1/4/8/16-word host-memory DMA burst.
 - [x] Limit one burst to 16 longwords / 64 bytes before arbitration resumes.
-- [x] Keep programmed MMIO and notification writes single-beat.
+- [x] Keep programmed MMIO and **PLIO Notification** writes single-beat.
 - [x] Adopt 16 protected DMA capability channels per bus-manager slot.
 - [x] Adopt 4-bit generation tags in device-visible DMA addresses.
 - [x] Adopt 32-bit DMA handle layout: `channel[31:28] | generation[27:24] | offset[23:0]`.
 - [x] Reject dedicated per-slot IRQ lines.
-- [x] Make normal notification a **bus-local `SPACE=CONTROLLER` transaction** rather than a host physical-address write.
+- [x] Name the device-to-host asynchronous mechanism **PLIO Notification**.
+- [x] Make PLIO Notification a **bus-local `SPACE=CONTROLLER` transaction** rather than a host physical-address write.
 - [ ] Confirm 4 notification channels per slot.
 - [ ] Confirm four controller-assigned normal notification classes.
+- [x] Name the RAX aggregate CPU-side interrupt condition **`NOTIFY_PENDING_INTERRUPT`**.
 - [x] Adopt canonical **little-endian QDX control structures** independent of host CPU byte order.
 - [ ] Confirm QDX one-SQ/one-CQ baseline.
 - [ ] Confirm QDX-B 32-byte command / 16-byte completion formats.
@@ -29,7 +31,8 @@
 
 - [x] RAX geographic MMIO profile.
 - [x] RAX privileged PLIO host-controller CSR reservation.
-- [x] RAX normal-notification integration separated from bus-local card signalling.
+- [x] RAX PLIO Notification integration separated from bus-local card signalling.
+- [x] RAX aggregate eligible notification state named `NOTIFY_PENDING_INTERRUPT`.
 - [ ] Define generic host-profile conformance requirements.
 - [ ] Create one non-RAX example host profile to prove CPU/address-map independence.
 
@@ -45,12 +48,12 @@
 - [x] QDX canonical little-endian encode/decode helpers
 - [x] normal notification class selection
 - [x] QDX-B contiguous-buffer READ/WRITE
-- [x] QDX completion generation and notification
+- [x] QDX completion generation and PLIO Notification
 - [ ] explicit PLIO `SPACE`/address/data phase machine
 - [ ] bus request/grant state machine
 - [ ] fair rotating round-robin arbitration
 - [ ] cycle-level 1/4/8/16-beat DMA bursts
-- [ ] model controller-local NOTIFY transactions as real bus cycles
+- [ ] model controller-local PLIO Notification transactions as real bus cycles
 - [ ] wait states and timeout
 - [ ] worker MMIO model using slot-relative offsets
 - [ ] scatter/gather execution
@@ -62,14 +65,15 @@
 
 ## Microkernel integration
 
-- [ ] model user/kernel mode and normal-notification deferral
+- [ ] model user/kernel mode and normal PLIO Notification deferral
 - [ ] model capability-controlled bind/revoke of DMA channels
 - [ ] model generation return from DMA binding and safe channel reuse
 - [ ] model driver notification capabilities
 - [ ] model RAX host-controller claim/mask interface separately from PLIO card protocol
+- [ ] model RAX `NOTIFY_PENDING_INTERRUPT` assertion/deassertion
 - [ ] model fast IPC path with zero device-event checks
 - [ ] model explicit long-operation preemption points
-- [ ] measure notification latency versus maximum 64-byte active burst
+- [ ] measure PLIO Notification latency versus maximum 64-byte active burst
 
 ## Physical/electrical work
 
