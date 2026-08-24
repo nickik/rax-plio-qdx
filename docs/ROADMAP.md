@@ -24,6 +24,12 @@
 - [ ] Confirm QDX one-SQ/one-CQ baseline.
 - [ ] Confirm QDX-B 32-byte command / 16-byte completion formats.
 - [ ] Confirm 16-entry maximum scatter/gather list.
+- [x] Define QDX-B controller capability discovery for the QDX-BA extension.
+- [x] Define QDX-BA v0.2 `READ_OR`, `WRITE_OR`, `MULTI_WRITE`, and `COPY` semantics.
+- [x] Remove redundant QDX-BA `QUEUED_COMMANDS` capability; QDX is already queued.
+- [x] Define QDX-BA parameter, target-list, and per-target-result binary formats.
+- [x] Specify that QDX-BA multi-target writes are non-atomic and higher software owns commit policy.
+- [x] Document how QDX-B/BA supports copy-on-write, checksummed, ZFS-like storage without embedding filesystem policy.
 - [x] Adopt **PLIO-E 3U Eurocard / 96-position DIN 41612-style P1** as baseline plug-in mechanics.
 - [ ] Freeze PLIO-E detailed electrical loading/termination limits for PLIO-5 and PLIO-10.
 
@@ -49,6 +55,8 @@
 - [x] normal notification class selection
 - [x] QDX-B contiguous-buffer READ/WRITE
 - [x] QDX completion generation and PLIO Notification
+- [x] QDX-BA opcode constants and parameter/result binary pack/unpack tests
+- [ ] functional QDX-BA `READ_OR` / `WRITE_OR` / `MULTI_WRITE` / `COPY` execution model
 - [ ] explicit PLIO `SPACE`/address/data phase machine
 - [ ] bus request/grant state machine
 - [ ] fair rotating round-robin arbitration
@@ -57,7 +65,7 @@
 - [ ] wait states and timeout
 - [ ] worker MMIO model using slot-relative offsets
 - [ ] scatter/gather execution
-- [ ] namespace identify structures
+- [ ] namespace identify structure serialization
 - [ ] queue-full behavior
 - [ ] device fault/reset tests
 - [ ] active-burst capability revocation test at cycle level
@@ -74,6 +82,15 @@
 - [ ] model fast IPC path with zero device-event checks
 - [ ] model explicit long-operation preemption points
 - [ ] measure PLIO Notification latency versus maximum 64-byte active burst
+
+## Storage-stack validation
+
+- [ ] model mirrored READ fallback using QDX-B then QDX-BA `READ_OR` and compare semantics
+- [ ] model `MULTI_WRITE` partial success with exact per-target status
+- [ ] model copy-on-write commit sequence using WRITE/FLUSH/root WRITE/FLUSH
+- [ ] model checksum-detected silent corruption above QDX and alternate-copy recovery
+- [ ] model degraded mirrored write policy entirely in host software
+- [ ] verify controller-local COPY never substitutes for end-to-end checksum validation
 
 ## Physical/electrical work
 
