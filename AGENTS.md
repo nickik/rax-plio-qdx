@@ -17,11 +17,13 @@ The architecture is being designed as if work began in the mid-1970s for a 1978-
 - PLIO uses explicit transaction spaces: worker MMIO, protected host DMA, controller-local operations, and one reserved code.
 - PLIO host-memory DMA supports **bounded 1/4/8/16-word 32-bit bursts in the baseline**.
 - A grant covers at most one transaction; one DMA transaction may contain at most **16 longwords / 64 bytes**, after which arbitration resumes.
-- Programmed MMIO and notification writes remain single-beat in the baseline.
+- Programmed MMIO and PLIO Notification writes remain single-beat in the baseline.
 - PLIO has **no dedicated per-device interrupt line**.
-- Normal device notification is **message-signalled and bus-local**: a bus manager writes to PLIO `CONTROLLER` space, not to a host physical address.
+- The canonical device-to-host asynchronous signalling mechanism is **PLIO Notification**: a bus manager writes to PLIO `CONTROLLER` space, not to a host physical address.
+- Do **not** call PLIO Notification MSI or MSI-like in normative text. The mechanism has its own PLIO name and contract.
 - The controller derives source identity from the active bus grant. Devices do not choose trusted slot ID, CPU vector, class, privilege, or CPU target.
-- Normal notifications have controller-assigned classes; critical platform events are outside normal PLIO device notification.
+- Normal PLIO Notifications have controller-assigned classes; critical platform events are outside normal PLIO device notification.
+- The RAX host profile exposes aggregate eligible notification state to the CPU as **`NOTIFY_PENDING_INTERRUPT`**. This is a host-internal CPU interrupt condition, not a PLIO backplane signal.
 - Bus managers perform DMA through controller-programmed **DMA capability channels**.
 - Each DMA-capable slot has **16 DMA capability channels**.
 - A 32-bit device-visible DMA address encodes **4-bit channel + 4-bit generation + 24-bit offset**.
@@ -47,7 +49,7 @@ Before adding a mechanism, ask whether it is required for the target system, whe
 
 The baseline burst mechanism is intentionally small: two `BLEN` wires, fixed 1/4/8/16-longword lengths, one bounded grant, sequential host addresses, and per-beat ACK/ERR/wait states.
 
-The bus-local notification mechanism is intentionally small: one controller transaction space, four fixed offsets, source inferred from grant, and small per-slot pending state.
+**PLIO Notification** is intentionally small: one controller transaction space, four fixed offsets, source inferred from grant, and small per-slot pending state.
 
 Do not copy PCI Express, MSI-X, NVMe, SBus DVMA, or later architectures wholesale.
 
@@ -67,8 +69,8 @@ When changing a normative structure or binary layout:
 
 Maintain three conceptual levels:
 
-1. functional QDX model — queues, canonical byte order, commands, completions, capability-scoped DMA, notifications;
-2. cycle-level PLIO model — transaction spaces, arbitration, address/data phases, bounded bursts, waits, timeout, NOTIFY timing;
+1. functional QDX model — queues, canonical byte order, commands, completions, capability-scoped DMA, PLIO Notifications;
+2. cycle-level PLIO model — transaction spaces, arbitration, address/data phases, bounded bursts, waits, timeout, PLIO Notification timing;
 3. RTL — only after the first two stabilize.
 
 Python simulation code must use only the standard library unless strongly justified, remain deterministic by default, expose traceable transactions, and test error paths.
@@ -78,14 +80,14 @@ Python simulation code must use only the standard library unless strongly justif
 1. Expand the PLIO cycle model to explicit `SPACE`, address/data, and `BLEN` phases.
 2. Add rotating round-robin arbitration and mandatory re-arbitration after every transaction/burst.
 3. Add 1/4/8/16-beat host-memory DMA burst sequencing with complete-range capability validation.
-4. Model `SPACE=CONTROLLER` notification as a real single-beat bus transaction and measure contention behind a maximum burst.
+4. Model `SPACE=CONTROLLER` PLIO Notification as a real single-beat bus transaction and measure contention behind a maximum burst.
 5. Add per-beat wait states, timeout, and worker error responses.
 6. Add active-burst DMA revoke/interlock behavior.
 7. Add QDX-B scatter/gather execution across capability channels using bounded bursts.
 8. Add binary descriptor serialization tests using canonical little-endian QDX fields.
 9. Add RAX host-profile mapping tests and keep host physical addresses out of the generic PLIO model.
 10. Add namespace IDENTIFY structures and tests.
-11. Add user/kernel notification-latency scenarios.
+11. Add user/kernel PLIO Notification latency scenarios using `NOTIFY_PENDING_INTERRUPT` on RAX.
 12. Add generation-aware cycle-model tests including stale-reference rejection and wrap/reset behavior.
 13. Add functional QDX-G and QDX-DSP coverage after command layouts are frozen.
 14. Only then create small SystemVerilog PLIO controller/interface blocks and compare traces to the Python reference model.
