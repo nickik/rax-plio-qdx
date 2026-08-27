@@ -1,4 +1,4 @@
-# PLIO v0.5 — Peripheral Lighting I/O
+# PLIO v0.6 — Peripheral Lighting I/O
 
 **Status:** Draft
 
@@ -10,13 +10,14 @@ PLIO is deliberately an **I/O bus**, not a processor bus, memory bus, cache-cohe
 
 A PLIO segment contains exactly one host-side PLIO controller and up to eight logical peripheral slots. Processor and memory nodes are not peers on the PLIO backplane. A non-RAX computer may use PLIO by implementing its own host profile and PLIO host controller.
 
-The baseline remains implementable with late-1970s TTL/SSI/MSI (**medium-scale integration**) logic and modest LSI interface devices.
+The baseline remains implementable with late-1970s TTL/SSI/MSI logic and modest LSI or ULA interface devices.
 
 ## 2. Architectural scope
 
 PLIO defines:
 
 - a shared synchronous 32-bit multiplexed address/data bus,
+- mandatory byte-lane parity on the multiplexed address/data bus,
 - eight logical peripheral slots,
 - host-to-worker MMIO transactions,
 - bus-manager arbitration,
@@ -46,7 +47,7 @@ A future host may contain multiple CPUs behind one PLIO controller, but that is 
 
 ## 3. Terminology
 
-- **PLIO controller** — centralized host-side logic that arbitrates the bus, injects host MMIO, validates/translates DMA capability channels, accepts controller-local transactions, handles timeout, and maintains notification state.
+- **PLIO controller** — centralized host-side logic that arbitrates the bus, injects host MMIO, validates/translates DMA capability channels, accepts controller-local transactions, handles timeout, parity faults, and notification state.
 - **bus manager** — a peripheral currently granted authority to initiate a PLIO transaction.
 - **worker** — a peripheral endpoint responding to host MMIO.
 - **slot** — one logical peripheral endpoint number, 0..7. A slot may be a plug-in card or an onboard controller.
@@ -144,7 +145,7 @@ Any device that performs host-memory DMA MUST implement all four baseline DMA bu
 | `10` | `CONTROLLER` | granted bus manager | PLIO-controller-local operation |
 | `11` | reserved | — | reserved for future PLIO versions |
 
-Peripheral bus managers MUST NOT originate `WORKER` transactions in PLIO v0.5. Peer-to-peer peripheral MMIO/DMA is not part of the baseline.
+Peripheral bus managers MUST NOT originate `WORKER` transactions in PLIO v0.6. Peer-to-peer peripheral MMIO/DMA is not part of the baseline.
 
 A host profile may expose PLIO-controller CSRs to its CPU at any host-specific address. Those host-side CSR addresses are not PLIO bus addresses.
 
@@ -157,6 +158,7 @@ A host profile may expose PLIO-controller CSRs to its CPU at any host-specific a
 | `CLK` | controller -> all | bus clock |
 | `RESET*` | controller -> all | active-low reset |
 | `AD[31:0]` | shared | multiplexed address/data |
+| `PAR[3:0]` | shared | odd parity for the four AD byte lanes |
 | `SPACE[1:0]` | manager -> bus | transaction-space selector during address phase |
 | `AS*` | manager -> bus | address phase valid |
 | `RD` | manager -> bus | 1=read, 0=write |
@@ -182,7 +184,7 @@ All programmed MMIO, controller-local PLIO Notification writes, and sub-32-bit t
 For each slot `n`:
 
 | Signal | Direction | Meaning |
-|---|---|---|
+|---:|---|---|
 | `SEL[n]*` | controller -> slot | slot selected as worker |
 | `BR[n]*` | slot -> controller | request bus-manager ownership |
 | `BG[n]*` | controller -> slot | bus-manager grant |
@@ -192,6 +194,35 @@ For each slot `n`:
 A worker-only card MAY omit active drive circuitry for `BR[n]*`; such a card cannot generate asynchronous PLIO Notifications and is normally polled.
 
 The normative Eurocard implementation is defined by `PLIO-E.md`.
+
+### 8.3 Mandatory parity
+
+PLIO v0.6 adds deliberately minimal protection for the multiplexed address/data path.
+
+Parity is **odd parity**, one bit per byte lane:
+
+```text
+PAR0 protects AD[7:0]
+PAR1 protects AD[15:8]
+PAR2 protects AD[23:16]
+PAR3 protects AD[31:24]
+```
+
+The endpoint currently driving `AD[31:0]` MUST drive the corresponding parity bits.
+
+Rules:
+
+- during every address phase all four parity bits are valid and checked;
+- during a 32-bit data beat all four parity bits are valid and checked;
+- during 8/16-bit worker MMIO only byte lanes selected by `BE[3:0]` require valid/checkable parity;
+- parity does **not** cover `SPACE`, `RD`, `BE`, `BLEN`, arbitration, or other control wires in the baseline;
+- parity is error detection only; PLIO does not attempt bus-level error correction.
+
+On an address or write-data parity error the receiving target MUST reject the transfer with `ERR*` rather than `ACK*` where timing permits.
+
+On a read-data parity error the receiving manager MUST discard the affected beat, terminate the transaction as failed, and report a local parity/data-path fault to its higher-level logic. A read-data receiver cannot rely on `ERR*` because `ERR*` is target-to-manager.
+
+The PLIO controller SHOULD record parity faults with source/target slot, transaction space, direction, address/offset, and phase for diagnostics.
 
 ## 9. Clocking
 
@@ -216,20 +247,23 @@ The controller:
 1. selects the logical slot using `SEL[n]*`,
 2. drives `SPACE=WORKER`,
 3. drives the slot-relative byte offset on `AD[24:0]`,
-4. drives `RD`, `BE[3:0]`, and `BLEN=00`,
-5. asserts `AS*`.
+4. drives odd `PAR[3:0]` for the complete address,
+5. drives `RD`, `BE[3:0]`, and `BLEN=00`,
+6. asserts `AS*`.
 
 ### 10.2 Data phase
 
-For a write, the controller drives the data and asserts `DS*`. For a read, the selected worker drives data. The selected worker eventually asserts `ACK*` or `ERR*`.
+For a write, the controller drives the data and parity and asserts `DS*`. For a read, the selected worker drives data and parity. The selected worker eventually asserts `ACK*` or `ERR*`.
 
 A worker MAY insert wait states by asserting neither response.
+
+Parity failures are handled according to section 8.3.
 
 ### 10.3 Transfer sizes
 
 The baseline requires naturally aligned 8-, 16-, and 32-bit MMIO transfers. Unaligned multi-byte accesses are not required.
 
-Worker-side burst MMIO is not part of PLIO v0.5.
+Worker-side burst MMIO is not part of PLIO v0.6.
 
 ## 11. Bus-manager arbitration and bounded DMA bursts
 
@@ -259,14 +293,15 @@ Burst transfers MUST:
 - use naturally aligned 32-bit longwords,
 - use `BE=1111`,
 - contain exactly 1, 4, 8, or 16 data beats,
+- carry valid odd parity on all four byte lanes for every address/data beat,
 - access consecutive host addresses increasing by four bytes per acknowledged beat,
 - remain wholly inside one active `(slot, channel, generation)` DMA capability mapping.
 
 ### 11.3 Address phase and complete-range validation
 
-During the address phase the manager places the device-visible DMA address of the first longword on `AD[31:0]` and supplies `SPACE=HOST_DMA`, `RD`, `BE=1111`, and `BLEN`.
+During the address phase the manager places the device-visible DMA address of the first longword on `AD[31:0]`, drives its parity, and supplies `SPACE=HOST_DMA`, `RD`, `BE=1111`, and `BLEN`.
 
-Before beat 0 is accepted, the controller MUST validate the complete burst extent:
+Before beat 0 is accepted, the controller MUST validate both the address parity and the complete burst extent:
 
 ```text
 transfer_length = burst_words * 4
@@ -278,7 +313,7 @@ offset + transfer_length <= mapping.length
 required direction permission is granted
 ```
 
-If validation fails, the controller returns `ERR*` and no data beat is committed.
+If validation or address parity fails, the controller returns `ERR*` and no data beat is committed.
 
 After validation:
 
@@ -292,13 +327,13 @@ and the controller increments the translated host address by four after each ack
 
 Each data beat is individually acknowledged.
 
-For device-to-host DMA writes, the manager drives one 32-bit word and asserts `DS*`; the controller acknowledges when the word is committed to the host memory path.
+For device-to-host DMA writes, the manager drives one 32-bit word plus `PAR[3:0]` and asserts `DS*`; the controller checks parity and acknowledges only when the word is accepted into the host memory path.
 
-For host-to-device DMA reads, the controller presents one 32-bit word and acknowledges when valid.
+For host-to-device DMA reads, the controller presents one 32-bit word plus `PAR[3:0]`; the device checks parity before accepting the beat.
 
 The host memory path MAY insert wait states on any beat.
 
-If `ERR*` occurs or a beat times out, the remaining burst MUST abort and the grant MUST be released. Already acknowledged beats are not rolled back. Higher-level protocols such as QDX must report or recover from partial transfer.
+If `ERR*`, a parity fault, or a timeout occurs, the remaining burst MUST abort and the grant MUST be released. Already acknowledged beats are not rolled back. Higher-level protocols such as QDX must report or recover from partial transfer.
 
 The baseline timeout is 256 PLIO clocks per outstanding address/data beat.
 
@@ -390,7 +425,7 @@ QDX scatter/gather descriptors MAY reference several `(channel, generation, offs
 
 ### 12.6 No peer-to-peer DMA
 
-Peripheral-to-peripheral DMA is not supported by PLIO v0.5. Device bus managers target host memory or the PLIO controller only.
+Peripheral-to-peripheral DMA is not supported by PLIO v0.6. Device bus managers target host memory or the PLIO controller only.
 
 ## 13. PLIO Notification
 
@@ -407,6 +442,8 @@ RD    = 0
 BE    = 1111
 AD    = 0x0000_0000 + 4 * notification_channel
 ```
+
+The address and write-data phases use normal PLIO parity.
 
 The baseline PLIO Notification aperture is therefore the following bus-local controller offsets:
 
@@ -426,7 +463,7 @@ To notify the host a device:
 1. publishes any completion/status writes to host-visible memory,
 2. asserts `BR[n]*`,
 3. receives `BG[n]*`,
-4. performs one `SPACE=CONTROLLER` 32-bit write to the chosen PLIO Notification channel offset,
+4. performs one parity-protected `SPACE=CONTROLLER` 32-bit write to the chosen PLIO Notification channel offset,
 5. releases the bus.
 
 The controller derives the source slot from the active grant. The device does not provide a trusted slot ID, host vector, privilege, CPU target, or priority.
@@ -465,7 +502,9 @@ A target signals transaction failure with `ERR*`.
 
 The controller MUST time out a transaction that receives neither `ACK*` nor `ERR*` within the platform timeout. The baseline timeout is 256 PLIO clocks per outstanding address or data beat.
 
-A timeout SHOULD record source, transaction space, address/offset, direction, and phase for diagnostics.
+Parity error, timeout, and ordinary target failure are distinct diagnostic causes even though each makes the current transaction fail.
+
+A timeout or parity fault SHOULD record source, transaction space, address/offset, direction, and phase for diagnostics.
 
 ## 15. Reset
 
@@ -502,6 +541,8 @@ device DMA-writes completion(s)
 
 A PLIO Notification MUST NOT become observable by the host before preceding completion-memory writes by that manager are visible.
 
+Parity protects transmission on PLIO; host profiles remain responsible for defining any parity/ECC requirements for host RAM and internal memory paths.
+
 ## 17. Host and physical profiles
 
 The PLIO logical bus is intentionally host-independent.
@@ -511,7 +552,8 @@ A **host profile** MUST define at least:
 - how CPU/software addresses map to PLIO `(slot, slot_offset)` worker transactions,
 - how privileged software programs DMA capability channels,
 - how aggregate PLIO Notification pending/claim state reaches the host CPU/kernel,
-- cache/visibility operations required around DMA.
+- cache/visibility operations required around DMA,
+- how PLIO parity faults are surfaced to privileged software and, where relevant, device drivers.
 
 The RAX profile is `PLIO-RAX.md`.
 
@@ -527,6 +569,7 @@ A PLIO worker MUST support:
 - standard configuration header,
 - slot selection,
 - `SPACE=WORKER` 8/16/32-bit MMIO,
+- mandatory `PAR[3:0]` generation/checking for the AD byte lanes,
 - `ACK*`/`ERR*` behavior.
 
 A PLIO bus manager additionally MUST support:
@@ -534,6 +577,7 @@ A PLIO bus manager additionally MUST support:
 - request/grant arbitration,
 - `SPACE=HOST_DMA`,
 - all 1/4/8/16-longword baseline burst lengths,
+- parity generation/checking on every address/data beat,
 - protected DMA faults including generation validation.
 
 A device advertising notification capability MUST be capable of issuing the single-beat `SPACE=CONTROLLER` **PLIO Notification** transaction.
