@@ -1,4 +1,4 @@
-# PLIO-E v0.1 — Eurocard Physical Profile
+# PLIO-E v0.2 — Eurocard Physical Profile
 
 **Status:** Draft physical profile
 
@@ -26,7 +26,7 @@ PLIO-E uses one **96-position, three-row, 32-column DIN 41612 Type-C-compatible 
 
 Rows are named `a`, `b`, and `c`; positions are numbered 1..32.
 
-The mating backplane connector MUST provide all PLIO bus signals, slot-specific `SEL/BR/BG`, power, and ground through P1.
+The mating backplane connector MUST provide all PLIO bus signals, byte-lane parity, slot-specific `SEL/BR/BG`, power, and ground through P1.
 
 The board MUST NOT depend on a second connector for baseline PLIO operation.
 
@@ -39,13 +39,13 @@ The initial PLIO-E electrical profile uses 5 V TTL-compatible signalling.
 - PLIO logic MUST NOT require the ±12 V rails.
 - System/card current limits are declared by the platform/card documentation; the bus standard does not promise unlimited rail current.
 - Signal drivers MUST enter a non-driving state during reset unless the signal is explicitly defined as controller-driven.
-- Shared data/control outputs MUST use suitable tri-state/open-collector-compatible interface circuitry as required by the signal definition.
+- Shared data/parity/control outputs MUST use suitable tri-state/open-collector-compatible interface circuitry as required by the signal definition.
 
 PLIO-10 compliance additionally requires the loading, trace, termination, setup/hold, and clock-skew limits established by the PLIO-E electrical timing annex. PLIO-5 remains mandatory for every card.
 
 ## 5. P1 pin assignment
 
-The initial pin assignment deliberately allocates many ground contacts to reduce crosstalk and provide a usable path toward PLIO-10 without changing the connector.
+The pin assignment deliberately allocates many ground contacts to reduce crosstalk and provide a usable path toward PLIO-10 without changing the connector.
 
 ### 5.1 Address/data and grounds — positions 1..16
 
@@ -84,7 +84,7 @@ The initial pin assignment deliberately allocates many ground contacts to reduce
 
 `SEL*`, `BR*`, and `BG*` are the signals for the physical/logical slot in which the card is installed. The backplane performs the per-slot fanout/routing; the card sees only its own three slot-specific pins.
 
-### 5.3 Power/reserved — positions 26..32
+### 5.3 Power/parity/reserved — positions 26..32
 
 | Pos | Row a | Row b | Row c |
 |---:|---|---|---|
@@ -92,11 +92,13 @@ The initial pin assignment deliberately allocates many ground contacts to reduce
 | 27 | `+5V` | `+5V` | GND |
 | 28 | `+12V` | `-12V` | GND |
 | 29 | GND | GND | GND |
-| 30 | reserved | reserved | GND |
-| 31 | reserved | reserved | GND |
+| 30 | `PAR0` | `PAR1` | GND |
+| 31 | `PAR2` | `PAR3` | GND |
 | 32 | reserved | reserved | GND |
 
-Reserved pins MUST remain unconnected by v0.1 cards except where a later PLIO-E revision explicitly assigns them.
+`PAR0..PAR3` are the mandatory odd-parity lines defined by PLIO v0.6. They protect the four `AD` byte lanes.
+
+Reserved pins MUST remain unconnected by v0.2 cards except where a later PLIO-E revision explicitly assigns them.
 
 ## 6. Backplane organization
 
@@ -104,7 +106,7 @@ A PLIO-E backplane contains:
 
 - one host-controller connection,
 - up to eight card slots,
-- shared `AD`, `SPACE`, control, response, `CLK`, and `RESET*` lines,
+- shared `AD`, `PAR`, `SPACE`, control, response, `CLK`, and `RESET*` lines,
 - one `SEL*`, `BR*`, and `BG*` route for each slot,
 - distributed power and ground.
 
@@ -130,14 +132,15 @@ The baseline P1 connector MUST remain sufficient for all PLIO bus operation.
 
 ## 9. Physical conformance
 
-A PLIO-E v0.1 card MUST:
+A PLIO-E v0.2 card MUST:
 
 - fit the specified 3U or permitted 6U × 160 mm Eurocard mechanics,
 - use the 96-position three-row P1 connector and pinout above,
 - operate at PLIO-5,
+- generate/check `PAR0..PAR3` as required by PLIO v0.6,
 - use only assigned/reserved pins as specified,
 - obtain its geographic identity from the slot rather than address switches,
-- conform to PLIO v0.5 logical/electrical signalling.
+- conform to PLIO v0.6 logical/electrical signalling.
 
 PLIO-10 is an additional speed-grade qualification on the same connector and pinout.
 
@@ -145,4 +148,4 @@ PLIO-10 is an additional speed-grade qualification on the same connector and pin
 
 PLIO-E deliberately follows established Eurocard mechanics so independent chassis, backplane, power-supply, card-guide, industrial, laboratory, telecom, and military suppliers can build compatible infrastructure without adopting a DEC-specific mechanical ecosystem.
 
-The 96-pin connector has enough contacts to carry the 32-bit multiplexed bus, transaction-space and burst controls, per-slot arbitration, reset/clock, auxiliary power, and substantial ground distribution while retaining reserved contacts for controlled future evolution.
+The 96-pin connector has enough contacts to carry the 32-bit multiplexed bus, four parity lines, transaction-space and burst controls, per-slot arbitration, reset/clock, auxiliary power, and substantial ground distribution while retaining two reserved contacts for controlled future evolution.
