@@ -2,15 +2,13 @@
 
 **Status:** Non-normative design note
 
-This note explains how QDX-B and QDX-BA can support a future copy-on-write, checksummed, pooled storage system comparable in architectural goals to modern ZFS, while keeping filesystem policy out of PLIO and QDX.
+This note explains how QDX-B and QDX-BA can support a future copy-on-write, checksummed, pooled storage system comparable in architectural goals to modern ZFS while keeping filesystem policy out of PLIO and QDX.
 
-The comparison is conceptual. A 1970s/1980s DEC implementation would not depend on the historical ZFS codebase or terminology.
+The comparison is conceptual. A 1970s/1980s DEC implementation does not depend on historical ZFS code or terminology.
 
 ---
 
 ## 1. Architectural split
-
-The intended stack is:
 
 ```text
 applications
@@ -19,7 +17,7 @@ Cosmic filesystem / volume layer
     |   owns:
     |   - allocation
     |   - copy-on-write trees
-    |   - checksums
+    |   - checksum metadata / expected values
     |   - replica/parity topology
     |   - snapshots
     |   - scrub/repair policy
@@ -30,42 +28,62 @@ QDX-B / QDX-BA
     |   - asynchronous block I/O
     |   - namespaces
     |   - protected DMA
-    |   - explicit FLUSH durability boundary
-    |   - READ_OR
-    |   - WRITE_OR
-    |   - MULTI_WRITE
-    |   - COPY
+    |   - WRITE / WRITE_DURABLE / FLUSH
+    |   - optional checksum calculation/comparison
+    |   - READ_OR / WRITE_OR / MULTI_WRITE / COPY
     |
-PLIO
+PLIO capability DMA + byte-lane parity
     |
 storage controllers and media
 ```
 
-The storage controller knows blocks, namespaces, DMA buffers, and completion status. It does not know files, directories, snapshots, pools, checksums, or filesystem transaction structure.
+The controller knows blocks, namespaces, DMA buffers, supplied checksums and completion status. It does not know files, directories, pools, snapshots, replica policy, checksum-tree structure or filesystem transaction structure.
 
 ---
 
-## 2. Why this separation matters
+## 2. Integrity ownership versus acceleration
 
-Putting filesystem semantics into the controller would create several problems:
+The crucial rule is:
 
-- filesystem evolution would depend on controller firmware/hardware;
-- third-party controllers would have to implement DEC filesystem policy;
-- recovery behavior would become split across host and device;
-- VirtuAll and other operating systems would inherit an unnecessary proprietary storage model;
-- controller failures could hide or reinterpret data-integrity policy.
+> **Cosmic owns checksum truth; QDX may accelerate checksum arithmetic.**
 
-QDX instead standardizes the reusable primitive layer.
+A checksum-protected block is referenced by higher metadata containing or implying an expected checksum.
 
-A sophisticated controller may accelerate ordinary operations, but the host can always reconstruct the same behavior with base QDX-B commands.
+Cosmic may submit that expected value with a QDX integrity descriptor. The controller calculates the checksum while bytes are already moving and reports match/mismatch.
+
+The controller must not maintain a hidden authoritative checksum table.
+
+This means an integrity-capable controller can detect silent corruption without becoming the layer that decides what the bytes are supposed to mean.
 
 ---
 
-## 3. Copy-on-write
+## 3. End-to-end integrity chain
 
-A copy-on-write filesystem never overwrites the currently committed version of important metadata in place.
+Different mechanisms cover different failure domains:
 
-A simplified update is:
+```text
+disk ECC / media recovery
+       |
+LDL CRC16                 link/frame corruption
+       |
+QDX integrity engine      payload vs host-supplied expected checksum
+       |
+PLIO PAR[3:0]             PLIO address/data transfer corruption
+       |
+host RAM parity/ECC       host-platform responsibility
+       |
+Cosmic checksum metadata  authoritative identity/correctness policy
+```
+
+QDX verification says the controller observed bytes matching the expected checksum. PLIO parity protects the controller-to-host transfer on PLIO, but host RAM/internal-memory protection must be supplied by the host platform if Cosmic intends to trust the hardware result without recomputing it after DMA.
+
+A system may always recompute in software for additional assurance.
+
+---
+
+## 4. Copy-on-write
+
+A simplified update:
 
 ```text
 old committed tree
@@ -78,449 +96,328 @@ old committed tree
                               |
                       write new metadata
                               |
-                    flush durable writes
+                    establish durability
                               |
                     write new root record
                               |
-                         flush root
+                    establish root durability
                               |
                      new tree committed
 ```
 
-QDX does not need a `SNAPSHOT`, `TRANSACTION`, or `ATOMIC_TREE_UPDATE` command.
-
-The host controls reachability. Until the new root record is committed, partially written new blocks are merely unreferenced space that recovery can discard or reclaim.
-
-This is why QDX-BA `MULTI_WRITE` does not need atomic all-target semantics.
+QDX does not need SNAPSHOT or TRANSACTION commands. The host controls reachability; partially written new blocks remain unreferenced until the new root commits.
 
 ---
 
-## 4. Durability and transaction-group style commits
+## 5. Durability tools
 
-The essential QDX primitive is `FLUSH`.
-
-For a transaction affecting several namespaces, a conservative commit sequence is:
+QDX-B deliberately provides three distinct primitives:
 
 ```text
-1. issue new data writes
-2. wait for write completions
-3. issue new indirect/metadata writes
-4. wait for metadata completions
-5. FLUSH every affected namespace
-6. write new commit/root record(s)
-7. wait for root write completion
-8. FLUSH namespace(s) containing the root record
+WRITE           ordinary write; may complete into volatile device/controller cache
+WRITE_DURABLE   this command's payload is durable before completion
+FLUSH           all previously completed writes in the namespace become durable
 ```
 
-After step 8, recovery can select the latest valid root/sequence number and reconstruct the committed tree.
+A conservative transaction sequence is:
 
-The exact filesystem may optimize this sequence, but QDX provides the necessary durable-write boundary without understanding the transaction itself.
+```text
+1. issue new data WRITE commands
+2. wait for completions
+3. issue metadata WRITE commands
+4. wait for completions
+5. FLUSH affected namespaces
+6. WRITE_DURABLE new root/commit record
+```
 
-A controller with no volatile write cache can complete FLUSH cheaply.
+or, where batching/root placement requires it:
+
+```text
+6. WRITE root
+7. wait
+8. FLUSH root namespace
+```
+
+`WRITE_DURABLE` is not an implicit flush of unrelated writes.
 
 ---
 
-## 5. End-to-end checksums
+## 6. Read verification
 
-The checksum belongs above QDX.
-
-A typical block contains or is referenced by metadata containing:
-
-```text
-logical identity / location
-checksum
-birth or transaction generation
-```
-
-Read path:
+Without controller acceleration:
 
 ```text
 QDX READ
    |
 bytes in host memory
    |
-filesystem computes/verifies checksum
+Cosmic computes checksum
    |
-accept or reject copy
+accept / reject
 ```
 
-The checksum may be calculated by the SIA CPU or a generic DSP/accelerator where useful. QDX-B/BA does not define a filesystem checksum algorithm.
+With `QDX_B_CAP_INTEGRITY`:
 
-This preserves end-to-end verification: the same checksum detects disk errors, controller errors, DMA corruption, and stale/wrong-block delivery rather than trusting the storage controller as the final authority.
+```text
+Cosmic obtains expected checksum from metadata
+   |
+READ + VERIFY_EXPECTED
+   |
+controller computes CRC64_QDX1 (or future advertised algorithm)
+   |
+MATCH / INTEGRITY_MISMATCH
+```
+
+Cosmic still owns expected checksum selection and the response to a mismatch.
+
+`RETURN_CALCULATED` lets the controller return a checksum without comparing it.
 
 ---
 
-## 6. Mirrors and READ_OR
+## 7. Write verification and calculation
 
-Suppose the filesystem stores two replicas:
+Two useful cases:
+
+### Verify a known buffer before media modification
+
+```text
+Cosmic already knows checksum X
+   |
+WRITE + VERIFY_EXPECTED(X)
+   |
+controller stages/reads complete payload
+   |
+checksum matches?
+   | yes                 | no
+write exact bytes        no media modification
+                         INTEGRITY_MISMATCH
+```
+
+This catches corruption between checksum creation and the controller input.
+
+### Calculate checksum while writing
+
+```text
+WRITE + RETURN_CALCULATED
+   |
+controller calculates checksum of source payload
+   |
+returns checksum
+   |
+Cosmic stores it in parent metadata
+```
+
+This is a CPU offload, not a change in metadata ownership.
+
+---
+
+## 8. Mirrors and integrity-aware READ_OR
+
+Suppose Cosmic knows two replicas:
 
 ```text
 copy A -> namespace 1 / LBA 10000
 copy B -> namespace 2 / LBA 50000
+expected checksum = X
 ```
 
-With base QDX-B, software may do:
+With integrity-aware QDX-BA:
 
 ```text
-READ A
-if media failure:
-    READ B
+READ_OR {A, B}, expected = X
 ```
 
-QDX-BA `READ_OR` turns that into one command whose ordered candidate list is supplied by the host.
+The controller:
 
-Important distinction:
+1. reads A;
+2. if A has media failure, tries B;
+3. if A returns bytes but checksum != X, records `INTEGRITY_MISMATCH` and tries B;
+4. selects the first candidate whose media read succeeds and checksum matches X.
 
-- if A reports a media error, QDX-BA can automatically try B;
-- if A reports success but the filesystem checksum fails, the filesystem must reject A and explicitly read B.
-
-The controller does not know whether two blocks are true replicas. The host says only, for this command, that these candidate extents may satisfy the read.
+The controller has not discovered the mirror relationship. Cosmic supplied both candidate locations and checksum truth.
 
 ---
 
-## 7. Mirrored writes and MULTI_WRITE
+## 9. Mirrored writes and MULTI_WRITE
 
-For a new mirrored block, the filesystem already knows the intended locations:
-
-```text
-copy A -> namespace 1 / LBA 22000
-copy B -> namespace 2 / LBA 67000
-```
-
-Base QDX-B fallback:
+Cosmic chooses explicit targets:
 
 ```text
-WRITE A from buffer X
-WRITE B from buffer X
+A = namespace 1 / LBA 22000
+B = namespace 2 / LBA 67000
 ```
 
-QDX-BA:
+It can submit:
 
 ```text
 MULTI_WRITE buffer X -> {A, B}
 ```
 
-The controller may stage a chunk from host memory once and write it to both media targets.
+If it already knows checksum X, it can request `VERIFY_EXPECTED` once before any target modification.
 
-The result array might report:
+The result array may report:
 
 ```text
 A = SUCCESS
 B = MEDIA_ERROR
 ```
 
-The filesystem then decides whether:
+Cosmic decides whether to continue degraded, allocate another target or abort the transaction.
 
-- the transaction may continue degraded;
-- another replica should be allocated;
-- the pool should be faulted;
-- repair should be scheduled.
-
-QDX never decides how many replicas are enough.
+MULTI_WRITE remains non-atomic; COW metadata supplies atomic meaning.
 
 ---
 
-## 8. Why MULTI_WRITE is deliberately non-atomic
+## 10. WRITE_OR
 
-Requiring all-or-nothing multi-disk writes would make the controller responsible for a distributed transaction protocol and persistent recovery log.
+WRITE_OR is host-controlled placement fallback, not allocation.
 
-That is both expensive and the wrong layer.
+Cosmic supplies candidate extents. With integrity enabled, the common host source payload is verified before the first candidate is modified.
 
-With copy-on-write, the host can tolerate:
-
-```text
-new copy A written
-new copy B failed
-new metadata not yet committed
-```
-
-because the old committed tree remains valid.
-
-If the filesystem decides one successful replica is insufficient, it simply does not publish the new root.
-
-Thus COW metadata provides atomic *meaning* without requiring QDX-BA to provide atomic physical writes.
+The controller never writes outside the explicit candidate set.
 
 ---
 
-## 9. WRITE_OR and host-controlled allocation fallback
+## 11. Integrity-aware COPY
 
-`WRITE_OR` is not a free-space allocator.
+COPY moves blocks between namespaces behind one controller without host-memory payload traffic.
 
-The filesystem first chooses several legal candidate extents:
+For repair/rebuild where source integrity matters:
 
 ```text
-candidate 0
-candidate 1
-candidate 2
+COPY source -> destination
+expected checksum = X
+VERIFY_EXPECTED
 ```
 
-The controller attempts them in host-defined order and returns the selected successful index.
+The controller must read and verify the complete source before modifying the destination.
 
-This can reduce host round trips when media or a namespace is failing, while keeping allocation policy in the filesystem.
+A mismatch aborts the copy with destination unchanged by that command.
 
-If candidate 0 is partially modified before failing, that is harmless to COW correctness because the filesystem never commits metadata pointing to that failed destination.
+This makes controller-local relocation useful for resilver while preserving Cosmic's authority.
 
 ---
 
-## 10. RAID-Z-like parity
+## 12. RAID/parity
 
-Parity layout remains a host software function.
-
-For a stripe such as:
-
-```text
-D0 D1 D2 P
-```
+Parity geometry remains software policy.
 
 Cosmic decides:
 
-- which namespaces participate;
 - stripe width;
 - parity rotation;
+- participating namespaces;
 - reconstruction mathematics;
-- checksum policy;
 - degraded-write policy.
 
-The CPU or generic accelerator computes parity data. QDX receives ordinary explicit writes to the already chosen data and parity extents.
-
-For example:
-
-```text
-WRITE D0
-WRITE D1
-WRITE D2
-WRITE P
-```
-
-or several `MULTI_WRITE` operations where identical payload replication is actually useful.
-
-QDX-BA does not define a parity opcode because parity geometry and recovery semantics belong to the storage software.
+QDX sees explicit block operations. A CPU or generic accelerator may compute parity; QDX does not need a RAID opcode.
 
 ---
 
-## 11. Scrub and self-healing
+## 13. Scrub and self-healing
 
-A scrub walks allocated blocks and verifies their end-to-end checksums.
+A scrub walks allocated data using metadata-supplied expected checksums.
 
-Simplified mirror scrub:
+With integrity-aware READ_OR:
 
 ```text
-READ copy A
-verify checksum
-
-if good:
-    optionally inspect B
-
-if bad:
-    READ copy B
-    verify checksum
-    if B good:
-        repair A with WRITE
+READ_OR replica set + expected checksum
+       |
+first verified copy returned
+       |
+Cosmic examines per-target failures/mismatches
+       |
+repair bad targets using WRITE/MULTI_WRITE/COPY
 ```
 
-QDX-BA helps with transport:
-
-- `READ_OR` handles ordinary media-error fallback;
-- `MULTI_WRITE` can repair several replicas from one verified buffer;
-- QDX queues allow many scrub operations to remain outstanding.
-
-The filesystem decides which copy is correct by checksum and metadata context.
+Cosmic still decides which targets are replicas and whether/how to repair them.
 
 ---
 
-## 12. Resilver / replacement-disk rebuild
+## 14. Resilver / replacement rebuild
 
-When a disk is replaced, the filesystem enumerates blocks that belong on the replacement target.
-
-Safe general path:
+General safe path:
 
 ```text
-READ known-good source
-verify checksum
+verified READ source
 WRITE replacement
 ```
 
-If several replacement copies are required:
+When source/destination share a controller:
 
 ```text
-READ source
-verify checksum
-MULTI_WRITE verified buffer -> replacement targets
+integrity-aware COPY
 ```
 
-`COPY` can accelerate controller-local relocation where the source is already trusted and source/destination sit behind the same QDX-BA controller.
-
-However, COPY itself performs no filesystem checksum validation. A storage implementation should not use it to bypass an end-to-end verification step where correctness depends on that verification.
+can avoid host-memory payload traffic while still validating against an expected checksum supplied by Cosmic.
 
 ---
 
-## 13. Snapshots
+## 15. Snapshots, clones, dedup and compression
 
-Snapshots require no special QDX operation.
+These remain above QDX.
 
-A snapshot is primarily a filesystem metadata decision: retain an older committed root and prevent blocks reachable from that root from being freed.
+- snapshots retain old COW roots;
+- clones share immutable blocks until modification;
+- dedup owns reference/identity policy in the filesystem;
+- compression decides what representation is stored and checksummed.
 
-```text
-root N --------> old tree
-root N+1 ------> new COW tree
-```
-
-QDX sees ordinary block writes and reads.
-
-This is preferable to a controller `SNAPSHOT` command because snapshots then remain portable across controllers and storage generations.
-
----
-
-## 14. Clones and deduplication
-
-Likewise, block sharing/reference counting and deduplication belong in the filesystem.
-
-QDX-BA `COPY` means **physical byte copy**. It does not create a shared block reference.
-
-A filesystem clone may initially point two logical objects at the same immutable COW block and copy only on later modification. No controller operation is needed.
-
----
-
-## 15. Compression
-
-Compression is also above QDX.
-
-A filesystem can:
-
-```text
-logical block
-   -> compress
-   -> checksum stored representation or chosen logical representation
-   -> QDX WRITE compressed bytes
-```
-
-The on-disk extent size and metadata interpretation belong to the filesystem.
-
-A generic CPU/DSP accelerator may speed compression, but QDX-B should not define filesystem compression policy.
+QDX COPY is a physical byte copy, not a clone primitive.
 
 ---
 
 ## 16. Failure model
 
-The design assumes failures can occur at every layer:
-
-- media returns explicit error;
-- media silently returns wrong data;
-- one replica is unavailable;
-- one target of a multi-write succeeds while another fails;
-- controller resets mid-command;
-- host crashes after data writes but before root commit;
-- stale DMA references are attempted after memory reuse.
-
-Different mechanisms address different failures:
-
 | Failure | Mechanism |
 |---|---|
-| media read/write error | QDX status + alternate target |
-| silent corruption | filesystem checksum |
-| incomplete redundant write | QDX-BA per-target results + COW policy |
+| explicit media read/write failure | QDX status + alternate target |
+| media silently returns wrong bytes | Cosmic checksum + optional QDX verification |
+| corrected/retried/marginal media | LDL health telemetry -> QDX health/service log |
+| LDL cable corruption | LDL CRC16 |
+| PLIO transfer bit error | PLIO byte-lane parity |
+| host RAM error | host parity/ECC policy |
+| incomplete redundant write | per-target QDX-BA results + COW policy |
 | host crash during update | COW roots + durability sequence |
-| controller buffering | QDX-B FLUSH |
-| rogue/stale DMA | PLIO capability channel + generation |
+| controller volatile buffering | WRITE_DURABLE / FLUSH |
+| stale/rogue DMA | PLIO capability channels + generations |
 | lost interrupt edge | PLIO Notification pending/coalescing |
 
 No single layer pretends to solve every failure mode.
 
 ---
 
-## 17. Example transaction: checksummed mirrored COW update
-
-Assume a file block changes and the filesystem wants two replicas.
-
-### Step 1 — build data
+## 17. Example checksummed mirrored COW update
 
 ```text
 new_data = application update
-checksum = checksum(new_data)
-```
-
-### Step 2 — allocate new extents
-
-```text
+checksum = X
 A = namespace 1 / LBA 120000
 B = namespace 3 / LBA 45000
 ```
 
-Old extents remain untouched.
+Possible sequence:
 
-### Step 3 — issue accelerated mirrored write
+1. `MULTI_WRITE` new_data -> {A,B} with `VERIFY_EXPECTED(X)`.
+2. Inspect exact per-target results.
+3. Write new indirect metadata containing A, B and X.
+4. FLUSH namespaces containing the new data/metadata.
+5. WRITE_DURABLE the new root/commit record.
+6. Only then make the new tree authoritative.
 
-```text
-MULTI_WRITE new_data -> {A, B}
-```
-
-Suppose both result entries return `SUCCESS`.
-
-### Step 4 — write new metadata
-
-The filesystem writes new indirect/metadata blocks containing:
-
-```text
-A
-B
-checksum
-transaction generation
-```
-
-### Step 5 — durable boundary
-
-```text
-FLUSH namespace 1
-FLUSH namespace 3
-FLUSH metadata namespace(s)
-```
-
-### Step 6 — publish new root
-
-Write a new root/commit record pointing to the new metadata, then FLUSH that root.
-
-Only now is the new tree authoritative.
-
-At no point did QDX need to understand mirrors, files, checksums, or transaction groups.
+At no point does QDX need to understand files, mirrors, transaction groups or where checksum X came from.
 
 ---
 
-## 18. Example recovery after partial MULTI_WRITE
+## 18. Why this is useful for DEC
 
-Suppose:
+The same Cosmic storage system can run on:
 
-```text
-A = SUCCESS
-B = MEDIA_ERROR
-```
+- a minimal QDX-B controller with software checksums;
+- a 1979 ULA QDX controller with QCRC-1;
+- a later integrated NMOS controller with checksum and QDX-BA acceleration.
 
-The filesystem has options:
+The optimization can move between CPU and controller without changing on-disk filesystem meaning.
 
-1. abandon the transaction and leave the old tree authoritative;
-2. allocate C and write a replacement replica, then continue;
-3. commit in degraded mode if policy permits one good copy.
+The intended division of labor is:
 
-The QDX-BA controller reports facts. Cosmic chooses policy.
-
-That is the intended boundary.
-
----
-
-## 19. Why this is useful for DEC
-
-This architecture allows DEC to build increasingly intelligent storage controllers without coupling the filesystem to one generation of controller silicon.
-
-A low-cost QDX-B controller can provide ordinary READ/WRITE/FLUSH.
-
-A high-end QDX-BA controller can reduce:
-
-- repeated host DMA for mirrored writes;
-- host scheduling for alternate-source reads;
-- host-memory traffic for controller-local relocation;
-- command/doorbell traffic for multi-target operations.
-
-Both remain compatible with the same Cosmic filesystem semantics.
-
-The result is a strong division of labor:
-
-> **Cosmic owns storage intelligence and data meaning. QDX-BA accelerates movement of blocks whose meaning was already decided by Cosmic.**
+> **Cosmic owns storage meaning and checksum truth. QDX accelerates checksum arithmetic and block movement. PLIO protects and constrains the transfer path.**
