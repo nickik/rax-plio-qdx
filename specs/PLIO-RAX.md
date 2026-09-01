@@ -4,7 +4,7 @@
 
 ## 1. Purpose
 
-This profile binds the host-independent PLIO v0.5 logical bus to the RAX CPU/memory architecture.
+This profile binds the host-independent PLIO v0.6 logical bus to the RAX CPU/memory architecture.
 
 PLIO itself does not assign CPU physical addresses and does not define a CPU interrupt-vector scheme. Those decisions belong here.
 
@@ -60,7 +60,7 @@ The exact CSR layout for DMA-channel bind/revoke state, notification claim/mask 
 
 Earlier PLIO drafts treated `0xEFFF_F000 .. 0xEFFF_F00F` as an address written directly by devices to signal notifications. That model is obsolete.
 
-In PLIO v0.5 a device sends a **PLIO Notification** using the bus-local controller transaction:
+In PLIO v0.6 a device sends a **PLIO Notification** using the bus-local controller transaction:
 
 ```text
 SPACE = CONTROLLER
@@ -87,7 +87,7 @@ A capability-oriented OS may require authority to both the PLIO device and the m
 
 The user-space driver receives only the resulting `(channel, generation)` handle information. The card never receives the RAX host physical base.
 
-Revocation and active-burst interlock follow PLIO v0.5.
+Revocation and active-burst interlock follow PLIO v0.6.
 
 ## 5. PLIO Notification integration
 
