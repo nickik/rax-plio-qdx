@@ -69,7 +69,7 @@ QDX registers begin at PLIO slot-relative worker offset `0x1000`.
 | `0x1034` | 16 | `CQ_TAIL` | device progress, read-only |
 | `0x1038` | 32 | `QDX_ERROR` | last queue/DMA protocol fault |
 
-Queue bases and buffer addresses carried by QDX are device-visible PLIO DMA handles. Under PLIO v0.5:
+Queue bases and buffer addresses carried by QDX are device-visible PLIO DMA handles. Under PLIO v0.6:
 
 ```text
 channel[31:28] | generation[27:24] | offset[23:0]
