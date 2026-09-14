@@ -40,10 +40,11 @@ jobs:
           fi
           echo "$prefix/bin" >> "$GITHUB_PATH"
 
-      - name: Tool versions
+      - name: Tool checks
         run: |
           cargo --version
-          bsc -version
+          bsc -help >/dev/null
+          echo "BSC $BSC_VERSION installed"
 
       - name: Compile, simulate, and cross-check QLI/NakedDevice
         run: make -C hardware test-bluespec
