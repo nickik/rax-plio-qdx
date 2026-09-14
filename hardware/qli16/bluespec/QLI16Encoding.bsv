@@ -44,6 +44,16 @@ function Qli16Token mmioResponseStatus(MmioResponse resp);
     return q16Token(1, Q16MmioResponse, zeroExtend(pack(resp.status)));
 endfunction
 
+// QLI-16 has no spare token class. Q16MmioResponse in the otherwise-unused
+// QIC->device direction with a zero payload is the unique MMIO_CANCEL token.
+function Qli16Token mmioCancelToken();
+    return q16Token(0, Q16MmioResponse, 0);
+endfunction
+
+function Bool isMmioCancelToken(Qli16Token t);
+    return t.direction == 0 && t.kind == Q16MmioResponse && t.payload == 0;
+endfunction
+
 function Bit#(2) burstCode(BurstWords words);
     case (words)
         BurstOne: return 0;
