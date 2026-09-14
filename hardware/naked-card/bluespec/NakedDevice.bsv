@@ -16,37 +16,37 @@ Bit#(32) cfgDeviceStatus = 32'h0000_0014;
 Bit#(32) cfgDeviceControl = 32'h0000_0018;
 
 function MmioResponse nakedMmio(MmioRequest req);
-    if (!validMmioRequest(req)) begin
-        return mmioError();
-    end
-
+    MmioResponse result = mmioError();
     Bit#(32) aligned = req.address & 32'hffff_fffc;
 
-    if (req.write) begin
-        if (aligned == cfgDeviceControl) begin
-            return mmioWriteOk();
+    if (validMmioRequest(req)) begin
+        if (req.write) begin
+            if (aligned == cfgDeviceControl) begin
+                result = mmioWriteOk();
+            end
         end
-        return mmioError();
+        else begin
+            Bit#(32) data = 0;
+            Bool found = True;
+
+            case (aligned)
+                32'h0000_0000: data = plioId;
+                32'h0000_0004: data = { testDeviceId, testVendorId };
+                32'h0000_0008: data = { 8'h01, 8'h00, testRevision };
+                32'h0000_000c: data = 0;
+                32'h0000_0010: data = 32'h0000_0100;
+                32'h0000_0014: data = 0;
+                32'h0000_0018: data = 0;
+                default: found = False;
+            endcase
+
+            if (found) begin
+                result = mmioReadOk(data);
+            end
+        end
     end
 
-    Bit#(32) data = 0;
-    Bool found = True;
-
-    case (aligned)
-        32'h0000_0000: data = plioId;
-        32'h0000_0004: data = { testDeviceId, testVendorId };
-        32'h0000_0008: data = { 8'h01, 8'h00, testRevision };
-        32'h0000_000c: data = 0;
-        32'h0000_0010: data = 32'h0000_0100;
-        32'h0000_0014: data = 0;
-        32'h0000_0018: data = 0;
-        default: found = False;
-    endcase
-
-    if (!found) begin
-        return mmioError();
-    end
-    return mmioReadOk(data);
+    return result;
 endfunction
 
 interface NakedDeviceIfc;
