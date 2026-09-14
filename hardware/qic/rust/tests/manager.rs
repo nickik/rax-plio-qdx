@@ -184,3 +184,32 @@ fn notification_wins_over_new_dma_but_never_preempts_active_dma() {
     run_until_dma_completion(&mut qic, &mut dev, &mut peer, 128);
     assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 4 }));
 }
+
+#[test]
+fn dma_waits_for_address_ack_before_starting_data() {
+    let mut qic = Qic::new();
+    let mut dev = ScriptDevice {
+        dma_request: Some(DmaRequest { direction: DmaDirection::HostToDevice, address: 0x7700_0000, words: BurstWords::Four }),
+        ..ScriptDevice::default()
+    };
+    let mut peer = TestPeer::new();
+    peer.manager_address_wait_cycles = 4;
+    run_until_dma_completion(&mut qic, &mut dev, &mut peer, 128);
+    assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 4 }));
+    assert_eq!(dev.dma_reads.len(), 4);
+}
+
+#[test]
+fn dma_address_error_reports_bus_error_with_zero_progress() {
+    let mut qic = Qic::new();
+    let mut dev = ScriptDevice {
+        dma_request: Some(DmaRequest { direction: DmaDirection::DeviceToHost, address: 0x7800_0000, words: BurstWords::Four }),
+        dma_write_words: [1, 2, 3, 4].into_iter().map(|data| DmaWord { data }).collect(),
+        ..ScriptDevice::default()
+    };
+    let mut peer = TestPeer::new();
+    peer.manager_address_error = true;
+    run_until_dma_completion(&mut qic, &mut dev, &mut peer, 64);
+    assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::BusError, words_completed: 0 }));
+    assert!(peer.dma_writes().is_empty());
+}
