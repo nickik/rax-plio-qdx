@@ -55,6 +55,7 @@ interface NakedDeviceIfc;
     method Bool responseValid;
     method MmioResponse response;
     method Action responseTaken;
+    method Action cancelRequest;
     method Action resetDevice;
 endinterface
 
@@ -74,6 +75,10 @@ module mkNakedDevice(NakedDeviceIfc);
     endmethod
 
     method Action responseTaken if (isValid(pending));
+        pending <= tagged Invalid;
+    endmethod
+
+    method Action cancelRequest;
         pending <= tagged Invalid;
     endmethod
 
