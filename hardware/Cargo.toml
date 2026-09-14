@@ -8,6 +8,7 @@ members = [
     "qic/rust",
     "testbench/rust",
     "naked-card/rust",
+    "trace/rust",
 ]
 
 [workspace.package]
