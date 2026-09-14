@@ -56,6 +56,7 @@ Do not implement worker data, DMA, or Notification yet.
 
 Add:
 
+- worker read-data-phase gate: address ACK alone must not issue a QLI read; `DS` begins the read operation;
 - worker write-data receive path;
 - latched BE and address state;
 - worker read/write QLI request handshake;
@@ -67,6 +68,7 @@ Add:
 
 ### Tests
 
+- successful worker read address ACK with no subsequent `DS` emits **no QLI MMIO request** and causes no device-side read side effect.
 - complete 8/16/32-bit reads through QLI.
 - complete 8/16/32-bit writes through QLI.
 - write parity checks use **latched** BE even if data-phase BE pins differ.
@@ -226,6 +228,7 @@ state/event markers (debug only)
 Canonical scripts must include:
 
 - worker read/write happy paths;
+- worker address ACK with no data phase and therefore no local read;
 - every worker transfer width;
 - every DMA length/direction;
 - address waits/errors/timeouts;
