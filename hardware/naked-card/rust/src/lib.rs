@@ -34,7 +34,7 @@ impl NakedDevice {
     }
 
     pub fn clock(&mut self, qic: &QicToDevice) {
-        if qic.reset {
+        if qic.reset || qic.mmio_cancel {
             self.pending_response = None;
             return;
         }
@@ -110,5 +110,16 @@ mod tests {
     fn invalid_or_unknown_worker_access_errors() {
         assert_eq!(naked_mmio(read(CFG_VENDOR_DEVICE + 1, 0x3)), MmioResponse::Error);
         assert_eq!(naked_mmio(read(0x80, 0xf)), MmioResponse::Error);
+    }
+
+    #[test]
+    fn mmio_cancel_discards_a_pending_response() {
+        let mut dev = NakedDevice::new();
+        let req = read(CFG_ID, 0xf);
+        dev.clock(&QicToDevice { mmio_request: Some(req), ..QicToDevice::default() });
+        assert!(dev.drive().mmio_response.is_some());
+        dev.clock(&QicToDevice { mmio_cancel: true, ..QicToDevice::default() });
+        assert!(dev.drive().mmio_response.is_none());
+        assert!(dev.drive().mmio_ready);
     }
 }
