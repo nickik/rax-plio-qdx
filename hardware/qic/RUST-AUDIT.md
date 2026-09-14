@@ -18,6 +18,7 @@ The audited Rust QIC now matches these PLIO rules:
 - checks 25-bit slot-relative address legality, natural 8/16/32-bit transfer encoding, `BLEN=1`, and full address parity;
 - ACKs a valid worker address phase and ERRs an invalid address phase;
 - latches address-phase controls for the data phase rather than depending on later bus values;
+- does not issue a worker read to local device logic until `DS` actually begins the PLIO data phase;
 - checks worker write parity only on the byte lanes selected by the latched byte enable;
 - generates read-data parity and returns ACK/ERR only as the selected worker;
 - requests bus-manager ownership with BR and drives no manager address/data before BG;
@@ -42,6 +43,7 @@ The audited Rust QIC now matches these QLI rules:
 
 - QLI exposes no slot identity, host physical address, CPU vector, CPU target, or QDX semantics;
 - one worker-MMIO request and one DMA transaction may be outstanding;
+- a worker read is not presented to QLI merely because the address phase succeeded; PLIO `DS` must begin the data phase first;
 - MMIO request payload remains stable until `mmio_ready`;
 - MMIO response is consumed only when the enclosing PLIO data beat is active;
 - if an accepted MMIO request outlives the PLIO timeout, the QIC asserts `mmio_cancel` so the endpoint cannot retain a stale response;
@@ -56,13 +58,16 @@ The audited Rust QIC now matches these QLI rules:
 
 ## 3. Audit corrections made before Bluespec
 
-The audit found and corrected three real issues:
+The audit found and corrected four real issues:
 
 1. **Address-phase handshake was underspecified/under-modeled.** PLIO defines ACK/ERR for the current address/data beat and a timeout per outstanding address/data beat. The Rust QIC previously advanced from a manager address phase after one clock without waiting for ACK. The model now waits for address ACK/ERR/timeout; valid worker addresses are explicitly ACKed.
 2. **Accepted MMIO had no cancellation path.** A local endpoint could accept an MMIO request, PLIO could time out before the response arrived, and the endpoint could then retain a stale response forever. QLI now has `mmio_cancel`, and the Rust QIC asserts it on that abort path.
 3. **Worker write parity combinational checking used the current bus BE instead of the latched address-phase BE.** The QIC now uses the latched byte-enable, matching PLIO's address-phase control semantics.
+4. **Worker reads reached QLI too early.** The old model issued the local read after the address phase, before the host asserted `DS` for the data phase. That could trigger a side-effecting device read even if the host never began the data beat. The QIC now waits in `WorkerReadData` and only presents the QLI request after `DS` starts the PLIO data phase.
 
 The existing PLIO signal table already defines `ACK*` as accepting the current address/data beat and the timeout rule applies to an outstanding address/data beat. The Rust model now follows that interpretation. The address-phase prose should still be made explicit before Bluespec Phase 1 so the rule is not left implicit.
+
+The corrected hardware Rust workspace passes **50 direct tests with zero failures** in the validation environment.
 
 ## 4. Explicit non-responsibilities
 
