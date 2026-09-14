@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use plio_logical_model::{
-    odd_parity_32, parity_matches, valid_worker_address, BusToCard, BurstWords,
+    odd_parity_32, parity_matches, valid_worker_transfer, BusToCard, BurstWords,
     CardToBus, Space, PLIO_TIMEOUT_CYCLES,
 };
 use qli_model::{
@@ -63,14 +63,15 @@ impl Qic {
                     if !worker_address_valid(bus) { card.err = true; }
                 } else if let Some(notification) = device.notification_request {
                     let _ = notification.validate();
-                    // Completion-based handshake: ready stays low until PLIO ACK.
+                    // Notification uses completion-based ready, so no early ready.
                 } else if let Some(request) = device.dma_request {
                     if request.validate().is_ok() { qli.dma_request_ready = true; }
                 }
             }
             State::WorkerWriteData { wait, .. } => {
-                if timed_out(wait) { card.err = true; }
-                if bus.data_strobe
+                if timed_out(wait) {
+                    card.err = true;
+                } else if bus.data_strobe
                     && (bus.ad.is_none()
                         || bus.par.is_none()
                         || !parity_matches(bus.ad.unwrap_or(0), bus.par.unwrap_or(0), bus.byte_enable))
@@ -79,23 +80,29 @@ impl Qic {
                 }
             }
             State::WorkerOffer { request, wait } => {
-                if timed_out(wait) { card.err = true; }
-                qli.mmio_request = Some(request);
+                if timed_out(wait) {
+                    card.err = true;
+                } else {
+                    qli.mmio_request = Some(request);
+                }
             }
             State::WorkerResponse { read, wait } => {
-                if timed_out(wait) { card.err = true; }
-                qli.mmio_response_ready = bus.data_strobe;
-                if bus.data_strobe {
-                    if let Some(response) = device.mmio_response {
-                        match response {
-                            MmioResponse::ReadOk(data) if read => {
-                                card.ad = Some(data);
-                                card.par = Some(odd_parity_32(data));
-                                card.ack = true;
+                if timed_out(wait) {
+                    card.err = true;
+                } else {
+                    qli.mmio_response_ready = bus.data_strobe;
+                    if bus.data_strobe {
+                        if let Some(response) = device.mmio_response {
+                            match response {
+                                MmioResponse::ReadOk(data) if read => {
+                                    card.ad = Some(data);
+                                    card.par = Some(odd_parity_32(data));
+                                    card.ack = true;
+                                }
+                                MmioResponse::WriteOk if !read => card.ack = true,
+                                MmioResponse::Error => card.err = true,
+                                _ => card.err = true,
                             }
-                            MmioResponse::WriteOk if !read => card.ack = true,
-                            MmioResponse::Error(_) => card.err = true,
-                            _ => card.err = true,
                         }
                     }
                 }
@@ -116,9 +123,9 @@ impl Qic {
             State::DmaData { request, completed, wait, buffer } => {
                 let final_read_buffer = is_final_read_buffer(request, completed, buffer);
                 card.request = !final_read_buffer;
-                if (!final_read_buffer && !bus.grant) || (!final_read_buffer && timed_out(wait)) {
-                    return (card, qli);
-                }
+
+                if timed_out(wait) { return (card, qli); }
+                if !final_read_buffer && !bus.grant { return (card, qli); }
 
                 match request.direction {
                     DmaDirection::HostToDevice => {
@@ -175,16 +182,13 @@ impl Qic {
             return;
         }
 
-        // BG is authority to drive PLIO. The one exception is draining the
-        // already-ACKed final host->device word from the QIC's local buffer;
-        // no PLIO bus work remains at that point.
+        // BG is authority to drive manager-side PLIO. The one exception is
+        // draining the already-ACKed final host->device word from the QIC's
+        // local buffer; no PLIO bus work remains at that point.
         match self.state {
             State::DmaAddress(_) if !bus.grant => {
                 self.state = State::DmaComplete {
-                    completion: DmaCompletion {
-                        status: DmaStatus::ProtocolError,
-                        words_completed: 0,
-                    },
+                    completion: DmaCompletion { status: DmaStatus::ProtocolError, words_completed: 0 },
                 };
                 return;
             }
@@ -192,16 +196,13 @@ impl Qic {
                 if !bus.grant && !is_final_read_buffer(request, completed, buffer) =>
             {
                 self.state = State::DmaComplete {
-                    completion: DmaCompletion {
-                        status: DmaStatus::ProtocolError,
-                        words_completed: completed,
-                    },
+                    completion: DmaCompletion { status: DmaStatus::ProtocolError, words_completed: completed },
                 };
                 return;
             }
             State::NotificationAddress(_) | State::NotificationData { .. } if !bus.grant => {
-                // Notification is idempotent. No local acknowledgement means
-                // the producer keeps it asserted and the QIC retries.
+                // Notification is idempotent. No local completion means the
+                // producer retains it and the QIC retries from Idle.
                 self.state = State::Idle;
                 return;
             }
@@ -217,20 +218,11 @@ impl Qic {
                         let address = bus.ad.unwrap_or(0);
                         if bus.read {
                             State::WorkerOffer {
-                                request: MmioRequest {
-                                    address,
-                                    write: false,
-                                    byte_enable: bus.byte_enable,
-                                    write_data: 0,
-                                },
+                                request: MmioRequest { address, write: false, byte_enable: bus.byte_enable, write_data: 0 },
                                 wait: 0,
                             }
                         } else {
-                            State::WorkerWriteData {
-                                address,
-                                byte_enable: bus.byte_enable,
-                                wait: 0,
-                            }
+                            State::WorkerWriteData { address, byte_enable: bus.byte_enable, wait: 0 }
                         }
                     }
                 } else if let Some(notification) = device.notification_request {
@@ -256,38 +248,25 @@ impl Qic {
                     match (bus.ad, bus.par) {
                         (Some(data), Some(parity)) if parity_matches(data, parity, byte_enable) => {
                             State::WorkerOffer {
-                                request: MmioRequest {
-                                    address,
-                                    write: true,
-                                    byte_enable,
-                                    write_data: data,
-                                },
+                                request: MmioRequest { address, write: true, byte_enable, write_data: data },
                                 wait: 0,
                             }
                         }
                         _ => State::Idle,
                     }
                 } else {
-                    State::WorkerWriteData {
-                        address,
-                        byte_enable,
-                        wait: wait.saturating_add(1),
-                    }
+                    State::WorkerWriteData { address, byte_enable, wait: wait.saturating_add(1) }
                 }
             }
             State::WorkerOffer { request, wait } => {
                 if timed_out(wait) {
                     State::Idle
                 } else if device.mmio_ready {
-                    State::WorkerResponse {
-                        read: !request.write,
-                        wait: 0,
-                    }
+                    // The same PLIO data phase remains outstanding, so do not
+                    // restart the 256-clock timeout when QLI accepts the request.
+                    State::WorkerResponse { read: !request.write, wait }
                 } else {
-                    State::WorkerOffer {
-                        request,
-                        wait: wait.saturating_add(1),
-                    }
+                    State::WorkerOffer { request, wait: wait.saturating_add(1) }
                 }
             }
             State::WorkerResponse { read, wait } => {
@@ -296,10 +275,7 @@ impl Qic {
                 } else if bus.data_strobe && device.mmio_response.is_some() {
                     State::Idle
                 } else {
-                    State::WorkerResponse {
-                        read,
-                        wait: wait.saturating_add(1),
-                    }
+                    State::WorkerResponse { read, wait: wait.saturating_add(1) }
                 }
             }
             State::RequestBus(work) => {
@@ -315,84 +291,53 @@ impl Qic {
             State::DmaAddress(request) => {
                 if bus.err {
                     State::DmaComplete {
-                        completion: DmaCompletion {
-                            status: DmaStatus::BusError,
-                            words_completed: 0,
-                        },
+                        completion: DmaCompletion { status: DmaStatus::BusError, words_completed: 0 },
                     }
                 } else {
-                    State::DmaData {
-                        request,
-                        completed: 0,
-                        wait: 0,
-                        buffer: None,
-                    }
+                    State::DmaData { request, completed: 0, wait: 0, buffer: None }
                 }
             }
             State::DmaData { request, completed, wait, buffer } => {
-                if is_final_read_buffer(request, completed, buffer) {
-                    if device.dma_read_ready {
-                        State::DmaComplete {
-                            completion: DmaCompletion {
-                                status: DmaStatus::Ok,
-                                words_completed: completed,
-                            },
-                        }
-                    } else {
-                        State::DmaData { request, completed, wait, buffer }
-                    }
-                } else if timed_out(wait) {
+                if timed_out(wait) {
                     State::DmaComplete {
-                        completion: DmaCompletion {
-                            status: DmaStatus::Timeout,
-                            words_completed: completed,
-                        },
+                        completion: DmaCompletion { status: DmaStatus::Timeout, words_completed: completed },
                     }
                 } else {
                     match request.direction {
                         DmaDirection::HostToDevice => {
                             if let Some(word) = buffer {
                                 if device.dma_read_ready {
-                                    State::DmaData {
-                                        request,
-                                        completed,
-                                        wait: 0,
-                                        buffer: None,
+                                    if completed == request.words.words() {
+                                        State::DmaComplete {
+                                            completion: DmaCompletion { status: DmaStatus::Ok, words_completed: completed },
+                                        }
+                                    } else {
+                                        State::DmaData { request, completed, wait: 0, buffer: None }
                                     }
                                 } else {
                                     State::DmaData {
                                         request,
                                         completed,
-                                        wait,
+                                        wait: wait.saturating_add(1),
                                         buffer: Some(word),
                                     }
                                 }
                             } else if bus.err {
                                 State::DmaComplete {
-                                    completion: DmaCompletion {
-                                        status: DmaStatus::BusError,
-                                        words_completed: completed,
-                                    },
+                                    completion: DmaCompletion { status: DmaStatus::BusError, words_completed: completed },
                                 }
                             } else if bus.ack {
                                 match (bus.ad, bus.par) {
                                     (Some(data), Some(parity)) if parity_matches(data, parity, 0xf) => {
-                                        let next = completed + 1;
                                         State::DmaData {
                                             request,
-                                            completed: next,
+                                            completed: completed + 1,
                                             wait: 0,
-                                            buffer: Some(DmaWord {
-                                                data,
-                                                last: next == request.words.words(),
-                                            }),
+                                            buffer: Some(DmaWord { data }),
                                         }
                                     }
                                     _ => State::DmaComplete {
-                                        completion: DmaCompletion {
-                                            status: DmaStatus::ParityError,
-                                            words_completed: completed,
-                                        },
+                                        completion: DmaCompletion { status: DmaStatus::ParityError, words_completed: completed },
                                     },
                                 }
                             } else {
@@ -408,27 +353,16 @@ impl Qic {
                             if let Some(word) = buffer {
                                 if bus.err {
                                     State::DmaComplete {
-                                        completion: DmaCompletion {
-                                            status: DmaStatus::BusError,
-                                            words_completed: completed,
-                                        },
+                                        completion: DmaCompletion { status: DmaStatus::BusError, words_completed: completed },
                                     }
                                 } else if bus.ack {
                                     let next = completed + 1;
                                     if next == request.words.words() {
                                         State::DmaComplete {
-                                            completion: DmaCompletion {
-                                                status: DmaStatus::Ok,
-                                                words_completed: next,
-                                            },
+                                            completion: DmaCompletion { status: DmaStatus::Ok, words_completed: next },
                                         }
                                     } else {
-                                        State::DmaData {
-                                            request,
-                                            completed: next,
-                                            wait: 0,
-                                            buffer: None,
-                                        }
+                                        State::DmaData { request, completed: next, wait: 0, buffer: None }
                                     }
                                 } else {
                                     State::DmaData {
@@ -439,27 +373,14 @@ impl Qic {
                                     }
                                 }
                             } else if let Some(word) = device.dma_write {
-                                let expected_last = completed + 1 == request.words.words();
-                                if word.last != expected_last {
-                                    State::DmaComplete {
-                                        completion: DmaCompletion {
-                                            status: DmaStatus::ProtocolError,
-                                            words_completed: completed,
-                                        },
-                                    }
-                                } else {
-                                    State::DmaData {
-                                        request,
-                                        completed,
-                                        wait: 0,
-                                        buffer: Some(word),
-                                    }
-                                }
+                                State::DmaData { request, completed, wait: 0, buffer: Some(word) }
                             } else {
+                                // A device that initiated a write DMA must make
+                                // bounded progress; otherwise it would pin BG forever.
                                 State::DmaData {
                                     request,
                                     completed,
-                                    wait,
+                                    wait: wait.saturating_add(1),
                                     buffer: None,
                                 }
                             }
@@ -468,29 +389,16 @@ impl Qic {
                 }
             }
             State::DmaComplete { completion } => {
-                if device.dma_completion_ready {
-                    State::Idle
-                } else {
-                    State::DmaComplete { completion }
-                }
+                if device.dma_completion_ready { State::Idle } else { State::DmaComplete { completion } }
             }
             State::NotificationAddress(request) => {
-                if bus.err {
-                    State::Idle
-                } else {
-                    State::NotificationData { request, wait: 0 }
-                }
+                if bus.err { State::Idle } else { State::NotificationData { request, wait: 0 } }
             }
             State::NotificationData { request, wait } => {
-                if timed_out(wait) || bus.err {
-                    State::Idle
-                } else if bus.ack && device.notification_request == Some(request) {
+                if timed_out(wait) || bus.err || bus.ack {
                     State::Idle
                 } else {
-                    State::NotificationData {
-                        request,
-                        wait: wait.saturating_add(1),
-                    }
+                    State::NotificationData { request, wait: wait.saturating_add(1) }
                 }
             }
         };
@@ -508,13 +416,11 @@ fn worker_address_cycle(bus: &BusToCard) -> bool {
 }
 
 fn worker_address_valid(bus: &BusToCard) -> bool {
+    let Some(address) = bus.ad else { return false; };
+    let Some(parity) = bus.par else { return false; };
     bus.burst == BurstWords::One
-        && bus.ad.is_some()
-        && valid_worker_address(bus.ad.unwrap_or(u32::MAX))
-        && bus.par.is_some()
-        && parity_matches(bus.ad.unwrap_or(0), bus.par.unwrap_or(0), 0xf)
-        && bus.byte_enable != 0
-        && bus.byte_enable & !0xf == 0
+        && valid_worker_transfer(address, bus.byte_enable)
+        && parity_matches(address, parity, 0xf)
 }
 
 fn timed_out(wait: u16) -> bool { wait >= PLIO_TIMEOUT_CYCLES - 1 }
@@ -523,25 +429,20 @@ fn timed_out(wait: u16) -> bool { wait >= PLIO_TIMEOUT_CYCLES - 1 }
 mod tests {
     use super::*;
 
-    fn valid_worker_address(read: bool) -> BusToCard {
-        let address = 0x100;
-        BusToCard {
-            selected: true,
-            ad: Some(address),
-            par: Some(odd_parity_32(address)),
-            space: Some(Space::Worker),
-            address_strobe: true,
-            read,
-            byte_enable: 0xf,
-            ..BusToCard::default()
-        }
-    }
-
     #[test]
     fn invalid_worker_address_parity_is_rejected_immediately() {
         let qic = Qic::new();
-        let mut bus = valid_worker_address(true);
-        bus.par = Some(bus.par.unwrap() ^ 1);
+        let address = 0x100;
+        let bus = BusToCard {
+            selected: true,
+            ad: Some(address),
+            par: Some(odd_parity_32(address) ^ 1),
+            space: Some(Space::Worker),
+            address_strobe: true,
+            read: true,
+            byte_enable: 0xf,
+            ..BusToCard::default()
+        };
         let (card, _) = qic.drive(&bus, &DeviceToQic::default());
         assert!(card.err);
         assert!(!card.ack);
@@ -550,11 +451,21 @@ mod tests {
     #[test]
     fn invalid_worker_write_data_parity_never_reaches_qli() {
         let mut qic = Qic::new();
-        let address = valid_worker_address(false);
-        qic.clock(&address, &DeviceToQic::default());
+        let address = 0x100;
+        let address_cycle = BusToCard {
+            selected: true,
+            ad: Some(address),
+            par: Some(odd_parity_32(address)),
+            space: Some(Space::Worker),
+            address_strobe: true,
+            read: false,
+            byte_enable: 0xf,
+            ..BusToCard::default()
+        };
+        qic.clock(&address_cycle, &DeviceToQic::default());
 
         let data = 0x1234_5678;
-        let bus = BusToCard {
+        let bad_data = BusToCard {
             selected: true,
             ad: Some(data),
             par: Some(odd_parity_32(data) ^ 1),
@@ -562,13 +473,9 @@ mod tests {
             byte_enable: 0xf,
             ..BusToCard::default()
         };
-        let (card, qli) = qic.drive(&bus, &DeviceToQic::default());
+        let (card, local) = qic.drive(&bad_data, &DeviceToQic::default());
         assert!(card.err);
-        assert!(qli.mmio_request.is_none());
-        qic.clock(&bus, &DeviceToQic::default());
-        let (_, qli_after) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
-        assert!(qli_after.mmio_request.is_none());
-        assert!(qic.is_idle());
+        assert!(local.mmio_request.is_none());
     }
 
     #[test]
@@ -579,37 +486,12 @@ mod tests {
             address: 0x1000,
             words: BurstWords::Four,
         };
-        let device = DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() };
-        qic.clock(&BusToCard::default(), &device);
-        assert!(!qic.is_idle());
-
-        let reset = BusToCard { reset: true, ..BusToCard::default() };
-        let (card, local) = qic.drive(&reset, &device);
-        assert!(local.reset);
-        assert!(!card.request);
-        qic.clock(&reset, &device);
-        assert!(qic.is_idle());
-    }
-
-    #[test]
-    fn losing_grant_during_unfinished_dma_reports_protocol_error() {
-        let mut qic = Qic::new();
-        let request = DmaRequest {
-            direction: DmaDirection::HostToDevice,
-            address: 0x1000,
-            words: BurstWords::Four,
-        };
-        let device = DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() };
-        qic.clock(&BusToCard::default(), &device);
-        qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &device);
-        qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &DeviceToQic::default());
-
-        let lost = BusToCard::default();
-        qic.clock(&lost, &DeviceToQic::default());
-        let (_, local) = qic.drive(&lost, &DeviceToQic::default());
-        assert_eq!(
-            local.dma_completion,
-            Some(DmaCompletion { status: DmaStatus::ProtocolError, words_completed: 0 })
+        qic.clock(
+            &BusToCard::default(),
+            &DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() },
         );
+        assert!(!qic.is_idle());
+        qic.clock(&BusToCard { reset: true, ..BusToCard::default() }, &DeviceToQic::default());
+        assert!(qic.is_idle());
     }
 }

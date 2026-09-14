@@ -39,6 +39,8 @@ pub struct TestPeer {
     notifications: Vec<u8>,
     last_dma_address: Option<u32>,
     last_dma_burst: Option<BurstWords>,
+    grant_count: u32,
+    manager_transactions: u32,
 }
 
 impl Default for TestPeer {
@@ -59,6 +61,8 @@ impl TestPeer {
             notifications: Vec::new(),
             last_dma_address: None,
             last_dma_burst: None,
+            grant_count: 0,
+            manager_transactions: 0,
         }
     }
 
@@ -79,6 +83,8 @@ impl TestPeer {
     pub fn notifications(&self) -> &[u8] { &self.notifications }
     pub fn last_dma_address(&self) -> Option<u32> { self.last_dma_address }
     pub fn last_dma_burst(&self) -> Option<BurstWords> { self.last_dma_burst }
+    pub fn grant_count(&self) -> u32 { self.grant_count }
+    pub fn manager_transactions(&self) -> u32 { self.manager_transactions }
 
     pub fn bus_inputs(&self) -> BusToCard {
         let mut bus = BusToCard::default();
@@ -143,7 +149,12 @@ impl TestPeer {
     pub fn clock(&mut self, card: &CardToBus) {
         self.state = match self.state.clone() {
             State::Idle => {
-                if card.request { State::Grant } else { State::Idle }
+                if card.request {
+                    self.grant_count += 1;
+                    State::Grant
+                } else {
+                    State::Idle
+                }
             }
             State::WorkerAddress(op) => {
                 if card.err {
@@ -179,11 +190,17 @@ impl TestPeer {
             }
             State::Grant => {
                 if card.address_strobe {
+                    self.manager_transactions += 1;
                     match card.space {
                         Some(Space::HostDma) => {
                             self.last_dma_address = card.ad;
                             self.last_dma_burst = Some(card.burst);
-                            State::DmaData { read: card.read, total: card.burst.words(), beat: 0, wait_left: self.dma_wait_cycles }
+                            State::DmaData {
+                                read: card.read,
+                                total: card.burst.words(),
+                                beat: 0,
+                                wait_left: self.dma_wait_cycles,
+                            }
                         }
                         Some(Space::Controller) => {
                             let channel = card.ad.unwrap_or(0) / 4;
@@ -210,7 +227,11 @@ impl TestPeer {
                             if let Some(data) = card.ad { self.dma_writes.push(data); }
                         }
                         let next = beat + 1;
-                        if next == total { State::Idle } else { State::DmaData { read, total, beat: next, wait_left: self.dma_wait_cycles } }
+                        if next == total {
+                            State::Idle
+                        } else {
+                            State::DmaData { read, total, beat: next, wait_left: self.dma_wait_cycles }
+                        }
                     }
                 } else {
                     State::DmaData { read, total, beat, wait_left }
@@ -247,5 +268,13 @@ mod tests {
         assert_eq!(address.space, Some(Space::Worker));
         peer.clock(&CardToBus::default());
         assert!(peer.bus_inputs().data_strobe);
+    }
+
+    #[test]
+    fn each_manager_transaction_starts_with_a_fresh_grant() {
+        let mut peer = TestPeer::new();
+        peer.clock(&CardToBus { request: true, ..CardToBus::default() });
+        assert_eq!(peer.grant_count(), 1);
+        assert_eq!(peer.manager_transactions(), 0);
     }
 }

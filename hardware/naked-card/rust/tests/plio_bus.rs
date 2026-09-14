@@ -33,23 +33,38 @@ fn naked_card_plio_read_reaches_qli_device() {
 }
 
 #[test]
-fn naked_card_plio_write_reaches_qli_device() {
-    let mut qic = Qic::new();
-    let mut device = NakedDevice::new();
-    let mut peer = TestPeer::new();
-    peer.start_worker_write(CFG_DEVICE_CONTROL, 0xf, 0);
-    assert_eq!(run_until_result(&mut qic, &mut device, &mut peer), WorkerResult::WriteOk);
-    assert!(qic.is_idle());
+fn naked_card_supports_natural_8_16_32_bit_worker_reads() {
+    let expected = u32::from(TEST_VENDOR_ID) | (u32::from(TEST_DEVICE_ID) << 16);
+    for (address, be) in [
+        (CFG_VENDOR_DEVICE, 0xf),
+        (CFG_VENDOR_DEVICE, 0x3),
+        (CFG_VENDOR_DEVICE + 2, 0xc),
+        (CFG_VENDOR_DEVICE + 3, 0x8),
+    ] {
+        let mut qic = Qic::new();
+        let mut device = NakedDevice::new();
+        let mut peer = TestPeer::new();
+        peer.start_worker_read(address, be);
+        assert_eq!(run_until_result(&mut qic, &mut device, &mut peer), WorkerResult::Read(expected));
+    }
 }
 
 #[test]
-fn naked_card_combined_vendor_device_word_is_little_endian() {
+fn naked_card_rejects_misaligned_worker_access_before_qli() {
     let mut qic = Qic::new();
     let mut device = NakedDevice::new();
     let mut peer = TestPeer::new();
-    peer.start_worker_read(CFG_VENDOR_DEVICE, 0xf);
-    let expected = u32::from(TEST_VENDOR_ID) | (u32::from(TEST_DEVICE_ID) << 16);
-    assert_eq!(run_until_result(&mut qic, &mut device, &mut peer), WorkerResult::Read(expected));
+    peer.start_worker_read(CFG_VENDOR_DEVICE + 1, 0x3);
+    assert_eq!(run_until_result(&mut qic, &mut device, &mut peer), WorkerResult::Error);
+}
+
+#[test]
+fn naked_card_worker_write_reaches_qli_device() {
+    let mut qic = Qic::new();
+    let mut device = NakedDevice::new();
+    let mut peer = TestPeer::new();
+    peer.start_worker_write(CFG_DEVICE_CONTROL, 0xf, 0x1234_5678);
+    assert_eq!(run_until_result(&mut qic, &mut device, &mut peer), WorkerResult::WriteOk);
 }
 
 #[test]

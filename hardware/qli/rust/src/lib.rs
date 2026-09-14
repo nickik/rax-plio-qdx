@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use plio_logical_model::BurstWords;
+use plio_logical_model::{valid_worker_transfer, BurstWords};
 
 pub const QLI_VERSION: u16 = 1;
 
@@ -14,11 +14,8 @@ pub struct MmioRequest {
 
 impl MmioRequest {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.address >= (1 << 25) {
-            return Err("QLI MMIO address exceeds 25-bit PLIO worker space");
-        }
-        if self.byte_enable == 0 || self.byte_enable & !0x0f != 0 {
-            return Err("QLI MMIO byte_enable must select at least one of four lanes");
+        if !valid_worker_transfer(self.address, self.byte_enable) {
+            return Err("QLI MMIO must be a naturally aligned 8/16/32-bit PLIO worker transfer inside the 25-bit slot space");
         }
         Ok(())
     }
@@ -28,7 +25,7 @@ impl MmioRequest {
 pub enum MmioResponse {
     ReadOk(u32),
     WriteOk,
-    Error(u8),
+    Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,16 +44,18 @@ pub struct DmaRequest {
 impl DmaRequest {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.address & 3 != 0 {
-            return Err("QLI DMA handle offset must be longword aligned");
+            return Err("QLI DMA handle must be longword aligned");
         }
         Ok(())
     }
 }
 
+/// One 32-bit word on either QLI DMA data channel.
+/// There is deliberately no LAST field: the accepted DmaRequest already fixes
+/// the transfer length at 1/4/8/16 words and both sides count the words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmaWord {
     pub data: u32,
-    pub last: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +100,7 @@ impl NotificationRequest {
 }
 
 /// Local-device signals sampled by the QIC in one QLI clock step.
+/// Option<T> is the cycle-model representation of a valid payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeviceToQic {
     pub mmio_ready: bool,
@@ -122,8 +122,8 @@ pub struct QicToDevice {
     pub dma_read: Option<DmaWord>,
     pub dma_write_ready: bool,
     pub dma_completion: Option<DmaCompletion>,
-    /// Completion-based Notification handshake: the producer holds the
-    /// request stable until the PLIO CONTROLLER transaction is ACKed.
+    /// Completion-based Notification handshake. The producer holds the same
+    /// request stable until the PLIO CONTROLLER transaction has been ACKed.
     pub notification_ready: bool,
 }
 
@@ -132,11 +132,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mmio_is_slot_relative_only() {
-        let good = MmioRequest { address: 0x01ff_fffc, write: false, byte_enable: 0xf, write_data: 0 };
-        let bad = MmioRequest { address: 0x0200_0000, ..good };
-        assert!(good.validate().is_ok());
-        assert!(bad.validate().is_err());
+    fn mmio_accepts_exactly_natural_8_16_32_bit_worker_transfers() {
+        for req in [
+            MmioRequest { address: 0x100, write: false, byte_enable: 0x1, write_data: 0 },
+            MmioRequest { address: 0x101, write: false, byte_enable: 0x2, write_data: 0 },
+            MmioRequest { address: 0x102, write: false, byte_enable: 0xc, write_data: 0 },
+            MmioRequest { address: 0x100, write: true, byte_enable: 0xf, write_data: 0x1234_5678 },
+        ] {
+            assert!(req.validate().is_ok());
+        }
+
+        for req in [
+            MmioRequest { address: 0x0200_0000, write: false, byte_enable: 0x1, write_data: 0 },
+            MmioRequest { address: 0x101, write: false, byte_enable: 0x3, write_data: 0 },
+            MmioRequest { address: 0x100, write: false, byte_enable: 0x5, write_data: 0 },
+            MmioRequest { address: 0x100, write: false, byte_enable: 0, write_data: 0 },
+        ] {
+            assert!(req.validate().is_err());
+        }
     }
 
     #[test]
@@ -148,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_completion_must_be_complete() {
+    fn successful_completion_must_be_complete_but_faults_may_be_partial() {
         let bad = DmaCompletion { status: DmaStatus::Ok, words_completed: 3 };
         let partial_error = DmaCompletion { status: DmaStatus::BusError, words_completed: 3 };
         assert!(bad.validate(BurstWords::Four).is_err());
@@ -159,5 +172,10 @@ mod tests {
     fn notification_is_only_a_small_channel_number() {
         assert!(NotificationRequest { channel: 3 }.validate().is_ok());
         assert!(NotificationRequest { channel: 4 }.validate().is_err());
+    }
+
+    #[test]
+    fn dma_word_has_no_redundant_end_marker() {
+        assert_eq!(core::mem::size_of::<DmaWord>(), core::mem::size_of::<u32>());
     }
 }

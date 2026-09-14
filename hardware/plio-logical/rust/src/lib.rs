@@ -115,6 +115,27 @@ pub fn parity_matches(word: u32, parity: u8, byte_enable: u8) -> bool {
 
 pub fn valid_worker_address(address: u32) -> bool { address & !WORKER_ADDRESS_MASK == 0 }
 
+/// PLIO v0.6 naturally-aligned worker transfer encoding.
+/// The byte address selects the first addressed byte and BE selects the
+/// corresponding lane(s) in the containing 32-bit longword.
+pub fn valid_worker_byte_enable(address: u32, byte_enable: u8) -> bool {
+    if byte_enable & !0x0f != 0 { return false; }
+    matches!(
+        (address & 3, byte_enable),
+        (0, 0b0001)
+            | (1, 0b0010)
+            | (2, 0b0100)
+            | (3, 0b1000)
+            | (0, 0b0011)
+            | (2, 0b1100)
+            | (0, 0b1111)
+    )
+}
+
+pub fn valid_worker_transfer(address: u32, byte_enable: u8) -> bool {
+    valid_worker_address(address) && valid_worker_byte_enable(address, byte_enable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +179,31 @@ mod tests {
     fn worker_address_is_25_bit() {
         assert!(valid_worker_address(0x01ff_ffff));
         assert!(!valid_worker_address(0x0200_0000));
+    }
+
+    #[test]
+    fn worker_byte_enables_encode_only_natural_8_16_32_bit_accesses() {
+        for (address, be) in [
+            (0x100, 0b0001),
+            (0x101, 0b0010),
+            (0x102, 0b0100),
+            (0x103, 0b1000),
+            (0x100, 0b0011),
+            (0x102, 0b1100),
+            (0x100, 0b1111),
+        ] {
+            assert!(valid_worker_byte_enable(address, be), "address={address:#x} be={be:04b}");
+        }
+
+        for (address, be) in [
+            (0x101, 0b0011),
+            (0x100, 0b1100),
+            (0x102, 0b1111),
+            (0x100, 0b0101),
+            (0x100, 0),
+            (0x100, 0x10),
+        ] {
+            assert!(!valid_worker_byte_enable(address, be), "address={address:#x} be={be:04b}");
+        }
     }
 }

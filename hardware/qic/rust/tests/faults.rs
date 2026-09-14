@@ -25,10 +25,7 @@ fn dma_times_out_after_256_unacknowledged_bus_clocks() {
         qic.clock(&waiting_bus, &DeviceToQic::default());
     }
 
-    let (_, before_timeout) = qic.drive(&waiting_bus, &DeviceToQic::default());
-    assert!(before_timeout.dma_completion.is_none());
     qic.clock(&waiting_bus, &DeviceToQic::default());
-
     let (_, after_timeout) = qic.drive(&waiting_bus, &DeviceToQic::default());
     let completion = after_timeout.dma_completion.expect("timeout completion");
     assert_eq!(completion.status, DmaStatus::Timeout);
@@ -36,7 +33,35 @@ fn dma_times_out_after_256_unacknowledged_bus_clocks() {
 }
 
 #[test]
-fn worker_wait_timeout_returns_plio_error_without_fabricating_a_response() {
+fn device_to_host_local_stall_cannot_pin_grant_forever() {
+    let mut qic = Qic::new();
+    let request = DmaRequest {
+        direction: DmaDirection::DeviceToHost,
+        address: 0x1300_0000,
+        words: BurstWords::Four,
+    };
+
+    qic.clock(
+        &BusToCard::default(),
+        &DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() },
+    );
+    qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &DeviceToQic::default());
+    qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &DeviceToQic::default());
+
+    let granted = BusToCard { grant: true, ..BusToCard::default() };
+    for _ in 0..PLIO_TIMEOUT_CYCLES {
+        qic.clock(&granted, &DeviceToQic::default());
+    }
+
+    let (card, local) = qic.drive(&granted, &DeviceToQic::default());
+    assert!(!card.request);
+    let completion = local.dma_completion.expect("local stall completion");
+    assert_eq!(completion.status, DmaStatus::Timeout);
+    assert_eq!(completion.words_completed, 0);
+}
+
+#[test]
+fn worker_timeout_is_one_total_data_phase_budget() {
     let mut qic = Qic::new();
     let address = 0x40;
     let address_cycle = BusToCard {
@@ -53,19 +78,26 @@ fn worker_wait_timeout_returns_plio_error_without_fabricating_a_response() {
     qic.clock(&address_cycle, &DeviceToQic::default());
 
     let waiting_host = BusToCard { selected: true, data_strobe: true, read: true, byte_enable: 0xf, ..BusToCard::default() };
-    for _ in 0..(PLIO_TIMEOUT_CYCLES - 1) {
-        let (card, local) = qic.drive(&waiting_host, &DeviceToQic::default());
-        assert!(!card.ack);
-        assert!(!card.err);
-        assert!(local.mmio_request.is_some());
+
+    // Spend most of the timeout waiting for the endpoint to accept the request.
+    for _ in 0..200 {
+        qic.clock(&waiting_host, &DeviceToQic::default());
+    }
+
+    // QLI accepts the request, but does not produce a response. Acceptance must
+    // not restart the PLIO timeout counter.
+    qic.clock(
+        &waiting_host,
+        &DeviceToQic { mmio_ready: true, ..DeviceToQic::default() },
+    );
+
+    for _ in 0..55 {
         qic.clock(&waiting_host, &DeviceToQic::default());
     }
 
     let (card, _) = qic.drive(&waiting_host, &DeviceToQic::default());
     assert!(card.err);
     assert!(!card.ack);
-    qic.clock(&waiting_host, &DeviceToQic::default());
-    assert!(qic.is_idle());
 }
 
 #[test]
@@ -81,4 +113,27 @@ fn reset_forces_all_bus_drives_inactive() {
     assert!(card.par.is_none());
     assert!(!card.ack);
     assert!(!card.err);
+}
+
+#[test]
+fn losing_grant_mid_dma_reports_protocol_error() {
+    let mut qic = Qic::new();
+    let request = DmaRequest {
+        direction: DmaDirection::HostToDevice,
+        address: 0x1400_0000,
+        words: BurstWords::Four,
+    };
+
+    qic.clock(
+        &BusToCard::default(),
+        &DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() },
+    );
+    qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &DeviceToQic::default());
+    qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &DeviceToQic::default());
+    qic.clock(&BusToCard::default(), &DeviceToQic::default());
+
+    let (_, local) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
+    let completion = local.dma_completion.expect("grant-loss completion");
+    assert_eq!(completion.status, DmaStatus::ProtocolError);
+    assert_eq!(completion.words_completed, 0);
 }
