@@ -44,12 +44,13 @@ impl NakedDevice {
 
         if self.pending_response.is_none() {
             if let Some(request) = qic.mmio_request {
-                self.pending_response = Some(Self::handle_mmio(request));
+                let response = self.handle_mmio(request);
+                self.pending_response = Some(response);
             }
         }
     }
 
-    pub fn handle_mmio(req: MmioRequest) -> MmioResponse {
+    pub fn handle_mmio(&self, req: MmioRequest) -> MmioResponse {
         if req.validate().is_err() { return MmioResponse::Error(1); }
 
         if req.write {
@@ -80,13 +81,15 @@ mod tests {
 
     #[test]
     fn naked_device_is_worker_only_and_not_qdx() {
-        let flags = NakedDevice::handle_mmio(MmioRequest { address: CFG_REV_CLASS_FLAGS, write: false, byte_enable: 0xf, write_data: 0 });
+        let dev = NakedDevice::new();
+        let flags = dev.handle_mmio(MmioRequest { address: CFG_REV_CLASS_FLAGS, write: false, byte_enable: 0xf, write_data: 0 });
         assert_eq!(flags, MmioResponse::ReadOk(u32::from(TEST_REVISION) | (1 << 24)));
-        assert_eq!(NakedDevice::handle_mmio(MmioRequest { address: CFG_QDX, write: false, byte_enable: 0xf, write_data: 0 }), MmioResponse::ReadOk(0));
+        assert_eq!(dev.handle_mmio(MmioRequest { address: CFG_QDX, write: false, byte_enable: 0xf, write_data: 0 }), MmioResponse::ReadOk(0));
     }
 
     #[test]
     fn unknown_register_errors() {
-        assert!(matches!(NakedDevice::handle_mmio(MmioRequest { address: 0x80, write: false, byte_enable: 0xf, write_data: 0 }), MmioResponse::Error(_)));
+        let dev = NakedDevice::new();
+        assert!(matches!(dev.handle_mmio(MmioRequest { address: 0x80, write: false, byte_enable: 0xf, write_data: 0 }), MmioResponse::Error(_)));
     }
 }
