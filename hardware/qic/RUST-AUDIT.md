@@ -62,7 +62,7 @@ The audit found and corrected three real issues:
 2. **Accepted MMIO had no cancellation path.** A local endpoint could accept an MMIO request, PLIO could time out before the response arrived, and the endpoint could then retain a stale response forever. QLI now has `mmio_cancel`, and the Rust QIC asserts it on that abort path.
 3. **Worker write parity combinational checking used the current bus BE instead of the latched address-phase BE.** The QIC now uses the latched byte-enable, matching PLIO's address-phase control semantics.
 
-The normative PLIO text and simulation documentation were clarified to state the address ACK/ERR handshake explicitly.
+The existing PLIO signal table already defines `ACK*` as accepting the current address/data beat and the timeout rule applies to an outstanding address/data beat. The Rust model now follows that interpretation. The address-phase prose should still be made explicit before Bluespec Phase 1 so the rule is not left implicit.
 
 ## 4. Explicit non-responsibilities
 
@@ -80,6 +80,7 @@ These are intentionally not bugs in the peripheral QIC:
 
 The abstract QIC is suitable as the Rust behavioral reference for Bluespec. Physical integration still needs:
 
+- explicit PLIO prose for successful address-phase ACK before data;
 - QLI-16 encoding for `mmio_cancel`;
 - full PTI control-image/turnaround adapter implementation, not only payload packing;
 - explicit mapping of abstract manager-drive versus worker-response enables into PTI/PLIO-TX;
