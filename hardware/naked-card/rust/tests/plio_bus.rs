@@ -1,4 +1,7 @@
-use naked_card::{NakedDevice, CFG_ID, CFG_VENDOR_DEVICE, PLIO_ID, TEST_DEVICE_ID, TEST_VENDOR_ID};
+use naked_card::{
+    NakedDevice, CFG_DEVICE_CONTROL, CFG_ID, CFG_VENDOR_DEVICE, PLIO_ID, TEST_DEVICE_ID,
+    TEST_VENDOR_ID,
+};
 use plio_qic_model::Qic;
 use plio_testbench::{TestPeer, WorkerResult};
 
@@ -26,6 +29,16 @@ fn naked_card_plio_read_reaches_qli_device() {
     let mut peer = TestPeer::new();
     peer.start_worker_read(CFG_ID, 0xf);
     assert_eq!(run_until_result(&mut qic, &mut device, &mut peer), WorkerResult::Read(PLIO_ID));
+    assert!(qic.is_idle());
+}
+
+#[test]
+fn naked_card_plio_write_reaches_qli_device() {
+    let mut qic = Qic::new();
+    let mut device = NakedDevice::new();
+    let mut peer = TestPeer::new();
+    peer.start_worker_write(CFG_DEVICE_CONTROL, 0xf, 0);
+    assert_eq!(run_until_result(&mut qic, &mut device, &mut peer), WorkerResult::WriteOk);
     assert!(qic.is_idle());
 }
 
