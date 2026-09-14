@@ -1,5 +1,5 @@
 use naked_card::*;
-use qli_model::{MmioRequest, MmioResponse};
+use qli_model::{MmioRequest, MmioResponse, QicToDevice};
 
 fn read(address: u32, byte_enable: u8) -> MmioRequest {
     MmioRequest { address, write: false, byte_enable, write_data: 0 }
@@ -33,4 +33,21 @@ fn naked_device_rejects_misaligned_or_noncontiguous_byte_enables() {
     let dev = NakedDevice::new();
     assert_eq!(dev.handle_mmio(read(CFG_VENDOR_DEVICE + 1, 0x3)), MmioResponse::Error);
     assert_eq!(dev.handle_mmio(read(CFG_VENDOR_DEVICE, 0x5)), MmioResponse::Error);
+}
+
+#[test]
+fn reset_clears_a_pending_response() {
+    let mut dev = NakedDevice::new();
+    assert!(dev.drive().mmio_ready);
+
+    dev.clock(&QicToDevice {
+        mmio_request: Some(read(CFG_ID, 0xf)),
+        ..QicToDevice::default()
+    });
+    assert_eq!(dev.drive().mmio_response, Some(MmioResponse::ReadOk(PLIO_ID)));
+    assert!(!dev.drive().mmio_ready);
+
+    dev.clock(&QicToDevice { reset: true, ..QicToDevice::default() });
+    assert!(dev.drive().mmio_response.is_none());
+    assert!(dev.drive().mmio_ready);
 }
