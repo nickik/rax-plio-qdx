@@ -11,14 +11,14 @@ pub struct MmioRequest {
 }
 
 impl MmioRequest {
-    pub fn validate(self) -> Result<Self, &'static str> {
+    pub fn validate(&self) -> Result<(), &'static str> {
         if self.address >= (1 << 25) {
             return Err("QLI MMIO address exceeds 25-bit PLIO worker space");
         }
         if self.byte_enable & !0x0f != 0 || self.byte_enable == 0 {
             return Err("QLI MMIO byte_enable must select at least one of four lanes");
         }
-        Ok(self)
+        Ok(())
     }
 }
 
