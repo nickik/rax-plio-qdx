@@ -1,0 +1,28 @@
+name: Export Rust Toolchain
+
+on:
+  push:
+    paths:
+      - '.github/workflows/export-rust-toolchain.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Package standalone stable toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "$toolchain"
+          tar -C "$HOME/.rustup/toolchains" -czf "$RUNNER_TEMP/rust-toolchain.tar.gz" "$toolchain"
+          ls -lh "$RUNNER_TEMP/rust-toolchain.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-toolchain-linux-x86_64
+          path: ${{ runner.temp }}/rust-toolchain.tar.gz
+          compression-level: 0
+          retention-days: 1
