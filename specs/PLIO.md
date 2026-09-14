@@ -251,6 +251,8 @@ The controller:
 5. drives `RD`, `BE[3:0]`, and `BLEN=00`,
 6. asserts `AS*`.
 
+The selected worker MUST terminate the address phase with `ACK*` or `ERR*`. It MAY insert address-phase wait states by asserting neither response. The controller MUST hold the address, parity, `SPACE`, `RD`, `BE`, `BLEN`, `SEL`, and `AS*` stable until the address phase is accepted, rejected, or reaches the 256-clock address/data-beat timeout. The data phase MUST NOT begin before address `ACK*`.
+
 ### 10.2 Data phase
 
 For a write, the controller drives the data and parity and asserts `DS*`. For a read, the selected worker drives data and parity. The selected worker eventually asserts `ACK*` or `ERR*`.
@@ -313,7 +315,7 @@ offset + transfer_length <= mapping.length
 required direction permission is granted
 ```
 
-If validation or address parity fails, the controller returns `ERR*` and no data beat is committed.
+If validation or address parity fails, the controller returns `ERR*` and no data beat is committed. While validation is outstanding, the controller MAY insert address-phase wait states by asserting neither `ACK*` nor `ERR*`; the manager MUST hold the complete address/control image stable. Successful validation is completed with address-phase `ACK*`, and the manager MUST NOT begin the first data beat before observing that `ACK*`. The same 256-clock per-address/data-beat timeout applies to this address phase.
 
 After validation:
 
