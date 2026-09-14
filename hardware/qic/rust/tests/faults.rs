@@ -79,6 +79,9 @@ fn worker_timeout_is_one_total_data_phase_budget() {
 
     let waiting_host = BusToCard { selected: true, data_strobe: true, read: true, byte_enable: 0xf, ..BusToCard::default() };
 
+    // DS starts the read data phase. Only now may the QIC offer the QLI read.
+    qic.clock(&waiting_host, &DeviceToQic::default());
+
     // Spend most of the timeout waiting for the endpoint to accept the request.
     for _ in 0..200 {
         qic.clock(&waiting_host, &DeviceToQic::default());
@@ -91,13 +94,16 @@ fn worker_timeout_is_one_total_data_phase_budget() {
         &DeviceToQic { mmio_ready: true, ..DeviceToQic::default() },
     );
 
-    for _ in 0..55 {
+    let mut timed_out = false;
+    for _ in 0..60 {
+        let (card, _) = qic.drive(&waiting_host, &DeviceToQic::default());
+        if card.err {
+            timed_out = true;
+            break;
+        }
         qic.clock(&waiting_host, &DeviceToQic::default());
     }
-
-    let (card, _) = qic.drive(&waiting_host, &DeviceToQic::default());
-    assert!(card.err);
-    assert!(!card.ack);
+    assert!(timed_out, "QLI acceptance must not restart the data-phase timeout");
 }
 
 #[test]
@@ -187,16 +193,23 @@ fn accepted_worker_mmio_is_cancelled_if_plio_data_phase_times_out() {
         byte_enable: 0xf,
         ..BusToCard::default()
     };
+    // DS begins the read data phase; the QIC must not issue the QLI request before this.
+    qic.clock(&data_phase, &DeviceToQic::default());
     // Accept the local request immediately, then never produce its response.
     qic.clock(
         &data_phase,
         &DeviceToQic { mmio_ready: true, ..DeviceToQic::default() },
     );
-    for _ in 0..(PLIO_TIMEOUT_CYCLES - 1) {
+
+    let mut saw_cancel = false;
+    for _ in 0..=PLIO_TIMEOUT_CYCLES {
+        let (card, local) = qic.drive(&data_phase, &DeviceToQic::default());
+        if local.mmio_cancel {
+            assert!(card.err);
+            saw_cancel = true;
+            break;
+        }
         qic.clock(&data_phase, &DeviceToQic::default());
     }
-
-    let (card, local) = qic.drive(&data_phase, &DeviceToQic::default());
-    assert!(card.err);
-    assert!(local.mmio_cancel);
+    assert!(saw_cancel, "accepted QLI request must be cancelled when PLIO times out");
 }
