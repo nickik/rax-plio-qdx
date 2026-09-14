@@ -50,7 +50,7 @@ Three type bits encode eight token classes:
 | `000` | `IDLE` | no semantic payload / turnaround |
 | `001` | `MMIO_HEADER` | MMIO request header word |
 | `010` | `MMIO_DATA` | MMIO request/response data halfword |
-| `011` | `MMIO_RESPONSE` | MMIO response status |
+| `011` | `MMIO_RESPONSE` | MMIO response status or QIC->device MMIO cancellation |
 | `100` | `DMA_HEADER` | DMA request header word |
 | `101` | `DMA_DATA` | DMA data halfword |
 | `110` | `DMA_COMPLETION` | DMA completion |
@@ -90,9 +90,9 @@ Therefore:
 
 Illegal QLI MMIO encodings remain illegal after decoding and MUST be rejected.
 
-## 6. MMIO response encoding
+## 6. MMIO response and cancellation encoding
 
-First token is `MMIO_RESPONSE`:
+A normal local-device response uses `MMIO_RESPONSE` with `LDIR=1` (device -> QIC):
 
 ```text
 LD[1:0] status
@@ -106,6 +106,24 @@ LD[15:2] = 0
 `ReadOk` is followed by two `MMIO_DATA` tokens containing the returned 32-bit word low then high halfword.
 
 `WriteOk` and `Error` contain no data tokens.
+
+QLI semantic `mmio_cancel` uses the same `MMIO_RESPONSE` token class in the otherwise-unused opposite direction:
+
+```text
+LTYPE = MMIO_RESPONSE
+LDIR  = 0                 // QIC -> device
+LD     = 0x0000
+```
+
+This exact token means **cancel the currently accepted MMIO request**. It is not a response status. Reusing the class avoids adding a ninth token type or another pin, while `LDIR` makes the meaning unambiguous.
+
+Rules:
+
+- only payload `0x0000` is valid for QIC->device `MMIO_RESPONSE`;
+- any non-zero payload in that direction is malformed;
+- device->QIC response tokens are never interpreted as cancellation;
+- cancellation is only valid after a semantic MMIO request has been accepted and before its response has completed;
+- the endpoint MUST discard retained MMIO response state and become ready for another request after accepting the cancellation token.
 
 ## 7. DMA request encoding
 
@@ -169,6 +187,8 @@ The semantic QLI Notification remains completion-based. Encoding the request on 
 
 Reset remains out-of-band. `LRESET` cancels any partially encoded message and returns both endpoints to idle. A partial QLI-16 message does not generate a synthetic QLI completion.
 
+`MMIO_CANCEL` is deliberately distinct from reset: it cancels only the currently accepted MMIO operation and does not affect DMA, Notification, or unrelated device state.
+
 ## 12. Turnaround and malformed sequences
 
 - message tokens are contiguous in logical order, though backpressure may insert unused slots between accepted tokens;
@@ -176,6 +196,7 @@ Reset remains out-of-band. `LRESET` cancels any partially encoded message and re
 - a direction change MUST include at least one idle transfer slot;
 - a decoder MUST reject reserved bits that are non-zero;
 - a decoder MUST reject unexpected token kinds or premature end-of-message;
+- QIC->device `MMIO_RESPONSE` with non-zero payload MUST be rejected;
 - malformed physical framing is a local protocol error and MUST NOT create a different valid QLI operation.
 
 ## 13. Rust / Bluespec conformance requirement
@@ -186,6 +207,7 @@ Bluespec MUST produce identical token vectors for the canonical cases:
 
 - 8/16/32-bit MMIO reads and writes;
 - ReadOk, WriteOk, Error responses;
+- MMIO_CANCEL and malformed opposite-direction response rejection;
 - both DMA directions and all 1/4/8/16 burst encodings;
 - representative DMA data words;
 - every DMA completion status and boundary word count;
