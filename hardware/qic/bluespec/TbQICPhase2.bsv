@@ -2,7 +2,6 @@ package TbQICPhase2;
 
 import QLITypes::*;
 import QICInterfaces::*;
-import PLIOQICPhase1::oddParity32P1;
 import PLIOQICPhase2::*;
 
 function PlioIn resetStim();
@@ -17,7 +16,7 @@ function PlioIn workerAddr(Bit#(32) address, Bool read, Bit#(4) be);
     x.adValid = True;
     x.ad = address;
     x.parValid = True;
-    x.par = oddParity32P1(address);
+    x.par = oddParity32P2(address);
     x.spaceValid = True;
     x.space = PlioWorker;
     x.addressStrobe = True;
@@ -49,9 +48,9 @@ function PlioIn stimulus(Bit#(16) c);
         1: return workerAddr(32'h0000_0100, True, 4'hf);
         3, 7, 11, 16: return dataNoPayload();
         8: return workerAddr(32'h0000_0102, False, 4'hc);
-        9: return dataWord(32'h1234_5678, oddParity32P1(32'h1234_5678));
+        9: return dataWord(32'h1234_5678, oddParity32P2(32'h1234_5678));
         12: return workerAddr(32'h0000_0100, False, 4'hf);
-        13: return dataWord(32'ha5a5_5a5a, oddParity32P1(32'ha5a5_5a5a) ^ 4'h1);
+        13: return dataWord(32'ha5a5_5a5a, oddParity32P2(32'ha5a5_5a5a) ^ 4'h1);
         15: return workerAddr(32'h0000_0104, True, 4'hf);
         default: return plioInDefault();
     endcase
@@ -125,7 +124,6 @@ module mkTbQICPhase2(Empty);
         PlioOut po = dut.drivePlio(pi, qi);
         QliOut qo = dut.driveQli(pi, qi);
 
-        // Phase 2 must remain worker-only.
         if (po.request || po.spaceValid || po.addressStrobe || po.dataStrobe
             || qo.dmaRequestReady || qo.dmaReadValid || qo.dmaWriteReady
             || qo.dmaCompletionValid || qo.notificationReady) begin
@@ -157,7 +155,7 @@ module mkTbQICPhase2(Empty);
             end
             7: if (!qo.mmioResponseReady || !po.ack || po.err
                 || !po.adValid || po.ad != 32'hdead_beef
-                || !po.parValid || po.par != oddParity32P1(32'hdead_beef)) begin
+                || !po.parValid || po.par != oddParity32P2(32'hdead_beef)) begin
                 $display("FAIL read response");
                 $finish(1);
             end
