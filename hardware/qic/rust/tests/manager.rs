@@ -48,12 +48,20 @@ fn step(qic: &mut Qic, dev: &mut ScriptDevice, peer: &mut TestPeer) {
     qic.clock(&bus, &dev_drive);
 }
 
-fn run(qic: &mut Qic, dev: &mut ScriptDevice, peer: &mut TestPeer, limit: usize) {
+fn run_until_any_completion(qic: &mut Qic, dev: &mut ScriptDevice, peer: &mut TestPeer, limit: usize) {
     for _ in 0..limit {
         step(qic, dev, peer);
         if dev.completion.is_some() || (dev.notification.is_none() && !peer.notifications().is_empty()) { return; }
     }
     panic!("transaction did not finish in {limit} cycles");
+}
+
+fn run_until_dma_completion(qic: &mut Qic, dev: &mut ScriptDevice, peer: &mut TestPeer, limit: usize) {
+    for _ in 0..limit {
+        step(qic, dev, peer);
+        if dev.completion.is_some() { return; }
+    }
+    panic!("DMA did not finish in {limit} cycles");
 }
 
 #[test]
@@ -65,7 +73,7 @@ fn host_to_device_dma_supports_all_baseline_bursts() {
             ..ScriptDevice::default()
         };
         let mut peer = TestPeer::new();
-        run(&mut qic, &mut dev, &mut peer, 512);
+        run_until_dma_completion(&mut qic, &mut dev, &mut peer, 512);
         assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::Ok, words_completed: burst.words() }));
         assert_eq!(dev.dma_reads.len(), usize::from(burst.words()));
         for (index, data) in dev.dma_reads.iter().enumerate() {
@@ -85,7 +93,7 @@ fn host_to_device_dma_tolerates_plio_wait_states() {
     };
     let mut peer = TestPeer::new();
     peer.dma_wait_cycles = 3;
-    run(&mut qic, &mut dev, &mut peer, 256);
+    run_until_dma_completion(&mut qic, &mut dev, &mut peer, 256);
     assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 4 }));
     assert_eq!(dev.dma_reads.len(), 4);
 }
@@ -100,7 +108,7 @@ fn device_to_host_dma_streams_words_and_reports_completion() {
     };
     let mut qic = Qic::new();
     let mut peer = TestPeer::new();
-    run(&mut qic, &mut dev, &mut peer, 128);
+    run_until_dma_completion(&mut qic, &mut dev, &mut peer, 128);
     assert_eq!(peer.dma_writes(), words);
     assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 4 }));
 }
@@ -116,7 +124,7 @@ fn dma_error_reports_exact_partial_progress() {
     let mut qic = Qic::new();
     let mut peer = TestPeer::new();
     peer.dma_error_beat = Some(2);
-    run(&mut qic, &mut dev, &mut peer, 128);
+    run_until_dma_completion(&mut qic, &mut dev, &mut peer, 128);
     assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::BusError, words_completed: 2 }));
     assert_eq!(peer.dma_writes(), &[1, 2]);
 }
@@ -130,7 +138,7 @@ fn bad_read_parity_aborts_before_corrupted_word_is_delivered() {
     let mut qic = Qic::new();
     let mut peer = TestPeer::new();
     peer.dma_bad_parity_beat = Some(1);
-    run(&mut qic, &mut dev, &mut peer, 128);
+    run_until_dma_completion(&mut qic, &mut dev, &mut peer, 128);
     assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::ParityError, words_completed: 1 }));
     assert_eq!(dev.dma_reads.len(), 1);
 }
@@ -146,7 +154,7 @@ fn notification_ready_means_bus_transaction_completed() {
         step(&mut qic, &mut dev, &mut peer);
         assert_eq!(dev.notification, Some(NotificationRequest { channel: 2 }));
     }
-    run(&mut qic, &mut dev, &mut peer, 64);
+    run_until_any_completion(&mut qic, &mut dev, &mut peer, 64);
     assert!(dev.notification.is_none());
     assert_eq!(peer.notifications(), &[2]);
 }
@@ -171,6 +179,8 @@ fn notification_wins_over_new_dma_but_never_preempts_active_dma() {
     assert_eq!(peer.notifications(), &[1]);
     assert!(dev.dma_request.is_some());
 
-    run(&mut qic, &mut dev, &mut peer, 128);
+    // The completed Notification remains in the peer's history; wait only for
+    // the subsequently accepted DMA completion here.
+    run_until_dma_completion(&mut qic, &mut dev, &mut peer, 128);
     assert_eq!(dev.completion, Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 4 }));
 }
