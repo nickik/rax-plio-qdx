@@ -22,7 +22,9 @@ enum State {
     WorkerAddress(WorkerOp),
     WorkerData(WorkerOp),
     Grant,
+    DmaAddress { read: bool, total: u8, wait_left: u16, error: bool },
     DmaData { read: bool, total: u8, beat: u8, wait_left: u16 },
+    NotificationAddress { channel: u8, wait_left: u16, error: bool },
     NotificationData { channel: u8, wait_left: u16 },
 }
 
@@ -34,6 +36,8 @@ pub struct TestPeer {
     pub dma_error_beat: Option<u8>,
     pub dma_bad_parity_beat: Option<u8>,
     pub notification_wait_cycles: u16,
+    pub manager_address_wait_cycles: u16,
+    pub manager_address_error: bool,
     pub dma_read_base: u32,
     dma_writes: Vec<u32>,
     notifications: Vec<u8>,
@@ -56,6 +60,8 @@ impl TestPeer {
             dma_error_beat: None,
             dma_bad_parity_beat: None,
             notification_wait_cycles: 0,
+            manager_address_wait_cycles: 0,
+            manager_address_error: false,
             dma_read_base: 0x1000_0000,
             dma_writes: Vec::new(),
             notifications: Vec::new(),
@@ -121,6 +127,12 @@ impl TestPeer {
                 }
             }
             State::Grant => bus.grant = true,
+            State::DmaAddress { wait_left, error, .. } => {
+                bus.grant = true;
+                if wait_left == 0 {
+                    if error { bus.err = true; } else { bus.ack = true; }
+                }
+            }
             State::DmaData { read, beat, wait_left, .. } => {
                 bus.grant = true;
                 if wait_left == 0 {
@@ -136,6 +148,12 @@ impl TestPeer {
                             bus.par = Some(par);
                         }
                     }
+                }
+            }
+            State::NotificationAddress { wait_left, error, .. } => {
+                bus.grant = true;
+                if wait_left == 0 {
+                    if error { bus.err = true; } else { bus.ack = true; }
                 }
             }
             State::NotificationData { wait_left, .. } => {
@@ -160,8 +178,10 @@ impl TestPeer {
                 if card.err {
                     self.worker_result = Some(WorkerResult::Error);
                     State::Idle
-                } else {
+                } else if card.ack {
                     State::WorkerData(op)
+                } else {
+                    State::WorkerAddress(op)
                 }
             }
             State::WorkerData(op) => {
@@ -191,20 +211,34 @@ impl TestPeer {
             State::Grant => {
                 if card.address_strobe {
                     self.manager_transactions += 1;
+                    let address = card.ad.unwrap_or(0);
+                    let address_ok = card.ad.is_some()
+                        && card.par.is_some()
+                        && parity_matches(address, card.par.unwrap_or(0), 0xf);
                     match card.space {
                         Some(Space::HostDma) => {
                             self.last_dma_address = card.ad;
                             self.last_dma_burst = Some(card.burst);
-                            State::DmaData {
+                            let controls_ok = card.byte_enable == 0xf && address & 3 == 0;
+                            State::DmaAddress {
                                 read: card.read,
                                 total: card.burst.words(),
-                                beat: 0,
-                                wait_left: self.dma_wait_cycles,
+                                wait_left: self.manager_address_wait_cycles,
+                                error: self.manager_address_error || !address_ok || !controls_ok,
                             }
                         }
                         Some(Space::Controller) => {
-                            let channel = card.ad.unwrap_or(0) / 4;
-                            State::NotificationData { channel: channel as u8, wait_left: self.notification_wait_cycles }
+                            let channel = address / 4;
+                            let controls_ok = !card.read
+                                && card.byte_enable == 0xf
+                                && card.burst == BurstWords::One
+                                && channel < 4
+                                && address == channel * 4;
+                            State::NotificationAddress {
+                                channel: channel as u8,
+                                wait_left: self.manager_address_wait_cycles,
+                                error: self.manager_address_error || !address_ok || !controls_ok,
+                            }
                         }
                         _ => State::Idle,
                     }
@@ -212,6 +246,17 @@ impl TestPeer {
                     State::Grant
                 } else {
                     State::Idle
+                }
+            }
+            State::DmaAddress { read, total, wait_left, error } => {
+                if !card.request {
+                    State::Idle
+                } else if wait_left > 0 {
+                    State::DmaAddress { read, total, wait_left: wait_left - 1, error }
+                } else if error {
+                    State::Idle
+                } else {
+                    State::DmaData { read, total, beat: 0, wait_left: self.dma_wait_cycles }
                 }
             }
             State::DmaData { read, total, beat, wait_left } => {
@@ -235,6 +280,17 @@ impl TestPeer {
                     }
                 } else {
                     State::DmaData { read, total, beat, wait_left }
+                }
+            }
+            State::NotificationAddress { channel, wait_left, error } => {
+                if !card.request {
+                    State::Idle
+                } else if wait_left > 0 {
+                    State::NotificationAddress { channel, wait_left: wait_left - 1, error }
+                } else if error {
+                    State::Idle
+                } else {
+                    State::NotificationData { channel, wait_left: self.notification_wait_cycles }
                 }
             }
             State::NotificationData { channel, wait_left } => {
@@ -266,7 +322,7 @@ mod tests {
         let address = peer.bus_inputs();
         assert!(address.address_strobe);
         assert_eq!(address.space, Some(Space::Worker));
-        peer.clock(&CardToBus::default());
+        peer.clock(&CardToBus { ack: true, ..CardToBus::default() });
         assert!(peer.bus_inputs().data_strobe);
     }
 
