@@ -24,6 +24,15 @@ module mkTbQLI16(Empty);
 
         $write("VECTOR MMIO_WRITE_OK"); showToken(mmioResponseStatus(mmioWriteOk())); $display("");
         $write("VECTOR MMIO_ERROR"); showToken(mmioResponseStatus(mmioError())); $display("");
+        $write("VECTOR MMIO_CANCEL"); showToken(mmioCancelToken()); $display("");
+        if (!isMmioCancelToken(mmioCancelToken())) begin
+            $display("FAIL MMIO_CANCEL recognition");
+            $finish(1);
+        end
+        if (isMmioCancelToken(q16Token(0, Q16MmioResponse, 1))) begin
+            $display("FAIL malformed MMIO_CANCEL accepted");
+            $finish(1);
+        end
 
         DmaRequest d1 = DmaRequest { direction: DeviceToHost, address: 32'h1234_5000, words: BurstOne };
         DmaRequest d4 = DmaRequest { direction: DeviceToHost, address: 32'h1234_5000, words: BurstFour };
