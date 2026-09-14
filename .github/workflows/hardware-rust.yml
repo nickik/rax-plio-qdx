@@ -1,0 +1,23 @@
+name: Hardware Rust
+
+on:
+  push:
+    paths:
+      - 'hardware/**'
+      - '.github/workflows/hardware-rust.yml'
+  pull_request:
+    paths:
+      - 'hardware/**'
+      - '.github/workflows/hardware-rust.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust version
+        run: rustc --version && cargo --version
+      - name: Test PLIO hardware workspace
+        run: cargo test --manifest-path hardware/Cargo.toml --all-targets
