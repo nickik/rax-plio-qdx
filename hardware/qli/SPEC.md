@@ -18,7 +18,8 @@ The normative executable reference for v0.1 is `rust/src/lib.rs` plus the PLIO-Q
 - A PLIO grant covers one transaction only; QLI never exposes grant ownership to the local device.
 - Absence of a valid payload is wait/backpressure, not an error.
 - Once a producer presents a valid payload, it MUST hold that payload stable until the corresponding acceptance/completion handshake occurs.
-- Reset is out-of-band and cancels in-flight local-interface state. Reset does not require a synthetic completion record.
+- Reset is out-of-band and cancels all in-flight local-interface state. Reset does not require a synthetic completion record.
+- An accepted worker-MMIO request may be cancelled explicitly by the QIC if the enclosing PLIO transaction terminates before the local response is consumed.
 
 In the Rust cycle model, `Option<T>` represents a valid payload and Boolean `*_ready` fields represent the corresponding acceptance event.
 
@@ -39,7 +40,7 @@ MmioRequest {
 
 `write_data` is meaningful only when `write=true`.
 
-The QIC presents `mmio_request` and keeps it stable until the local endpoint asserts `mmio_ready`. Acceptance transfers ownership of exactly one request to the local endpoint. The QIC does not issue another worker request until the accepted request has produced one response.
+The QIC presents `mmio_request` and keeps it stable until the local endpoint asserts `mmio_ready`. Acceptance transfers ownership of exactly one request to the local endpoint. The QIC does not issue another worker request until the accepted request has produced one response or has been explicitly cancelled.
 
 ### 2.2 Legal transfer encodings
 
@@ -72,7 +73,7 @@ MmioResponse =
 
 There is deliberately no QLI MMIO error code in v0.1. PLIO transports only successful completion or error for this transaction; a device-specific diagnostic code would require a separate device register if needed.
 
-The endpoint presents exactly one response for every accepted request and holds it until `mmio_response_ready` is asserted by the QIC.
+The endpoint presents exactly one response for every accepted request and holds it until `mmio_response_ready` is asserted by the QIC, unless the QIC first asserts `mmio_cancel`.
 
 For a read, the endpoint returns the complete containing 32-bit word. PLIO byte enables determine which byte lanes are architecturally selected by the host access.
 
@@ -82,7 +83,21 @@ For a write, `WriteOk` means the local endpoint accepted the selected byte lanes
 
 A delayed `mmio_ready` or delayed response becomes PLIO wait states. The PLIO timeout budget is one continuous budget for the outstanding PLIO data phase; accepting the request on QLI does **not** restart that timeout.
 
-If the PLIO timeout expires, the QIC terminates the bus transaction with PLIO error and discards the outstanding local transaction state.
+If the PLIO timeout expires before the request has been accepted on QLI, the QIC simply withdraws the unaccepted request. If the local endpoint has already accepted the request, the QIC terminates the PLIO transaction with error and asserts `mmio_cancel` to the endpoint. The endpoint MUST discard any retained state/response for that cancelled request before accepting another MMIO request.
+
+`mmio_cancel` is not a device reset and does not affect DMA, Notification, or unrelated device state.
+
+### 2.5 MMIO cancellation
+
+QIC -> local device:
+
+```text
+mmio_cancel : bool
+```
+
+`mmio_cancel` is a one-event cancellation for the currently accepted worker-MMIO request. It is only meaningful after the endpoint has asserted `mmio_ready` and before the response has transferred with `mmio_response_ready`. A conforming endpoint MUST make itself ready for a subsequent MMIO request after observing cancellation.
+
+This signal exists because the PLIO data phase has a finite timeout while a local endpoint may have already accepted work. Without cancellation, a late response could become stale and block the next request.
 
 ## 3. DMA command
 
@@ -269,7 +284,7 @@ The Rust reference currently verifies at least:
 
 - legal and illegal 8/16/32-bit worker access encodings;
 - worker read and write through complete PLIO -> QIC -> QLI -> NakedDevice paths;
-- worker error and timeout behavior;
+- worker error, timeout, and accepted-request cancellation behavior;
 - all 1/4/8/16-word DMA lengths;
 - both DMA directions;
 - PLIO wait states;
