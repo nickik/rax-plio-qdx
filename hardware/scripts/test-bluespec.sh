@@ -6,7 +6,7 @@ BUILD="$ROOT/build/bluespec"
 SEARCH="+:$ROOT/qli/bluespec:$ROOT/naked-card/bluespec"
 
 rm -rf "$BUILD"
-mkdir -p "$BUILD/qli" "$BUILD/naked"
+mkdir -p "$BUILD/qli" "$BUILD/naked" "$BUILD/naked-protocol"
 
 command -v bsc >/dev/null
 command -v cargo >/dev/null
@@ -29,7 +29,7 @@ bsc -sim \
 
 "$BUILD/tb-qli"
 
-echo "== NakedDevice compile/simulation =="
+echo "== NakedDevice conformance compile/simulation =="
 bsc -u -sim \
   -p "$SEARCH" \
   -bdir "$BUILD/naked" \
@@ -46,6 +46,24 @@ bsc -sim \
   -o "$BUILD/tb-naked"
 
 "$BUILD/tb-naked" | tee "$BUILD/naked-bsv.log"
+
+echo "== NakedDevice handshake/reset simulation =="
+bsc -u -sim \
+  -p "$SEARCH" \
+  -bdir "$BUILD/naked-protocol" \
+  -simdir "$BUILD/naked-protocol" \
+  -info-dir "$BUILD/naked-protocol" \
+  -g mkTbNakedDeviceProtocol \
+  "$ROOT/naked-card/bluespec/TbNakedDeviceProtocol.bsv"
+
+bsc -sim \
+  -p "$SEARCH" \
+  -bdir "$BUILD/naked-protocol" \
+  -simdir "$BUILD/naked-protocol" \
+  -e mkTbNakedDeviceProtocol \
+  -o "$BUILD/tb-naked-protocol"
+
+"$BUILD/tb-naked-protocol"
 
 echo "== Rust / Bluespec NakedDevice conformance =="
 cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p naked-card --bin conformance \
