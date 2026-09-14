@@ -6,11 +6,12 @@ It sits between PTI/PLIO-TX on the backplane side and QLI on the local-device si
 
 ## Responsibilities
 
-- decode selected WORKER cycles and present them as QLI MMIO;
-- turn QLI response delay into PLIO wait states;
+- decode and ACK/ERR selected WORKER address phases, then present their data phase as QLI MMIO;
+- turn QLI response delay into PLIO wait states and cancel an accepted local MMIO request if the PLIO data phase times out;
 - generate PLIO ACK/ERR from QLI completion;
 - request bus-manager ownership for outbound DMA/Notification work;
 - perform exactly one PLIO transaction per grant;
+- hold manager address/control stable until address-phase ACK/ERR/timeout before beginning data;
 - turn QLI DMA requests into HOST_DMA address/data phases and bounded 1/4/8/16-word bursts;
 - stream DMA data over QLI;
 - report partial-transfer completion/errors over QLI;
