@@ -18,6 +18,7 @@ enum ManagerWork {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Idle,
+    WorkerReadData { address: u32, byte_enable: u8, wait: u16 },
     WorkerWriteData { address: u32, byte_enable: u8, wait: u16 },
     WorkerOffer { request: MmioRequest, wait: u16 },
     WorkerResponse { read: bool, wait: u16 },
@@ -67,6 +68,9 @@ impl Qic {
                 } else if let Some(request) = device.dma_request {
                     if request.validate().is_ok() { qli.dma_request_ready = true; }
                 }
+            }
+            State::WorkerReadData { wait, .. } => {
+                if timed_out(wait) { card.err = true; }
             }
             State::WorkerWriteData { byte_enable, wait, .. } => {
                 if timed_out(wait) {
@@ -218,10 +222,7 @@ impl Qic {
                     } else {
                         let address = bus.ad.unwrap_or(0);
                         if bus.read {
-                            State::WorkerOffer {
-                                request: MmioRequest { address, write: false, byte_enable: bus.byte_enable, write_data: 0 },
-                                wait: 0,
-                            }
+                            State::WorkerReadData { address, byte_enable: bus.byte_enable, wait: 0 }
                         } else {
                             State::WorkerWriteData { address, byte_enable: bus.byte_enable, wait: 0 }
                         }
@@ -240,6 +241,18 @@ impl Qic {
                     }
                 } else {
                     State::Idle
+                }
+            }
+            State::WorkerReadData { address, byte_enable, wait } => {
+                if timed_out(wait) {
+                    State::Idle
+                } else if bus.data_strobe {
+                    State::WorkerOffer {
+                        request: MmioRequest { address, write: false, byte_enable, write_data: 0 },
+                        wait,
+                    }
+                } else {
+                    State::WorkerReadData { address, byte_enable, wait: wait.saturating_add(1) }
                 }
             }
             State::WorkerWriteData { address, byte_enable, wait } => {
@@ -491,7 +504,6 @@ mod tests {
         assert!(local.mmio_request.is_none());
     }
 
-
     #[test]
     fn valid_worker_address_is_acknowledged_before_data_phase() {
         let qic = Qic::new();
@@ -543,6 +555,34 @@ mod tests {
         let (card, local) = qic.drive(&data_cycle, &DeviceToQic::default());
         assert!(card.err);
         assert!(local.mmio_request.is_none());
+    }
+
+    #[test]
+    fn worker_read_does_not_reach_qli_before_data_strobe() {
+        let mut qic = Qic::new();
+        let address = 0x108;
+        let address_cycle = BusToCard {
+            selected: true,
+            ad: Some(address),
+            par: Some(odd_parity_32(address)),
+            space: Some(Space::Worker),
+            address_strobe: true,
+            read: true,
+            byte_enable: 0xf,
+            burst: BurstWords::One,
+            ..BusToCard::default()
+        };
+        qic.clock(&address_cycle, &DeviceToQic::default());
+
+        let no_data = BusToCard { selected: true, read: true, ..BusToCard::default() };
+        let (_, local) = qic.drive(&no_data, &DeviceToQic::default());
+        assert!(local.mmio_request.is_none());
+
+        qic.clock(&no_data, &DeviceToQic::default());
+        let data = BusToCard { selected: true, read: true, data_strobe: true, ..BusToCard::default() };
+        qic.clock(&data, &DeviceToQic::default());
+        let (_, local) = qic.drive(&data, &DeviceToQic::default());
+        assert_eq!(local.mmio_request, Some(MmioRequest { address, write: false, byte_enable: 0xf, write_data: 0 }));
     }
 
     #[test]
