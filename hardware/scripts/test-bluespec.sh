@@ -6,7 +6,7 @@ BUILD="$ROOT/build/bluespec"
 SEARCH="+:$ROOT/qli/bluespec:$ROOT/naked-card/bluespec:$ROOT/qli16/bluespec:$ROOT/pti/bluespec:$ROOT/trace/bluespec:$ROOT/qic/bluespec"
 
 rm -rf "$BUILD"
-mkdir -p "$BUILD/qli" "$BUILD/naked" "$BUILD/naked-protocol" "$BUILD/qli16" "$BUILD/pti" "$BUILD/trace" "$BUILD/qic-phase1" "$BUILD/qic-phase2" "$BUILD/verilog" "$BUILD/ice40"
+mkdir -p "$BUILD/qli" "$BUILD/naked" "$BUILD/naked-protocol" "$BUILD/qli16" "$BUILD/pti" "$BUILD/trace" "$BUILD/qic-phase1" "$BUILD/qic-phase2" "$BUILD/qic-phase3" "$BUILD/verilog" "$BUILD/ice40"
 
 command -v bsc >/dev/null
 command -v cargo >/dev/null
@@ -75,6 +75,15 @@ cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p plio-qic-model --bin pha
 grep '^TRACE|' "$BUILD/qic-phase2-bsv.log" > "$BUILD/qic-phase2-bsv.trace"
 diff -u "$BUILD/qic-phase2-rust.trace" "$BUILD/qic-phase2-bsv.trace"
 echo "PASS Rust/Bluesim QIC Phase 2 differential trace"
+
+echo "== QIC Phase 3 Bluesim / Rust differential trace =="
+bsc -u -sim -p "$SEARCH" -bdir "$BUILD/qic-phase3" -simdir "$BUILD/qic-phase3" -info-dir "$BUILD/qic-phase3" -g mkTbQICPhase3 "$ROOT/qic/bluespec/TbQICPhase3.bsv"
+bsc -sim -p "$SEARCH" -bdir "$BUILD/qic-phase3" -simdir "$BUILD/qic-phase3" -e mkTbQICPhase3 -o "$BUILD/tb-qic-phase3"
+"$BUILD/tb-qic-phase3" | tee "$BUILD/qic-phase3-bsv.log"
+cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p plio-qic-model --bin phase3_conformance | grep '^TRACE|' > "$BUILD/qic-phase3-rust.trace"
+grep '^TRACE|' "$BUILD/qic-phase3-bsv.log" > "$BUILD/qic-phase3-bsv.trace"
+diff -u "$BUILD/qic-phase3-rust.trace" "$BUILD/qic-phase3-bsv.trace"
+echo "PASS Rust/Bluesim QIC Phase 3 differential trace"
 
 if command -v iverilog >/dev/null; then
     echo "== Generated-Verilog QLI-16 simulation =="
