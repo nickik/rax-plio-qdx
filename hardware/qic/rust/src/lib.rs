@@ -63,8 +63,7 @@ impl Qic {
                     if !worker_address_valid(bus) { card.err = true; }
                 } else if let Some(notification) = device.notification_request {
                     let _ = notification.validate();
-                    // Notification uses completion-based handshake. `ready`
-                    // remains low until the PLIO transaction is ACKed.
+                    // Completion-based handshake: ready stays low until PLIO ACK.
                 } else if let Some(request) = device.dma_request {
                     if request.validate().is_ok() { qli.dma_request_ready = true; }
                 }
@@ -74,11 +73,7 @@ impl Qic {
                 if bus.data_strobe
                     && (bus.ad.is_none()
                         || bus.par.is_none()
-                        || !parity_matches(
-                            bus.ad.unwrap_or(0),
-                            bus.par.unwrap_or(0),
-                            bus.byte_enable,
-                        ))
+                        || !parity_matches(bus.ad.unwrap_or(0), bus.par.unwrap_or(0), bus.byte_enable))
                 {
                     card.err = true;
                 }
@@ -119,8 +114,11 @@ impl Qic {
                 }
             }
             State::DmaData { request, completed, wait, buffer } => {
-                card.request = true;
-                if !bus.grant || timed_out(wait) { return (card, qli); }
+                let final_read_buffer = is_final_read_buffer(request, completed, buffer);
+                card.request = !final_read_buffer;
+                if (!final_read_buffer && !bus.grant) || (!final_read_buffer && timed_out(wait)) {
+                    return (card, qli);
+                }
 
                 match request.direction {
                     DmaDirection::HostToDevice => {
@@ -177,8 +175,9 @@ impl Qic {
             return;
         }
 
-        // Once a manager transaction begins, BG is authority to drive PLIO.
-        // Losing it before transaction completion is a transport/protocol fault.
+        // BG is authority to drive PLIO. The one exception is draining the
+        // already-ACKed final host->device word from the QIC's local buffer;
+        // no PLIO bus work remains at that point.
         match self.state {
             State::DmaAddress(_) if !bus.grant => {
                 self.state = State::DmaComplete {
@@ -189,7 +188,9 @@ impl Qic {
                 };
                 return;
             }
-            State::DmaData { completed, .. } if !bus.grant => {
+            State::DmaData { request, completed, buffer, .. }
+                if !bus.grant && !is_final_read_buffer(request, completed, buffer) =>
+            {
                 self.state = State::DmaComplete {
                     completion: DmaCompletion {
                         status: DmaStatus::ProtocolError,
@@ -199,8 +200,8 @@ impl Qic {
                 return;
             }
             State::NotificationAddress(_) | State::NotificationData { .. } if !bus.grant => {
-                // Notification is idempotent. Do not acknowledge it locally;
-                // the producer keeps it asserted and the QIC will retry.
+                // Notification is idempotent. No local acknowledgement means
+                // the producer keeps it asserted and the QIC retries.
                 self.state = State::Idle;
                 return;
             }
@@ -329,7 +330,18 @@ impl Qic {
                 }
             }
             State::DmaData { request, completed, wait, buffer } => {
-                if timed_out(wait) {
+                if is_final_read_buffer(request, completed, buffer) {
+                    if device.dma_read_ready {
+                        State::DmaComplete {
+                            completion: DmaCompletion {
+                                status: DmaStatus::Ok,
+                                words_completed: completed,
+                            },
+                        }
+                    } else {
+                        State::DmaData { request, completed, wait, buffer }
+                    }
+                } else if timed_out(wait) {
                     State::DmaComplete {
                         completion: DmaCompletion {
                             status: DmaStatus::Timeout,
@@ -341,20 +353,11 @@ impl Qic {
                         DmaDirection::HostToDevice => {
                             if let Some(word) = buffer {
                                 if device.dma_read_ready {
-                                    if completed == request.words.words() {
-                                        State::DmaComplete {
-                                            completion: DmaCompletion {
-                                                status: DmaStatus::Ok,
-                                                words_completed: completed,
-                                            },
-                                        }
-                                    } else {
-                                        State::DmaData {
-                                            request,
-                                            completed,
-                                            wait: 0,
-                                            buffer: None,
-                                        }
+                                    State::DmaData {
+                                        request,
+                                        completed,
+                                        wait: 0,
+                                        buffer: None,
                                     }
                                 } else {
                                     State::DmaData {
@@ -494,6 +497,12 @@ impl Qic {
     }
 }
 
+fn is_final_read_buffer(request: DmaRequest, completed: u8, buffer: Option<DmaWord>) -> bool {
+    request.direction == DmaDirection::HostToDevice
+        && buffer.is_some()
+        && completed == request.words.words()
+}
+
 fn worker_address_cycle(bus: &BusToCard) -> bool {
     bus.selected && bus.address_strobe && bus.space == Some(Space::Worker)
 }
@@ -583,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn losing_grant_during_dma_reports_protocol_error() {
+    fn losing_grant_during_unfinished_dma_reports_protocol_error() {
         let mut qic = Qic::new();
         let request = DmaRequest {
             direction: DmaDirection::HostToDevice,
