@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "plio-logical/rust",
+    "qli/rust",
+    "naked-card/rust",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"

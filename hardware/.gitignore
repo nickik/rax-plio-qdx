@@ -1,0 +1,12 @@
+target/
+**/target/
+build/
+**/build/
+.bsc/
+**/.bsc/
+*.bo
+*.ba
+*.vcd
+*.fst
+*.log
+*.jou
