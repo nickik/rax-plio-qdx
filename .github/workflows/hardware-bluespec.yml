@@ -58,5 +58,8 @@ jobs:
           nextpnr-ice40 --version
           echo "BSC $BSC_VERSION installed"
 
-      - name: Compile, simulate, cross-check, and synthesize Phase-0 hardware support
+      - name: Compile, simulate, and cross-check QIC Phases 0-3
         run: make -C hardware test-bluespec
+
+      - name: QIC Phase 4 Rust/Bluesim verification
+        run: bash hardware/scripts/test-qic-phase4.sh
