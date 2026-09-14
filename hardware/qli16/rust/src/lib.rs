@@ -120,6 +120,19 @@ pub fn decode_mmio_response(tokens: &[Token]) -> Result<MmioResponse, &'static s
     }
 }
 
+/// QLI-16 has no spare token class. MMIO_CANCEL therefore reuses the
+/// MMIO_RESPONSE class in the otherwise-unused QIC->device direction.
+/// Payload zero is the only valid cancellation encoding.
+pub fn encode_mmio_cancel() -> Token {
+    token(TokenType::MmioResponse, 0, Direction::QicToDevice)
+}
+
+pub fn is_mmio_cancel(token: Token) -> bool {
+    token.kind == TokenType::MmioResponse
+        && token.direction == Direction::QicToDevice
+        && token.payload == 0
+}
+
 fn burst_code(req: &DmaRequest) -> u16 {
     match req.words.words() {
         1 => 0,
@@ -189,8 +202,8 @@ pub fn encode_notification(req: NotificationRequest) -> Result<Token, &'static s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qli_model::{DmaDirection, DmaStatus};
     use plio_logical_model::BurstWords;
+    use qli_model::{DmaDirection, DmaStatus};
 
     #[test]
     fn mmio_round_trip_read_and_write() {
@@ -209,6 +222,19 @@ mod tests {
             let encoded = encode_mmio_response(resp);
             assert_eq!(decode_mmio_response(&encoded).unwrap(), resp);
         }
+    }
+
+    #[test]
+    fn mmio_cancel_is_unambiguous_from_device_responses() {
+        let cancel = encode_mmio_cancel();
+        assert!(is_mmio_cancel(cancel));
+        assert_eq!(cancel.kind, TokenType::MmioResponse);
+        assert_eq!(cancel.direction, Direction::QicToDevice);
+        assert_eq!(cancel.payload, 0);
+        for response in [MmioResponse::ReadOk(0), MmioResponse::WriteOk, MmioResponse::Error] {
+            assert!(encode_mmio_response(response).iter().all(|t| !is_mmio_cancel(*t)));
+        }
+        assert!(!is_mmio_cancel(Token { kind: TokenType::MmioResponse, payload: 1, direction: Direction::QicToDevice }));
     }
 
     #[test]
