@@ -115,9 +115,14 @@ module mkPLIOQICPhase3(PLIOQICPhase3Ifc);
                 case (state)
                     QicIdle: begin
                         waitCount <= 0;
-                        if (qli.notificationValid && validNotificationP3(qli.notification)) begin
-                            heldNotification <= qli.notification;
-                            state <= QicRequestBusNotification;
+                        // Match the Rust oracle literally: presence of a
+                        // Notification is considered before DMA, even when the
+                        // Notification itself is invalid.
+                        if (qli.notificationValid) begin
+                            if (validNotificationP3(qli.notification)) begin
+                                heldNotification <= qli.notification;
+                                state <= QicRequestBusNotification;
+                            end
                         end
                         else if (qli.dmaRequestValid && validDmaP3(qli.dmaRequest)) begin
                             heldDma <= qli.dmaRequest;
