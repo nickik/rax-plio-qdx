@@ -1,7 +1,9 @@
-.PHONY: test-rust
+.PHONY: test-rust conformance-rust
 
 test-rust:
-	cargo test --manifest-path Cargo.toml
+	cargo test --manifest-path Cargo.toml --all-targets
 
-# Bluespec targets are intentionally added only after the first BSV package
-# and its expected bsc invocation are frozen.
+conformance-rust:
+	cargo run --quiet --manifest-path Cargo.toml -p naked-card --bin conformance
+
+# Bluespec targets are added after the QLI v0.1 Rust semantics are frozen.
