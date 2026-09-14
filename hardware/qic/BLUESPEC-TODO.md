@@ -15,8 +15,9 @@ Every phase below must compile, simulate, and pass Rust/Bluespec differential te
 
 ## Phase 0 — synchronize supporting contracts
 
-- [ ] Add semantic `mmio_cancel` to the Bluespec QLI/NakedDevice interface.
-- [ ] Test that Bluespec NakedDevice drops a pending MMIO response on cancel and becomes ready again.
+- [x] Add semantic `mmio_cancel` to the Bluespec QLI/NakedDevice interface.
+- [x] Test that Bluespec NakedDevice drops a pending MMIO response on cancel and becomes ready again.
+- [ ] Clarify `specs/PLIO.md` prose so successful address phases explicitly end in ACK before data begins.
 - [ ] Add the corresponding QLI-16 cancel encoding before physical QLI-16 integration.
 - [ ] Keep Rust and Bluespec canonical support-component vectors identical.
 - [ ] Define one common cycle-trace text format for QIC differential testing.
