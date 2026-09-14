@@ -116,6 +116,9 @@ pub struct DeviceToQic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct QicToDevice {
     pub reset: bool,
+    /// Cancels a previously accepted MMIO request whose PLIO transaction
+    /// terminated before its response could be consumed.
+    pub mmio_cancel: bool,
     pub mmio_request: Option<MmioRequest>,
     pub mmio_response_ready: bool,
     pub dma_request_ready: bool,
