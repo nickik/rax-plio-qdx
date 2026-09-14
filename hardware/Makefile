@@ -1,4 +1,6 @@
-.PHONY: test-rust conformance-rust
+.PHONY: test test-rust conformance-rust test-bluespec
+
+test: test-rust test-bluespec
 
 test-rust:
 	cargo test --manifest-path Cargo.toml --all-targets
@@ -6,4 +8,5 @@ test-rust:
 conformance-rust:
 	cargo run --quiet --manifest-path Cargo.toml -p naked-card --bin conformance
 
-# Bluespec targets are added after the QLI v0.1 Rust semantics are frozen.
+test-bluespec:
+	bash scripts/test-bluespec.sh
