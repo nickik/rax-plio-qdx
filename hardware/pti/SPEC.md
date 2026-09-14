@@ -13,12 +13,14 @@ PTI is an implementation interface. It MUST NOT change PLIO semantics.
 The QIC owns:
 
 - PLIO transaction state;
-- arbitration policy and one-transaction-per-grant behavior;
+- request/grant participation and one-transaction-per-grant behavior;
 - address/control sequencing;
 - parity generation/checking;
 - timeout/error policy;
 - interpretation of ACK/ERR;
 - DMA and Notification sequencing.
+
+The host PLIO controller owns arbitration policy, including the baseline rotating round-robin selection among requesting slots.
 
 PLIO-TX owns only:
 
