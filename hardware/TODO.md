@@ -2,6 +2,69 @@
 
 Work top-to-bottom. Do not pull QDX or a production host controller into this effort.
 
+## Immediate gated plan
+
+This is the current execution order. Do not advance to a later gate until the earlier one is either complete or explicitly waived.
+
+### Gate A — direct test tooling
+
+- [x] Rust CI installs a stable Rust toolchain and runs the complete hardware workspace.
+- [x] Pinned Bluespec CI installs BSC 2026.01 with checksum verification.
+- [x] `make -C hardware test-rust` and `make -C hardware test-bluespec` are the canonical repository entry points.
+- [x] Cargo/rustc have been made available in the current validation sandbox (`cargo 1.98.1`, `rustc 1.98.1`) by exporting the CI toolchain.
+- [ ] Complete one direct sandbox `cargo test --manifest-path hardware/Cargo.toml --all-targets` run from an exported source tree; ordinary `git clone` is unavailable in the sandbox because external DNS/network access is blocked.
+- [ ] Remove the temporary source/toolchain export workflow once that direct-run proof is complete.
+
+### Gate B — QIC package pin budget and local bandwidth
+
+- [x] Use a 64-pin QIC as the working target, with 84 pins only as an escape option.
+- [x] Show that directly exposing all PLIO logical pins does not leave enough room for a useful local interface.
+- [x] Establish a working ~28-pin PTI budget and ~22-pin QLI-16 budget.
+- [x] Establish PLIO-5 ideal payload bandwidth as 20 MB/s: one 32-bit beat every 200 ns.
+- [x] Show that a 16-bit local datapath at 5 MHz provides only 10 MB/s and therefore throttles PLIO-5 by about 2x.
+- [x] Establish the minimum no-throttle requirement as two 16-bit local transfer opportunities per PLIO clock, equivalent to 10 MHz local transfers.
+- [x] Compare 8-, 16-, and 32-bit local datapaths; 16-bit is the current preferred compromise.
+- [ ] Decide the physical timing mechanism: separate ~10 MHz QLI-16 clock versus two local phases per 5 MHz PLIO clock.
+- [ ] Freeze exact PTI framing/turnaround needed to make the pin budget real rather than only arithmetic.
+
+### Gate C — complete Rust reference behavior before hardware RTL
+
+- [x] Implement semantic QLI types and handshakes in Rust.
+- [x] Implement the Rust PLIO-QIC behavioral model for WORKER, HOST_DMA, and CONTROLLER/Notification transactions.
+- [x] Implement Rust `NakedDevice` and compose `NakedCard = QIC + NakedDevice`.
+- [x] Test the complete PLIO -> QIC -> QLI -> NakedDevice worker read/write path.
+- [x] Test legal 8/16/32-bit accesses and illegal/misaligned byte-enable patterns.
+- [x] Test all 1/4/8/16-word DMA bursts in both directions.
+- [x] Test wait states, partial errors, parity faults, timeout, grant loss, reset, local producer backpressure, and Notification ordering/completion.
+- [x] Keep QDX and production host-controller semantics out of the reference model.
+- [ ] Optional/non-blocking: add programmable pre-grant delay to the test peer when arbitration-delay traces become useful.
+
+### Gate D — freeze QLI v0.1 from tested Rust behavior
+
+- [x] Freeze `hardware/qli/SPEC.md` from the executable Rust reference rather than designing the Rust model after the prose.
+- [x] Freeze one-outstanding MMIO and one-outstanding DMA semantics.
+- [x] Freeze MMIO, DMA stream, completion, Notification, reset, and scheduling behavior.
+- [x] Keep QLI independent of slot ID, CPU vectors, host physical addresses, QDX, and physical QLI-16 framing.
+- [x] Define local endpoint ownership of PLIO configuration contents for v0.1.
+
+### Gate E — Bluespec QLI types + Bluespec NakedDevice only
+
+- [x] Implement Bluespec QLI v0.1 types.
+- [x] Compile and simulate QLI type tests with BSC.
+- [x] Implement Bluespec `NakedDevice` against the frozen QLI semantics.
+- [x] Test request/response backpressure and reset cancellation in Bluesim.
+- [x] Compare canonical Rust and Bluespec NakedDevice MMIO vectors automatically in CI.
+- [x] Keep the Bluespec QIC state machine deliberately unimplemented.
+
+### Gate F — stop and choose the next engineering step
+
+Do not start the Bluespec QIC state machine until we explicitly choose one of these paths:
+
+- [ ] **Physical-first:** finish PTI + QLI-16 timing/framing, then implement the QIC against those physical boundaries.
+- [ ] **Logic-first:** implement the QIC against abstract PLIO/QLI interfaces first, while keeping PTI/QLI-16 as replaceable boundary adapters.
+
+---
+
 ## 0. Repository/bootstrap
 
 - [x] Create hardware/interface validation tree.
