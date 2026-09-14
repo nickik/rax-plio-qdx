@@ -11,6 +11,10 @@ on:
       - '.github/workflows/hardware-rust.yml'
   workflow_dispatch:
 
+concurrency:
+  group: hardware-rust-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
