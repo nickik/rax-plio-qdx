@@ -6,7 +6,7 @@ BUILD="$ROOT/build/bluespec"
 SEARCH="+:$ROOT/qli/bluespec:$ROOT/naked-card/bluespec:$ROOT/qli16/bluespec:$ROOT/pti/bluespec:$ROOT/trace/bluespec:$ROOT/qic/bluespec"
 
 rm -rf "$BUILD"
-mkdir -p "$BUILD/qli" "$BUILD/naked" "$BUILD/naked-protocol" "$BUILD/qli16" "$BUILD/pti" "$BUILD/trace" "$BUILD/qic-phase1" "$BUILD/verilog" "$BUILD/ice40"
+mkdir -p "$BUILD/qli" "$BUILD/naked" "$BUILD/naked-protocol" "$BUILD/qli16" "$BUILD/pti" "$BUILD/trace" "$BUILD/qic-phase1" "$BUILD/qic-phase2" "$BUILD/verilog" "$BUILD/ice40"
 
 command -v bsc >/dev/null
 command -v cargo >/dev/null
@@ -67,6 +67,15 @@ grep '^TRACE|' "$BUILD/qic-phase1-bsv.log" > "$BUILD/qic-phase1-bsv.trace"
 diff -u "$BUILD/qic-phase1-rust.trace" "$BUILD/qic-phase1-bsv.trace"
 echo "PASS Rust/Bluesim QIC Phase 1 differential trace"
 
+echo "== QIC Phase 2 Bluesim / Rust differential trace =="
+bsc -u -sim -p "$SEARCH" -bdir "$BUILD/qic-phase2" -simdir "$BUILD/qic-phase2" -info-dir "$BUILD/qic-phase2" -g mkTbQICPhase2 "$ROOT/qic/bluespec/TbQICPhase2.bsv"
+bsc -sim -p "$SEARCH" -bdir "$BUILD/qic-phase2" -simdir "$BUILD/qic-phase2" -e mkTbQICPhase2 -o "$BUILD/tb-qic-phase2"
+"$BUILD/tb-qic-phase2" | tee "$BUILD/qic-phase2-bsv.log"
+cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p plio-qic-model --bin phase2_conformance | grep '^TRACE|' > "$BUILD/qic-phase2-rust.trace"
+grep '^TRACE|' "$BUILD/qic-phase2-bsv.log" > "$BUILD/qic-phase2-bsv.trace"
+diff -u "$BUILD/qic-phase2-rust.trace" "$BUILD/qic-phase2-bsv.trace"
+echo "PASS Rust/Bluesim QIC Phase 2 differential trace"
+
 if command -v iverilog >/dev/null; then
     echo "== Generated-Verilog QLI-16 simulation =="
     mkdir -p "$BUILD/verilog/obj"
@@ -75,15 +84,6 @@ if command -v iverilog >/dev/null; then
     "$BUILD/tb-qli16-verilog" | grep '^VECTOR ' | tr 'A-F' 'a-f' > "$BUILD/qli16-verilog.txt"
     diff -u "$BUILD/qli16-rust.txt" "$BUILD/qli16-verilog.txt"
     echo "PASS Rust/generated-Verilog QLI-16 conformance"
-
-    echo "== Generated-Verilog QIC Phase 1 differential trace =="
-    rm -rf "$BUILD/verilog/qic-phase1-obj" "$BUILD/verilog/qic-phase1"
-    mkdir -p "$BUILD/verilog/qic-phase1-obj" "$BUILD/verilog/qic-phase1"
-    bsc -u -verilog -p "$SEARCH" -bdir "$BUILD/verilog/qic-phase1-obj" -vdir "$BUILD/verilog/qic-phase1" -info-dir "$BUILD/verilog/qic-phase1-obj" -g mkTbQICPhase1 "$ROOT/qic/bluespec/TbQICPhase1.bsv"
-    bsc -verilog -vsim iverilog -p "$SEARCH" -bdir "$BUILD/verilog/qic-phase1-obj" -vdir "$BUILD/verilog/qic-phase1" -e mkTbQICPhase1 -o "$BUILD/tb-qic-phase1-verilog"
-    "$BUILD/tb-qic-phase1-verilog" | grep '^TRACE|' > "$BUILD/qic-phase1-verilog.trace"
-    diff -u "$BUILD/qic-phase1-rust.trace" "$BUILD/qic-phase1-verilog.trace"
-    echo "PASS Rust/generated-Verilog QIC Phase 1 differential trace"
 fi
 
 if command -v yosys >/dev/null; then
