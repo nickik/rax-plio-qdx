@@ -1,50 +1,157 @@
-# PTI v0.1 draft -- PLIO Transceiver Interface
+# PTI v0.1 -- PLIO Transceiver Interface
+
+**Status:** frozen digital interface for the first PLIO-5 QIC/PLIO-TX implementation.
 
 PTI is the logic-level boundary between the PLIO-QIC and the external electrical buffering collectively called **PLIO-TX**.
 
-PTI exists so the QIC can be designed as NMOS/ULA logic while bipolar/TTL devices handle backplane drive strength, receive thresholds, fanout, and tri-state behavior.
+PTI exists so the QIC can be implemented as NMOS/ULA logic while bipolar/TTL devices handle backplane drive strength, receive thresholds, fanout, tri-state behavior, wide latching, and narrow/wide multiplexing.
 
-## Principle
+PTI is an implementation interface. It MUST NOT change PLIO semantics.
 
-PLIO-TX is deliberately unintelligent. It MUST NOT understand DMA, arbitration policy, transaction spaces, Notification semantics, or QDX.
+## 1. Scope and ownership
 
-The QIC remains responsible for:
+The QIC owns:
 
-- protocol state;
-- ownership/drive decisions;
+- PLIO transaction state;
+- arbitration policy and one-transaction-per-grant behavior;
+- address/control sequencing;
 - parity generation/checking;
-- timeout/error policy.
+- timeout/error policy;
+- interpretation of ACK/ERR;
+- DMA and Notification sequencing.
 
-PLIO-TX remains responsible for electrical transmission/reception.
+PLIO-TX owns only:
 
-## Shared-bus signal representation
+- electrical transmission/reception;
+- 32-bit AD + 4-bit parity latching;
+- narrow/wide multiplexing;
+- output enable/tri-state behavior;
+- deterministic two-slot transfer timing.
 
-For every buffered shared output, PTI conceptually exposes:
+PLIO-TX MUST NOT understand DMA, transaction spaces, Notifications, capability handles, QLI, or QDX.
+
+## 2. PLIO-5 timing model
+
+This version targets **PLIO-5 only**: one 200 ns PLIO clock period.
+
+Each PLIO clock period contains two ordered PTI transfer slots:
 
 ```text
-value
-output_enable
-sampled_input
+PLIO CLK period (200 ns)
+
+|------------- slot A -------------|------------- slot B -------------|
+              half 0                              half 1
 ```
 
-At minimum the 32-bit AD path and 4 parity lanes use this model.
+The specification defines two slots per PLIO clock, not a mandatory separate 10 MHz clock pin. A historical implementation may use opposite clock phases or equivalent local timing. An FPGA implementation may use a faster internal clock and two clock-enable events.
 
-The final PTI signal list must explicitly classify `SPACE`, `AS`, `RD`, `BE`, `BLEN`, `DS`, `ACK`, and `ERR` as either:
+The externally visible PLIO bus remains 5 MHz.
 
-1. handled through PLIO-TX/auxiliary line buffers using value/OE/sample semantics, or
-2. connected directly/through simple dedicated buffers outside the main data transceiver.
+## 3. PTD datapath
 
-That choice is not frozen in v0.1.
+PTI uses an **18-bit multiplexed datapath**:
 
-## Per-slot/control signals
+```text
+PTD[17:0]
+```
 
-`CLK`, `RESET*`, `SEL*`, `BG*`, and `BR*` are logically part of PLIO but may not need the same wide transceiver device as AD/PAR. PTI must document their electrical-buffer path before silicon/package freeze.
+For a PLIO data beat:
 
-## Safety
+- slot A carries `AD[15:0]` plus `PAR[1:0]`;
+- slot B carries `AD[31:16]` plus `PAR[3:2]`.
 
-- reset must disable all QIC-controlled shared-bus drivers;
-- bus turnaround must include a no-contention state;
-- PLIO-TX must not invent ACK/ERR or alter parity;
-- input sampling remains available while outputs are disabled where the electrical implementation permits it.
+This is deliberate. A 16-bit PTI would require separate parity pins or an extra transfer slot and would therefore either consume package pins or throttle a full-rate PLIO-5 stream.
 
-PTI is an implementation interface, not externally visible PLIO architecture.
+Parity remains generated and checked by the QIC. PLIO-TX only latches/multiplexes the parity bits supplied on PTD.
+
+## 4. Transaction setup/control image
+
+PLIO signals that are stable for an address phase or data phase are loaded into PLIO-TX as a compact control image before the corresponding backplane action.
+
+Conceptually:
+
+```text
+PtiControl {
+    space[1:0]
+    as
+    rd
+    be[3:0]
+    blen[1:0]
+    ds
+    drive_ad_par
+    drive_control
+}
+```
+
+The physical encoding uses PTD plus a small `PT_KIND` field. Control-image transfers occur before the data slots they govern and are not inserted between the two halfwords of a full-rate data beat.
+
+PLIO-TX stores the current control image in simple latches. This is serialization/latching, not protocol interpretation.
+
+## 5. PTI transfer kinds
+
+The digital model defines these token kinds:
+
+```text
+PT_DATA_LO      lower 16 data bits + parity lanes 0..1
+PT_DATA_HI      upper 16 data bits + parity lanes 2..3
+PT_CONTROL      control-image fragment
+PT_IDLE         no transfer / turnaround slot
+```
+
+`PT_DATA_LO` and `PT_DATA_HI` MUST occur as an ordered pair for one 32-bit PLIO data beat.
+
+The Rust and Bluespec models use the same token encoding and reject malformed sequences such as HI without a preceding LO.
+
+## 6. Immediate response/status signals
+
+Beat-completion information is latency-sensitive and MUST NOT consume one of the two payload slots. PTI therefore exposes sampled status separately:
+
+```text
+sample_ack
+sample_err
+sample_selected
+sample_grant
+```
+
+Likewise, QIC ownership/drive intent is explicit rather than inferred by PLIO-TX:
+
+```text
+drive_enable
+response_enable
+bus_request
+```
+
+Exact pad/buffer assignment is a PLIO-E implementation detail, but the digital behavior above is frozen.
+
+## 7. Per-slot signals
+
+`CLK`, `RESET*`, `SEL*`, `BG*`, and `BR*` remain low-fanout/dedicated PLIO signals. They may use simple auxiliary bipolar buffers rather than the main 18-bit PLIO-TX datapath.
+
+PTI does not serialize the PLIO clock or reset.
+
+## 8. Turnaround and safety
+
+- reset immediately clears all PLIO-TX output enables;
+- an ownership-direction change MUST include at least one `PT_IDLE` slot before the opposite side is allowed to drive the shared AD/PAR bus;
+- PLIO-TX never invents ACK/ERR;
+- PLIO-TX never modifies parity;
+- outputs are high-impedance unless explicitly enabled by the QIC;
+- sampled input remains observable while outputs are disabled;
+- malformed PTI token ordering is a local protocol fault and MUST NOT cause an unintended PLIO drive.
+
+## 9. Throughput requirement
+
+One PLIO-5 payload beat is 32 bits every 200 ns. Two PTI slots per PLIO period carry exactly one complete data/parity beat:
+
+```text
+slot A: 16 data + 2 parity
+slot B: 16 data + 2 parity
+```
+
+Therefore PTI itself does not reduce the PLIO-5 peak payload rate of 20 MB/s.
+
+## 10. FPGA mapping
+
+The first Bluespec QIC may operate against an abstract PLIO interface. PTI is implemented as a boundary adapter around that core.
+
+On iCE40, the two-slot PTI contract SHOULD be implemented using a faster internal FPGA clock plus slot clock-enables rather than relying on dual-edge logic. This is an implementation choice and does not alter PTI semantics.
