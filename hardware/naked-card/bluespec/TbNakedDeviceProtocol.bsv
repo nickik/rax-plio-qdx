@@ -57,22 +57,45 @@ module mkTbNakedDeviceProtocol(Empty);
         step <= 4;
     endrule
 
-    // Cancel a pending response with resetDevice rather than consuming it.
-    rule resetPending (step == 4 && dut.responseValid);
-        dut.resetDevice;
+    // Cancel a pending response without resetting unrelated device state.
+    rule cancelPending (step == 4 && dut.responseValid);
+        dut.cancelRequest;
         step <= 5;
     endrule
 
-    rule verifyReset (step == 5);
+    rule verifyCancel (step == 5);
+        if (dut.responseValid || !dut.requestReady) begin
+            $display("FAIL MMIO cancel did not clear pending QLI response");
+            $finish(1);
+        end
+        step <= 6;
+    endrule
+
+    rule issueThird (step == 6 && dut.requestReady);
+        dut.request(MmioRequest {
+            address: 32'h0000_0010,
+            write: False,
+            byteEnable: 4'hf,
+            writeData: 0
+        });
+        step <= 7;
+    endrule
+
+    rule resetPending (step == 7 && dut.responseValid);
+        dut.resetDevice;
+        step <= 8;
+    endrule
+
+    rule verifyReset (step == 8);
         if (dut.responseValid || !dut.requestReady) begin
             $display("FAIL reset did not clear pending QLI response");
             $finish(1);
         end
-        $display("PASS NakedDevice handshake/reset");
-        step <= 6;
+        $display("PASS NakedDevice handshake/cancel/reset");
+        step <= 9;
     endrule
 
-    rule finish (step == 6);
+    rule finish (step == 9);
         $finish(0);
     endrule
 endmodule
