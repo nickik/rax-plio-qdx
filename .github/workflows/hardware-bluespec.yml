@@ -1,0 +1,49 @@
+name: Hardware Bluespec
+
+on:
+  push:
+    paths:
+      - 'hardware/**'
+      - '.github/workflows/hardware-bluespec.yml'
+  pull_request:
+    paths:
+      - 'hardware/**'
+      - '.github/workflows/hardware-bluespec.yml'
+  workflow_dispatch:
+
+jobs:
+  qli-naked-device:
+    runs-on: ubuntu-24.04
+    env:
+      BSC_VERSION: '2026.01'
+      BSC_URL: 'https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-debian-12.13.tar.gz'
+      BSC_SHA256: '9da36623e301ae14ba5e670cb98d11c99277faa915025ccb7615de3ec14002c3'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned Bluespec compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/bsc.tar.gz"
+          prefix="$RUNNER_TEMP/bsc"
+          curl -L --fail --retry 5 --retry-delay 2 "$BSC_URL" -o "$archive"
+          echo "$BSC_SHA256  $archive" | sha256sum -c -
+          mkdir -p "$prefix"
+          tar -xzf "$archive" -C "$prefix" --strip-components=1
+          if [[ ! -x "$prefix/bin/bsc" ]]; then
+            echo "BSC archive layout:" >&2
+            find "$prefix" -maxdepth 3 -type f | head -100 >&2
+            exit 1
+          fi
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions
+        run: |
+          cargo --version
+          bsc -version
+
+      - name: Compile, simulate, and cross-check QLI/NakedDevice
+        run: make -C hardware test-bluespec
