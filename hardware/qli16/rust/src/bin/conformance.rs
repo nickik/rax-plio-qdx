@@ -17,6 +17,7 @@ fn main() {
     dump("MMIO_READ_OK", &encode_mmio_response(MmioResponse::ReadOk(0x1234_5678)));
     dump("MMIO_WRITE_OK", &encode_mmio_response(MmioResponse::WriteOk));
     dump("MMIO_ERROR", &encode_mmio_response(MmioResponse::Error));
+    dump("MMIO_CANCEL", &[encode_mmio_cancel()]);
 
     for (name, words) in [("DMA1", BurstWords::One), ("DMA4", BurstWords::Four), ("DMA8", BurstWords::Eight), ("DMA16", BurstWords::Sixteen)] {
         dump(name, &encode_dma_request(DmaRequest { direction: DmaDirection::DeviceToHost, address: 0x1234_5000, words }).unwrap());
