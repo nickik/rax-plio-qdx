@@ -72,7 +72,10 @@ if command -v yosys >/dev/null; then
     echo "== iCE40 synthesis smoke =="
     mkdir -p "$BUILD/ice40/obj"
     bsc -u -verilog -p "$SEARCH" -bdir "$BUILD/ice40/obj" -vdir "$BUILD/ice40" -info-dir "$BUILD/ice40/obj" -g mkQLI16CancelProbe "$ROOT/qli16/bluespec/QLI16CancelProbe.bsv"
-    yosys -q -p "read_verilog $BUILD/ice40/mkQLI16CancelProbe.v; synth_ice40 -top mkQLI16CancelProbe -json $BUILD/ice40/cancel.json"
+    BSC_PREFIX="$(cd "$(dirname "$(command -v bsc)")/.." && pwd)"
+    REGN_V="$BSC_PREFIX/lib/Verilog/RegN.v"
+    test -f "$REGN_V"
+    yosys -q -p "read_verilog $REGN_V $BUILD/ice40/mkQLI16CancelProbe.v; synth_ice40 -top mkQLI16CancelProbe -json $BUILD/ice40/cancel.json"
     if command -v nextpnr-ice40 >/dev/null; then
         nextpnr-ice40 --hx8k --package ct256 --json "$BUILD/ice40/cancel.json" --asc "$BUILD/ice40/cancel.asc" --freq 5 --pcf-allow-unconstrained >/dev/null
     fi
