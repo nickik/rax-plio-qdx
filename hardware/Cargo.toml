@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "plio-logical/rust",
     "qli/rust",
+    "qic/rust",
+    "testbench/rust",
     "naked-card/rust",
 ]
 
