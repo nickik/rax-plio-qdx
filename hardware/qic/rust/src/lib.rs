@@ -22,7 +22,7 @@ enum State {
     WorkerOffer { request: MmioRequest, wait: u16 },
     WorkerResponse { read: bool, wait: u16 },
     RequestBus(ManagerWork),
-    DmaAddress(DmaRequest),
+    DmaAddress { request: DmaRequest, wait: u16 },
     DmaData {
         request: DmaRequest,
         completed: u8,
@@ -30,7 +30,7 @@ enum State {
         buffer: Option<DmaWord>,
     },
     DmaComplete { completion: DmaCompletion },
-    NotificationAddress(NotificationRequest),
+    NotificationAddress { request: NotificationRequest, wait: u16 },
     NotificationData { request: NotificationRequest, wait: u16 },
 }
 
@@ -60,7 +60,7 @@ impl Qic {
         match self.state {
             State::Idle => {
                 if worker_address_cycle(bus) {
-                    if !worker_address_valid(bus) { card.err = true; }
+                    if worker_address_valid(bus) { card.ack = true; } else { card.err = true; }
                 } else if let Some(notification) = device.notification_request {
                     let _ = notification.validate();
                     // Notification uses completion-based ready, so no early ready.
@@ -68,13 +68,13 @@ impl Qic {
                     if request.validate().is_ok() { qli.dma_request_ready = true; }
                 }
             }
-            State::WorkerWriteData { wait, .. } => {
+            State::WorkerWriteData { byte_enable, wait, .. } => {
                 if timed_out(wait) {
                     card.err = true;
                 } else if bus.data_strobe
                     && (bus.ad.is_none()
                         || bus.par.is_none()
-                        || !parity_matches(bus.ad.unwrap_or(0), bus.par.unwrap_or(0), bus.byte_enable))
+                        || !parity_matches(bus.ad.unwrap_or(0), bus.par.unwrap_or(0), byte_enable))
                 {
                     card.err = true;
                 }
@@ -89,6 +89,7 @@ impl Qic {
             State::WorkerResponse { read, wait } => {
                 if timed_out(wait) {
                     card.err = true;
+                    qli.mmio_cancel = true;
                 } else {
                     qli.mmio_response_ready = bus.data_strobe;
                     if bus.data_strobe {
@@ -108,9 +109,9 @@ impl Qic {
                 }
             }
             State::RequestBus(_) => card.request = true,
-            State::DmaAddress(request) => {
+            State::DmaAddress { request, wait } => {
                 card.request = true;
-                if bus.grant {
+                if bus.grant && !timed_out(wait) {
                     card.ad = Some(request.address);
                     card.par = Some(odd_parity_32(request.address));
                     card.space = Some(Space::HostDma);
@@ -147,9 +148,9 @@ impl Qic {
                 }
             }
             State::DmaComplete { completion } => qli.dma_completion = Some(completion),
-            State::NotificationAddress(request) => {
+            State::NotificationAddress { request, wait } => {
                 card.request = true;
-                if bus.grant {
+                if bus.grant && !timed_out(wait) {
                     let address = u32::from(request.channel) * 4;
                     card.ad = Some(address);
                     card.par = Some(odd_parity_32(address));
@@ -186,7 +187,7 @@ impl Qic {
         // draining the already-ACKed final host->device word from the QIC's
         // local buffer; no PLIO bus work remains at that point.
         match self.state {
-            State::DmaAddress(_) if !bus.grant => {
+            State::DmaAddress { .. } if !bus.grant => {
                 self.state = State::DmaComplete {
                     completion: DmaCompletion { status: DmaStatus::ProtocolError, words_completed: 0 },
                 };
@@ -200,7 +201,7 @@ impl Qic {
                 };
                 return;
             }
-            State::NotificationAddress(_) | State::NotificationData { .. } if !bus.grant => {
+            State::NotificationAddress { .. } | State::NotificationData { .. } if !bus.grant => {
                 // Notification is idempotent. No local completion means the
                 // producer retains it and the QIC retries from Idle.
                 self.state = State::Idle;
@@ -281,20 +282,26 @@ impl Qic {
             State::RequestBus(work) => {
                 if bus.grant {
                     match work {
-                        ManagerWork::Dma(request) => State::DmaAddress(request),
-                        ManagerWork::Notification(request) => State::NotificationAddress(request),
+                        ManagerWork::Dma(request) => State::DmaAddress { request, wait: 0 },
+                        ManagerWork::Notification(request) => State::NotificationAddress { request, wait: 0 },
                     }
                 } else {
                     State::RequestBus(work)
                 }
             }
-            State::DmaAddress(request) => {
-                if bus.err {
+            State::DmaAddress { request, wait } => {
+                if timed_out(wait) {
+                    State::DmaComplete {
+                        completion: DmaCompletion { status: DmaStatus::Timeout, words_completed: 0 },
+                    }
+                } else if bus.err {
                     State::DmaComplete {
                         completion: DmaCompletion { status: DmaStatus::BusError, words_completed: 0 },
                     }
-                } else {
+                } else if bus.ack {
                     State::DmaData { request, completed: 0, wait: 0, buffer: None }
+                } else {
+                    State::DmaAddress { request, wait: wait.saturating_add(1) }
                 }
             }
             State::DmaData { request, completed, wait, buffer } => {
@@ -391,8 +398,14 @@ impl Qic {
             State::DmaComplete { completion } => {
                 if device.dma_completion_ready { State::Idle } else { State::DmaComplete { completion } }
             }
-            State::NotificationAddress(request) => {
-                if bus.err { State::Idle } else { State::NotificationData { request, wait: 0 } }
+            State::NotificationAddress { request, wait } => {
+                if timed_out(wait) || bus.err {
+                    State::Idle
+                } else if bus.ack {
+                    State::NotificationData { request, wait: 0 }
+                } else {
+                    State::NotificationAddress { request, wait: wait.saturating_add(1) }
+                }
             }
             State::NotificationData { request, wait } => {
                 if timed_out(wait) || bus.err || bus.ack {
@@ -476,6 +489,81 @@ mod tests {
         let (card, local) = qic.drive(&bad_data, &DeviceToQic::default());
         assert!(card.err);
         assert!(local.mmio_request.is_none());
+    }
+
+
+    #[test]
+    fn valid_worker_address_is_acknowledged_before_data_phase() {
+        let qic = Qic::new();
+        let address = 0x104;
+        let bus = BusToCard {
+            selected: true,
+            ad: Some(address),
+            par: Some(odd_parity_32(address)),
+            space: Some(Space::Worker),
+            address_strobe: true,
+            read: true,
+            byte_enable: 0xf,
+            burst: BurstWords::One,
+            ..BusToCard::default()
+        };
+        let (card, _) = qic.drive(&bus, &DeviceToQic::default());
+        assert!(card.ack);
+        assert!(!card.err);
+    }
+
+    #[test]
+    fn worker_write_data_parity_uses_latched_address_byte_enable() {
+        let mut qic = Qic::new();
+        let address = 0x100;
+        let address_cycle = BusToCard {
+            selected: true,
+            ad: Some(address),
+            par: Some(odd_parity_32(address)),
+            space: Some(Space::Worker),
+            address_strobe: true,
+            read: false,
+            byte_enable: 0x3,
+            burst: BurstWords::One,
+            ..BusToCard::default()
+        };
+        qic.clock(&address_cycle, &DeviceToQic::default());
+
+        let data = 0x1234_5678;
+        let data_cycle = BusToCard {
+            selected: true,
+            ad: Some(data),
+            par: Some(odd_parity_32(data) ^ 0x1),
+            data_strobe: true,
+            // BE is an address-phase control. Deliberately change the sampled
+            // data-phase value to prove the QIC uses its latched copy.
+            byte_enable: 0,
+            ..BusToCard::default()
+        };
+        let (card, local) = qic.drive(&data_cycle, &DeviceToQic::default());
+        assert!(card.err);
+        assert!(local.mmio_request.is_none());
+    }
+
+    #[test]
+    fn manager_drives_only_request_before_grant() {
+        let mut qic = Qic::new();
+        let request = DmaRequest {
+            direction: DmaDirection::HostToDevice,
+            address: 0x1000,
+            words: BurstWords::Four,
+        };
+        qic.clock(
+            &BusToCard::default(),
+            &DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() },
+        );
+        let (card, _) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
+        assert!(card.request);
+        assert!(!card.address_strobe);
+        assert!(!card.data_strobe);
+        assert!(card.ad.is_none());
+        assert!(card.par.is_none());
+        assert!(card.space.is_none());
     }
 
     #[test]
