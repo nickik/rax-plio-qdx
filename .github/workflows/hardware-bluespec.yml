@@ -11,6 +11,10 @@ on:
       - '.github/workflows/hardware-bluespec.yml'
   workflow_dispatch:
 
+concurrency:
+  group: hardware-bluespec-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   qli-naked-device:
     runs-on: ubuntu-24.04
