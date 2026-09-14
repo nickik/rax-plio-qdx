@@ -12,8 +12,8 @@ This is the current execution order. Do not advance to a later gate until the ea
 - [x] Pinned Bluespec CI installs BSC 2026.01 with checksum verification.
 - [x] `make -C hardware test-rust` and `make -C hardware test-bluespec` are the canonical repository entry points.
 - [x] Cargo/rustc have been made available in the current validation sandbox (`cargo 1.98.1`, `rustc 1.98.1`) by exporting the CI toolchain.
-- [ ] Complete one direct sandbox `cargo test --manifest-path hardware/Cargo.toml --all-targets` run from an exported source tree; ordinary `git clone` is unavailable in the sandbox because external DNS/network access is blocked.
-- [ ] Remove the temporary source/toolchain export workflow once that direct-run proof is complete.
+- [x] Run `cargo test --manifest-path hardware/Cargo.toml --all-targets` directly in the sandbox from an exported source tree: 41 tests passed, 0 failed.
+- [x] Remove the temporary source/toolchain export workflow after the direct-run proof.
 
 ### Gate B — QIC package pin budget and local bandwidth
 
