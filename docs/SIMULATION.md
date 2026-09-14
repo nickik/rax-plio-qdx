@@ -17,6 +17,8 @@ The repository includes functional models for:
 - QDX submission/completion rings,
 - QDX-B READ/WRITE commands.
 
+The Layer-1 functional model operates on already-decoded transactions. It does **not** model the electrical `AD[31:0]`/`PAR[3:0]` wires and therefore does not claim to validate PLIO parity behavior. Parity belongs to the cycle-level model below.
+
 Run:
 
 ```bash
@@ -33,6 +35,7 @@ Represent at least:
 ```text
 CLK
 AD[31:0]
+PAR[3:0]
 SPACE[1:0]
 AS*
 RD
@@ -84,6 +87,29 @@ direction permission
 
 The model must also support revocation interlock during an active burst so later beats cannot continue after authority is revoked.
 
+### Parity timing rule
+
+PLIO v0.6 requires **odd byte-lane parity** on the multiplexed address/data bus:
+
+```text
+PAR0 protects AD[7:0]
+PAR1 protects AD[15:8]
+PAR2 protects AD[23:16]
+PAR3 protects AD[31:24]
+```
+
+The cycle-level simulator must therefore:
+
+- generate and check all four parity bits during every address phase;
+- generate and check all four parity bits on every 32-bit DMA data beat;
+- check only the selected byte lanes for 8/16-bit worker transactions;
+- model address/write-data parity failures as rejected transactions with `ERR*` where possible;
+- model read-data parity failure as a failed transaction whose affected beat is discarded;
+- check parity independently on every beat of 1/4/8/16-word bursts;
+- support deterministic parity fault injection on a chosen address phase, data beat, and byte lane.
+
+Parity is error detection only; the simulator must not silently correct corrupted data.
+
 ### PLIO Notification timing rule
 
 A **PLIO Notification** is a real one-beat transaction:
@@ -114,6 +140,7 @@ That signal/condition is host-internal and must never be modeled as a PLIO card/
 - PLIO Notification-to-kernel-observation latency,
 - bus utilization,
 - wait-state and timeout behavior,
+- parity-error detection latency,
 - revoke-to-no-further-access latency.
 
 ### Important workloads
@@ -129,6 +156,9 @@ That signal/condition is host-internal and must never be modeled as a PLIO card/
 9. revocation during an active burst.
 10. PLIO Notification arriving while a source is masked, then delivered after unmask.
 11. RAX CPU address decoding to `(slot, slot_offset)` without placing the CPU physical address on PLIO.
+12. Inject bad address parity and verify the transfer is rejected before data phase.
+13. Inject bad parity on each beat position of a 16-longword DMA burst and verify the corrupted beat is never committed as valid data.
+14. Verify byte/halfword worker accesses check parity only on enabled byte lanes.
 
 ## Layer 3 — system/microkernel simulator
 
@@ -148,9 +178,10 @@ Recommended first RTL blocks:
 2. transaction-space/address decoder,
 3. burst-length latch / beat counter,
 4. transaction timeout engine,
-5. controller-local PLIO Notification decoder/state,
-6. DMA capability lookup/bounds/generation/permission logic,
-7. RAX host-profile worker-MMIO mapper.
+5. byte-lane parity generation/checking and parity fault reporting,
+6. controller-local PLIO Notification decoder/state,
+7. DMA capability lookup/bounds/generation/permission logic,
+8. RAX host-profile worker-MMIO mapper.
 
 The QDX-B controller may remain behavioral initially.
 
