@@ -4,64 +4,65 @@ Work top-to-bottom. Do not pull QDX or a production host controller into this ef
 
 ## Immediate gated plan
 
-This is the current execution order. Do not advance to a later gate until the earlier one is either complete or explicitly waived.
-
-### Gate A — direct test tooling
+### Gate A — direct test tooling — complete
 
 - [x] Rust CI installs a stable Rust toolchain and runs the complete hardware workspace.
 - [x] Pinned Bluespec CI installs BSC 2026.01 with checksum verification.
-- [x] `make -C hardware test-rust` and `make -C hardware test-bluespec` are the canonical repository entry points.
-- [x] Cargo/rustc have been made available in the current validation sandbox (`cargo 1.98.1`, `rustc 1.98.1`) by exporting the CI toolchain.
-- [x] Run `cargo test --manifest-path hardware/Cargo.toml --all-targets` directly in the sandbox from an exported source tree: 41 tests passed, 0 failed.
-- [x] Remove the temporary source/toolchain export workflow after the direct-run proof.
+- [x] `make -C hardware test-rust` and `make -C hardware test-bluespec` are canonical entry points.
+- [x] Cargo/rustc are available in the validation sandbox (`cargo 1.98.1`, `rustc 1.98.1`).
+- [x] Direct sandbox run completed successfully for the pre-PTI/QLI-16 workspace: 41 tests passed, 0 failed.
+- [x] Expanded PTI/QLI-16 Rust workspace is green in CI.
 
-### Gate B — QIC package pin budget and local bandwidth
+### Gate B — package, bandwidth, PTI and QLI-16 framing — complete for v0.1
 
 - [x] Use a 64-pin QIC as the working target, with 84 pins only as an escape option.
-- [x] Show that directly exposing all PLIO logical pins does not leave enough room for a useful local interface.
-- [x] Establish a working ~28-pin PTI budget and ~22-pin QLI-16 budget.
-- [x] Establish PLIO-5 ideal payload bandwidth as 20 MB/s: one 32-bit beat every 200 ns.
-- [x] Show that a 16-bit local datapath at 5 MHz provides only 10 MB/s and therefore throttles PLIO-5 by about 2x.
-- [x] Establish the minimum no-throttle requirement as two 16-bit local transfer opportunities per PLIO clock, equivalent to 10 MHz local transfers.
-- [x] Compare 8-, 16-, and 32-bit local datapaths; 16-bit is the current preferred compromise.
-- [ ] Decide the physical timing mechanism: separate ~10 MHz QLI-16 clock versus two local phases per 5 MHz PLIO clock.
-- [ ] Freeze exact PTI framing/turnaround needed to make the pin budget real rather than only arithmetic.
+- [x] Show that directly exposing all PLIO logical pins leaves no useful local-interface budget.
+- [x] Use an 18-bit PTI datapath so each half-slot carries 16 data bits plus two PLIO parity bits.
+- [x] Use a 16-bit QLI-16 datapath.
+- [x] Updated working budget: PTI ~30 pins + QLI-16 ~22 + power/ground/test ~10 = ~62 pins, leaving two pins of margin.
+- [x] PLIO-5 peak payload is 20 MB/s: one 32-bit beat per 200 ns.
+- [x] Freeze two ordered PTI/QLI-16 transfer slots per 5 MHz PLIO period.
+- [x] Do **not** define or require a second architectural 10 MHz clock. Historical logic may use phases; FPGA logic may use a faster internal clock with slot enables.
+- [x] Freeze PTI v0.1 framing, reset/high-Z rules, parity transport, and turnaround rule.
+- [x] Freeze QLI-16 v0.1 token framing.
+- [x] Implement Rust PTI and QLI-16 encoders/tests.
+- [x] Implement matching Bluespec PTI and QLI-16 encoding helpers/tests.
+- [x] Automatically diff canonical Rust and Bluespec PTI/QLI-16 vectors in CI.
 
-### Gate C — complete Rust reference behavior before hardware RTL
+### Gate C — Rust reference behavior — complete
 
 - [x] Implement semantic QLI types and handshakes in Rust.
 - [x] Implement the Rust PLIO-QIC behavioral model for WORKER, HOST_DMA, and CONTROLLER/Notification transactions.
 - [x] Implement Rust `NakedDevice` and compose `NakedCard = QIC + NakedDevice`.
-- [x] Test the complete PLIO -> QIC -> QLI -> NakedDevice worker read/write path.
-- [x] Test legal 8/16/32-bit accesses and illegal/misaligned byte-enable patterns.
+- [x] Test complete PLIO -> QIC -> QLI -> NakedDevice worker read/write behavior.
+- [x] Test legal 8/16/32-bit accesses and illegal/misaligned byte enables.
 - [x] Test all 1/4/8/16-word DMA bursts in both directions.
-- [x] Test wait states, partial errors, parity faults, timeout, grant loss, reset, local producer backpressure, and Notification ordering/completion.
-- [x] Keep QDX and production host-controller semantics out of the reference model.
-- [ ] Optional/non-blocking: add programmable pre-grant delay to the test peer when arbitration-delay traces become useful.
+- [x] Test waits, partial errors, parity faults, timeout, grant loss, reset, local producer backpressure, and Notification ordering/completion.
+- [x] Keep QDX and production host-controller semantics out of the model.
+- [ ] Optional/non-blocking: programmable pre-grant delay when arbitration-delay traces become useful.
 
-### Gate D — freeze QLI v0.1 from tested Rust behavior
+### Gate D — QLI v0.1 — frozen
 
-- [x] Freeze `hardware/qli/SPEC.md` from the executable Rust reference rather than designing the Rust model after the prose.
+- [x] Freeze `hardware/qli/SPEC.md` from executable Rust behavior.
 - [x] Freeze one-outstanding MMIO and one-outstanding DMA semantics.
 - [x] Freeze MMIO, DMA stream, completion, Notification, reset, and scheduling behavior.
-- [x] Keep QLI independent of slot ID, CPU vectors, host physical addresses, QDX, and physical QLI-16 framing.
-- [x] Define local endpoint ownership of PLIO configuration contents for v0.1.
+- [x] Keep QLI independent of slot IDs, CPU vectors, host physical addresses, QDX, and physical QLI-16 framing.
+- [x] Local endpoint owns PLIO configuration contents for v0.1.
 
-### Gate E — Bluespec QLI types + Bluespec NakedDevice only
+### Gate E — Bluespec QLI + NakedDevice — complete
 
-- [x] Implement Bluespec QLI v0.1 types.
-- [x] Compile and simulate QLI type tests with BSC.
-- [x] Implement Bluespec `NakedDevice` against the frozen QLI semantics.
+- [x] Implement and simulate Bluespec QLI v0.1 types.
+- [x] Implement Bluespec `NakedDevice`.
 - [x] Test request/response backpressure and reset cancellation in Bluesim.
-- [x] Compare canonical Rust and Bluespec NakedDevice MMIO vectors automatically in CI.
-- [x] Keep the Bluespec QIC state machine deliberately unimplemented.
+- [x] Compare canonical Rust and Bluespec NakedDevice MMIO vectors in CI.
 
-### Gate F — stop and choose the next engineering step
+### Gate F — implementation path selected
 
-Do not start the Bluespec QIC state machine until we explicitly choose one of these paths:
+- [x] **Logic-first:** implement the QIC against abstract PLIO/QLI interfaces first.
+- [x] Keep PTI and QLI-16 as separately tested boundary adapters.
+- [x] Preserve the eventual target: complete QIC + PTI + QLI-16 implementation on iCE40 FPGA.
 
-- [ ] **Physical-first:** finish PTI + QLI-16 timing/framing, then implement the QIC against those physical boundaries.
-- [ ] **Logic-first:** implement the QIC against abstract PLIO/QLI interfaces first, while keeping PTI/QLI-16 as replaceable boundary adapters.
+The next major implementation step is now the **Bluespec QIC core**, matched cycle-for-cycle/transaction-for-transaction against the existing Rust QIC reference model. Do not fold PTI or QLI-16 serialization into the QIC state machine.
 
 ---
 
@@ -71,130 +72,122 @@ Do not start the Bluespec QIC state machine until we explicitly choose one of th
 - [x] Separate QLI, PTI, QLI-16, QIC, PLIO-TX, NakedCard, and testbench contracts.
 - [x] Add Rust workspace and zero-dependency behavioral crates.
 - [x] Add Bluespec source/test directories where hardware implementation is useful.
-- [x] Add Rust CI running `cargo test --manifest-path hardware/Cargo.toml --all-targets`.
-- [x] Add pinned Bluespec CI using BSC 2026.01 with checksum verification.
-- [x] Add `make -C hardware test-rust` and `make -C hardware test-bluespec` entry points.
+- [x] Add Rust CI.
+- [x] Add pinned Bluespec CI.
+- [x] Add Rust/Bluespec conformance-vector comparisons for NakedDevice, QLI-16, and PTI.
 - [ ] Update `AGENTS.md` to describe Rust + Bluespec hardware-validation rules.
 - [ ] Reconcile `docs/SIMULATION.md`: Python remains legacy/reference coverage; Rust is the preferred executable model for this hardware-interface tree.
 
 ## 1. QLI semantic v0.1 — frozen
 
-- [x] Freeze one-outstanding worker-MMIO request semantics.
-- [x] Freeze legal naturally aligned 8/16/32-bit MMIO address/byte-enable encodings.
-- [x] Freeze MMIO response semantics: response absence means wait; `ReadOk`/`WriteOk`/`Error` terminates the request.
-- [x] Keep MMIO error response code-free because PLIO carries only ACK/ERR for the transaction.
-- [x] Freeze DMA request fields: direction, 32-bit PLIO DMA handle, burst length 1/4/8/16.
-- [x] Freeze streaming DMA word handshakes; no redundant `last` bit because burst length is already known.
-- [x] Freeze partial-transfer completion semantics and `words_completed` as acknowledged PLIO data beats.
-- [x] Freeze DMA status values: OK, BUS_ERROR, PARITY_ERROR, TIMEOUT, PROTOCOL_ERROR.
-- [x] Freeze Notification as completion-based: producer holds request until the PLIO Notification is ACKed.
-- [x] Freeze reset as out-of-band cancellation rather than a synthetic DMA completion.
-- [x] Confirm QLI carries no slot ID, CPU vector, host physical address, or QDX semantics.
-- [x] Freeze initial scheduling rule: Notification wins over a simultaneously offered new DMA request but never preempts active DMA.
-- [x] Decide configuration ownership for v0.1: local QLI endpoint owns PLIO configuration contents; QIC does not synthesize identity.
-- [x] Add Rust unit/integration tests for the frozen semantic rules.
-- [x] Add equivalent Bluespec type definitions and semantic validation tests.
+- [x] One-outstanding worker-MMIO request semantics.
+- [x] Naturally aligned 8/16/32-bit MMIO encodings.
+- [x] MMIO wait / ReadOk / WriteOk / Error behavior.
+- [x] DMA request: direction, 32-bit PLIO DMA handle, 1/4/8/16 words.
+- [x] Streaming DMA words without redundant `last`.
+- [x] Partial-transfer completion and `words_completed`.
+- [x] DMA status: OK, BUS_ERROR, PARITY_ERROR, TIMEOUT, PROTOCOL_ERROR.
+- [x] Completion-based Notification request.
+- [x] Reset as out-of-band cancellation.
+- [x] Notification priority over a simultaneously offered new DMA request, never preempting active DMA.
+- [x] QLI contains no QDX semantics.
 
 ## 2. NakedDevice / NakedCard
 
-- [x] Implement Rust `NakedDevice` with only the PLIO test configuration surface and no DMA/Notifications.
-- [x] Prove worker-only identity and unknown-register error behavior.
-- [x] Test legal 8/16/32-bit MMIO and rejection of misaligned/non-contiguous byte enables.
-- [x] Test Rust reset clearing a pending local response.
-- [x] Compose `NakedCard = Rust QIC + NakedDevice` and run PLIO worker reads/writes through the complete path.
-- [x] Implement Bluespec `NakedDevice` with the same QLI semantics.
-- [x] Simulate Bluespec request/response backpressure and reset cancellation.
-- [x] Compare canonical Rust and Bluespec MMIO response vectors in CI.
-- [ ] Align the fixture's exact identification constants with final normative PLIO configuration constants when those are frozen.
+- [x] Rust `NakedDevice`.
+- [x] Rust full NakedCard path through QIC.
+- [x] Bluespec `NakedDevice`.
+- [x] Rust/Bluespec canonical vector conformance.
+- [ ] Align exact fixture identification constants with final normative PLIO configuration constants when frozen.
 
 ## 3. Rust PLIO-QIC behavioral model
 
-- [x] Implement worker-side PLIO address/data phase handling.
-- [x] Reject invalid worker address parity and invalid worker transfer encodings before QLI.
-- [x] Forward worker MMIO over QLI.
-- [x] Hold the PLIO transaction in wait while the local endpoint has not completed it.
-- [x] Enforce one continuous 256-clock PLIO worker timeout budget; QLI acceptance does not restart it.
-- [x] Translate QLI OK/error into PLIO ACK/ERR.
-- [x] Implement card-side bus-request/grant participation.
-- [x] Implement exactly one PLIO transaction per grant.
-- [x] Implement QLI DMA request -> PLIO HOST_DMA transaction.
-- [x] Implement all 1/4/8/16-word DMA bursts in both directions.
-- [x] Implement PLIO wait-state handling.
-- [x] Implement partial-transfer completion reporting.
-- [x] Implement QLI Notification -> single-beat CONTROLLER transaction.
-- [x] Implement parity generation/checking.
-- [x] Implement bus error, timeout, grant-loss/protocol-error, and reset recovery.
-- [x] Bound local producer stalls so DEVICE_TO_HOST DMA cannot retain a grant indefinitely.
-- [x] Allow an already-ACKed final HOST_TO_DEVICE word to drain from the local QIC buffer after BG is withdrawn.
-- [x] Keep all QDX parsing/queue logic out of QIC.
+- [x] Worker PLIO address/data phases.
+- [x] Worker parity/encoding rejection.
+- [x] QLI MMIO forwarding and wait behavior.
+- [x] Continuous 256-clock worker timeout budget.
+- [x] Bus request/grant behavior and one transaction per grant.
+- [x] HOST_DMA both directions, all four burst lengths.
+- [x] Partial completion, parity, bus error, timeout, grant-loss/protocol-error, reset.
+- [x] Notification sequencing.
+- [x] Bounded local producer stalls.
+- [x] Final ACKed HOST_TO_DEVICE word may drain locally after grant withdrawal.
 
 ## 4. Non-product PLIO testbench peer
 
-- [x] Inject WORKER read/write cycles toward one card.
-- [x] Observe BR and issue a simple immediate BG for one-card tests.
-- [ ] Add programmable pre-grant delay if/when arbitration-delay traces are needed.
-- [x] Act as HOST_DMA target/source with deterministic data.
-- [x] Inject per-beat wait states, ERR, and read parity faults.
-- [x] Exercise QIC timeout by withholding required progress for the full timeout window.
-- [x] Accept/record CONTROLLER/Notification cycles.
-- [x] Do not implement RAX address maps, capability tables, interrupt routing, or production arbitration policy.
-- [x] Run NakedCard worker-MMIO tests entirely against this peer/model boundary.
-- [x] Run QIC DMA and Notification integration tests against this peer/model boundary.
+- [x] Worker read/write injection.
+- [x] Immediate one-card grant behavior.
+- [x] HOST_DMA deterministic source/target.
+- [x] Wait, ERR, parity-fault and timeout injection.
+- [x] Notification observation.
+- [x] No RAX/capability-table/production host-controller semantics.
+- [ ] Optional programmable pre-grant delay.
 
-## 5. PTI + PLIO-TX
+## 5. PTI + PLIO-TX — v0.1 digital framing frozen
 
-- [ ] Freeze which PLIO signals cross PTI as buffered/latching groups.
-- [ ] Freeze safe reset/high-impedance behavior.
-- [x] Establish architectural rule: parity generation/checking remains in QIC, not PLIO-TX.
-- [x] Establish architectural rule: PLIO-TX may contain wide electrical transceivers, latches, and mux/serialization but remains protocol-dumb.
-- [ ] Decide exact handling of low-fanout per-slot signals (`BR`, `BG`, `SEL`, clock/reset): direct/auxiliary buffers versus PTI encoding.
-- [ ] Model bus turnaround and no-drive windows.
-- [ ] Add Rust PTI/PLIO-TX digital model.
-- [ ] Add Bluespec PTI digital shim/model.
-- [ ] Keep analog thresholds, loading, termination, and drive current in PLIO-E/electrical analysis rather than synthesizable BSV.
+- [x] PTI uses `PTD[17:0]`: 16 data + 2 parity bits per slot.
+- [x] Two ordered PTI slots per PLIO-5 period carry one complete 32-bit + 4-parity beat.
+- [x] Stable address/data-phase controls are transferred as latched control images outside the payload-critical pair.
+- [x] ACK/ERR/selected/grant status does not consume payload slots.
+- [x] `CLK`, `RESET`, `SEL`, `BG`, `BR` remain dedicated/auxiliary signals rather than serialized payload.
+- [x] Parity generation/checking remains in QIC.
+- [x] PLIO-TX remains protocol-dumb: electrical buffering, latching and muxing only.
+- [x] Reset disables all QIC-controlled shared-bus outputs.
+- [x] Direction changes require an idle turnaround slot.
+- [x] Rust PTI digital packing model and tests.
+- [x] Bluespec PTI digital packing model and tests.
+- [x] Rust/Bluespec canonical vectors match in CI.
+- [ ] Later: detailed analog thresholds, loading, termination and drive-current work in PLIO-E.
 
-## 6. QLI-16 historical physical encoding
+## 6. QLI-16 v0.1 — framing frozen
 
-Do not freeze this merely because semantic QLI v0.1 is frozen.
+- [x] 16-bit local datapath.
+- [x] `LTYPE[2:0]`, `LREQ`, `LACK`, `LDIR`; reset out-of-band/card-distributed.
+- [x] Two ordered local transfer slots per 5 MHz PLIO period.
+- [x] Fixed little-endian halfword order.
+- [x] MMIO request/response token encoding.
+- [x] DMA request/data/completion token encoding.
+- [x] Notification token encoding.
+- [x] Reset cancels partial messages.
+- [x] Direction changes require one idle slot.
+- [x] Reserved/malformed encodings are errors, never alternate valid QLI operations.
+- [x] Rust encoder/decoder model with round-trip/error tests.
+- [x] Bluespec encoding helpers.
+- [x] Rust/Bluespec canonical vectors match in CI.
+- [ ] Later when integrating full adapters: prove complete semantic QLI streams survive QLI -> QLI-16 -> QLI under arbitrary legal backpressure.
 
-- [x] Establish a realistic working package target: 64-pin QIC, with 84-pin only as an escape option.
-- [x] Calculate why directly exposing all PLIO logical wires consumes roughly 54 QIC pins before local QLI and is therefore unsuitable.
-- [x] Establish a working ~28-pin PTI budget using a 16-bit registered/multiplexed transceiver datapath.
-- [x] Establish a working ~22-pin QLI-16 budget, leaving package margin for power/ground/test.
-- [x] Calculate PLIO-5 ideal payload rate: 20 MB/s from one 32-bit beat per 200 ns.
-- [x] Prove a 16-bit local path at only 5 MHz would cap payload at 10 MB/s and throttle PLIO-5.
-- [x] Establish the no-throttle target: two 16-bit transfer opportunities per PLIO clock, equivalent to 10 MHz local transfers.
-- [x] Compare 8-bit (~20 MHz required), 16-bit (~10 MHz), and 32-bit (~5 MHz but excessive pins) local datapaths.
-- [ ] Decide whether QLI-16 uses a separate ~10 MHz local clock or two local phases per 5 MHz PLIO clock.
-- [ ] Freeze QLI-16 transaction framing only after PTI framing and clocking are resolved.
-- [ ] Add Rust QLI <-> QLI-16 encoder/decoder model.
-- [ ] Add Bluespec QLI <-> QLI-16 bridge.
-- [ ] Prove QLI-16 adds no new semantics; it is only a physical encoding.
+See `qli16/PIN_BUDGET.md`.
 
-See `qli16/PIN_BUDGET.md` for the current analysis.
+## 7. Bluespec QIC — next major implementation
 
-## 7. Bluespec QIC — deliberately not started yet
+Implement against **abstract PLIO and semantic QLI**, not PTI/QLI-16 serialization.
 
-Do not start this section until PTI/QLI-16 physical questions above are sufficiently resolved or we explicitly decide to model the QIC against abstract PLIO pins first.
-
-- [ ] Implement frozen QLI interfaces as BSV methods/FIFOs.
+- [ ] Define Bluespec QIC external abstract interfaces matching the Rust cycle model.
 - [ ] Implement PLIO worker state machine.
 - [ ] Implement manager request/grant state machine.
 - [ ] Implement DMA burst sequencer.
 - [ ] Implement Notification sequencer.
 - [ ] Implement parity/timeout/error handling.
 - [ ] Add invariants: never drive without ownership; one transaction per grant; no burst >16 words.
-- [ ] Produce canonical traces matching the Rust QIC model.
+- [ ] Build a Bluespec non-product PLIO peer equivalent to the Rust peer.
+- [ ] Produce canonical transaction traces from both Rust and Bluespec.
+- [ ] Diff Rust and Bluespec traces in CI.
 - [ ] Generate Verilog with `bsc`.
 
-## 8. FPGA flow
+## 8. Boundary adapters and FPGA flow
 
+Only after the abstract Bluespec QIC matches Rust:
+
+- [ ] Implement synthesizable Bluespec QLI <-> QLI-16 stream adapter.
+- [ ] Implement synthesizable Bluespec abstract-PLIO <-> PTI adapter.
+- [ ] Integrate digital PLIO-TX FPGA model.
 - [ ] Feed generated Verilog to Yosys.
 - [ ] Add nextpnr-ice40 target.
-- [ ] Meet PLIO-5 with comfortable margin.
-- [ ] Keep FPGA-specific memories/FIFOs from silently changing the historical QIC boundary.
-- [ ] Record LUT/FF/RAM use separately from historical gate/transistor estimates.
-- [ ] Only then add a physical FPGA loopback/two-node rig.
+- [ ] Implement two slot-enable events per 5 MHz PLIO period using a faster FPGA internal clock.
+- [ ] Meet external PLIO-5 timing with comfortable margin.
+- [ ] Keep FPGA memories/FIFOs from silently changing the historical QIC boundary.
+- [ ] Record FPGA LUT/FF/RAM separately from historical transistor/gate estimates.
+- [ ] Add physical FPGA loopback/two-node rig.
 
 ## Deferred
 
