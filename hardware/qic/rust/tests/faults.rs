@@ -137,3 +137,66 @@ fn losing_grant_mid_dma_reports_protocol_error() {
     assert_eq!(completion.status, DmaStatus::ProtocolError);
     assert_eq!(completion.words_completed, 0);
 }
+
+#[test]
+fn dma_address_phase_times_out_without_ack_or_err() {
+    let mut qic = Qic::new();
+    let request = DmaRequest {
+        direction: DmaDirection::HostToDevice,
+        address: 0x1500_0000,
+        words: BurstWords::Four,
+    };
+    qic.clock(
+        &BusToCard::default(),
+        &DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() },
+    );
+    qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &DeviceToQic::default());
+
+    let granted_no_response = BusToCard { grant: true, ..BusToCard::default() };
+    for _ in 0..PLIO_TIMEOUT_CYCLES {
+        qic.clock(&granted_no_response, &DeviceToQic::default());
+    }
+
+    let (_, local) = qic.drive(&granted_no_response, &DeviceToQic::default());
+    let completion = local.dma_completion.expect("address timeout completion");
+    assert_eq!(completion.status, DmaStatus::Timeout);
+    assert_eq!(completion.words_completed, 0);
+}
+
+#[test]
+fn accepted_worker_mmio_is_cancelled_if_plio_data_phase_times_out() {
+    let mut qic = Qic::new();
+    let address = 0x40;
+    let address_cycle = BusToCard {
+        selected: true,
+        ad: Some(address),
+        par: Some(odd_parity_32(address)),
+        space: Some(Space::Worker),
+        address_strobe: true,
+        read: true,
+        byte_enable: 0xf,
+        burst: BurstWords::One,
+        ..BusToCard::default()
+    };
+    qic.clock(&address_cycle, &DeviceToQic::default());
+
+    let data_phase = BusToCard {
+        selected: true,
+        data_strobe: true,
+        read: true,
+        byte_enable: 0xf,
+        ..BusToCard::default()
+    };
+    // Accept the local request immediately, then never produce its response.
+    qic.clock(
+        &data_phase,
+        &DeviceToQic { mmio_ready: true, ..DeviceToQic::default() },
+    );
+    for _ in 0..(PLIO_TIMEOUT_CYCLES - 1) {
+        qic.clock(&data_phase, &DeviceToQic::default());
+    }
+
+    let (card, local) = qic.drive(&data_phase, &DeviceToQic::default());
+    assert!(card.err);
+    assert!(local.mmio_cancel);
+}
