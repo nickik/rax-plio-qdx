@@ -65,7 +65,7 @@ pub enum DmaStatus {
     BusError,
     ParityError,
     Timeout,
-    Reset,
+    ProtocolError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,8 +122,8 @@ pub struct QicToDevice {
     pub dma_read: Option<DmaWord>,
     pub dma_write_ready: bool,
     pub dma_completion: Option<DmaCompletion>,
-    /// For Notification this is completion-ready, not buffer-ready: the
-    /// producer holds the request stable until the PLIO transaction succeeds.
+    /// Completion-based Notification handshake: the producer holds the
+    /// request stable until the PLIO CONTROLLER transaction is ACKed.
     pub notification_ready: bool,
 }
 
