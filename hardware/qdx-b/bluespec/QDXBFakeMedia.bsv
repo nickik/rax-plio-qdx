@@ -14,10 +14,12 @@ endinterface
 
 function Bit#(15) mediaKey(Bit#(16) ns, Bit#(32) lba, Bit#(8) wordIndex);
     Bit#(15) k = 0;
+    Bit#(15) lbaPart = truncate(lba);
+    Bit#(15) wordPart = zeroExtend(wordIndex);
     if (ns == 1)
-        k = truncate((zeroExtend(lba) << 7) + zeroExtend(wordIndex));
+        k = (lbaPart << 7) + wordPart;
     else
-        k = 15'd8192 + truncate((zeroExtend(lba) << 8) + zeroExtend(wordIndex));
+        k = 15'd8192 + (lbaPart << 8) + wordPart;
     return k;
 endfunction
 
