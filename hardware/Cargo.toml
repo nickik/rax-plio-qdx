@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "plio-logical/rust",
-    "plio-rax-host/rust",
     "qli/rust",
     "qli16/rust",
     "pti/rust",
@@ -13,6 +12,8 @@ members = [
     "qdx-a/rust",
     "qdx-a-card/rust",
     "trace/rust",
+    "plio-rax-host/rust",
+    "plio-rax-host/m2-rust",
 ]
 
 [workspace.package]
