@@ -2,7 +2,6 @@ package PLIOHostCore;
 
 import Vector::*;
 import RegFile::*;
-import CReg::*;
 import QLITypes::*;
 import QICInterfaces::*;
 import PLIOWorkerHost::*;
