@@ -4,6 +4,9 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[lib]
+path = "src/root.rs"
+
 [dependencies]
 qli-model = { path = "../../qli/rust" }
 plio-logical-model = { path = "../../plio-logical/rust" }
