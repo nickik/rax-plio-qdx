@@ -37,7 +37,7 @@ function PlioIn hostBus(HostState h);
             b.spaceValid=True; b.space=PlioWorker; b.addressStrobe=True; b.read=True; b.byteEnable=4'hf; b.burst=BurstOne;
         end
         HErrorData: begin b.selected=True; b.dataStrobe=True; b.read=True; b.byteEnable=4'hf; end
-        default: noAction;
+        default: begin end
     endcase
     return b;
 endfunction
