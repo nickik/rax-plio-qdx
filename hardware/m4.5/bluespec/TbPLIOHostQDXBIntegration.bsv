@@ -1,65 +1,21 @@
 package TbPLIOHostQDXBIntegration;
-
-import Vector::*;
-import RegFile::*;
-import QLITypes::*;
-import QICInterfaces::*;
-import PLIOTx::*;
-import QDXA::*;
-import QDXBEndpoint::*;
-import QDXBCard::*;
-import PLIOWorkerHost::*;
-import PLIOHostCore::*;
-
-function PlioOut fromBackplaneB(BackplaneDrive bp);
-    PlioOut o=plioOutDefault();o.request=bp.request;
-    if(bp.controlValid) begin o.spaceValid=True;o.space=unpack(bp.control.space);o.addressStrobe=bp.control.addressStrobe;o.read=bp.control.read;o.byteEnable=bp.control.byteEnable;o.burst=unpack(bp.control.burstLen);o.dataStrobe=bp.control.dataStrobe;end
-    if(bp.adParValid)begin o.adValid=True;o.ad=bp.ad;o.parValid=True;o.parity=bp.parity;end
-    if(bp.responseValid)begin o.ack=bp.ack;o.err=bp.err;end return o;
-endfunction
-
-typedef enum { BBind0,BBind1a,BBind1b,BBind1c,BBind2a,BBind2b,BBind2c,BBind2d,BInit,BReset,BReadCap,BSqBase,BSqSize,BCqBase,BCqSize,BControl,BSqTail,BRun,BDone } BStage deriving(Bits,Eq,FShow);
-function Bool bWorker(BStage s);return s>=BReadCap&&s<=BSqTail;endfunction
-function HostWorkerRequest bReq(BStage s);
- Bit#(32)a=regQdxCap;Bit#(32)d=0;HostWorkerWidth w=HostW32;Bool wr=True;
- case(s) BReadCap:begin a=regQdxCap;wr=False;end BSqBase:begin a=regSqBase;d=32'h1200_1000;end BSqSize:begin a=regSqSize;d=4;w=HostW16;end BCqBase:begin a=regCqBase;d=32'h2300_2000;end BCqSize:begin a=regCqSize;d=4;w=HostW16;end BControl:begin a=regQdxControl;d=5;end BSqTail:begin a=regSqTail;d=1;w=HostW16;end default:begin end endcase
- return HostWorkerRequest{slot:0,address:a,width:w,write:wr,value:d};
-endfunction
+import Vector::*;import RegFile::*;import QLITypes::*;import QICInterfaces::*;import PLIOTx::*;import QDXA::*;import QDXBEndpoint::*;import QDXBCard::*;import PLIOWorkerHost::*;import PLIOHostCore::*;
+function PlioOut fromBackplaneB(BackplaneDrive bp);PlioOut o=plioOutDefault();o.request=bp.request;if(bp.controlValid)begin o.spaceValid=True;o.space=unpack(bp.control.space);o.addressStrobe=bp.control.addressStrobe;o.read=bp.control.read;o.byteEnable=bp.control.byteEnable;o.burst=unpack(bp.control.burstLen);o.dataStrobe=bp.control.dataStrobe;end if(bp.adParValid)begin o.adValid=True;o.ad=bp.ad;o.parValid=True;o.parity=bp.parity;end if(bp.responseValid)begin o.ack=bp.ack;o.err=bp.err;end return o;endfunction
+typedef enum {BBind0,BBind1a,BBind1b,BBind1c,BBind2a,BBind2b,BBind2c,BBind2d,BInitCmd,BInitPayload,BReset,BReadCap,BSqBase,BSqSize,BCqBase,BCqSize,BControl,BSqTail,BRun,BDone} BStage deriving(Bits,Eq,FShow);
+function Bool bWorker(BStage s);case(s)BReadCap,BSqBase,BSqSize,BCqBase,BCqSize,BControl,BSqTail:return True;default:return False;endcase endfunction
+function Bool bActive(BStage s);case(s)BReset,BReadCap,BSqBase,BSqSize,BCqBase,BCqSize,BControl,BSqTail,BRun:return True;default:return False;endcase endfunction
+function HostWorkerRequest bReq(BStage s);Bit#(32)a=regQdxCap;Bit#(32)d=0;HostWorkerWidth w=HostW32;Bool wr=True;case(s)BReadCap:begin a=regQdxCap;wr=False;end BSqBase:begin a=regSqBase;d=32'h1200_1000;end BSqSize:begin a=regSqSize;d=4;w=HostW16;end BCqBase:begin a=regCqBase;d=32'h2300_2000;end BCqSize:begin a=regCqSize;d=4;w=HostW16;end BControl:begin a=regQdxControl;d=5;end BSqTail:begin a=regSqTail;d=1;w=HostW16;end default:begin end endcase return HostWorkerRequest{slot:0,address:a,width:w,write:wr,value:d};endfunction
 function BStage bNext(BStage s);case(s)BReadCap:return BSqBase;BSqBase:return BSqSize;BSqSize:return BCqBase;BCqBase:return BCqSize;BCqSize:return BControl;BControl:return BSqTail;BSqTail:return BRun;default:return s;endcase endfunction
-function Bit#(32) cmdWord(Integer i);case(i)0:return 32'h0001_0014;1:return 32'h0000_beef;2:return 3;3:return 1;4:return 32'h0000_3000;default:return 0;endcase endfunction
-
+function Bit#(32) cmdWord(Bit#(4)i);case(i)0:return 32'h0001_0014;1:return 32'h0000_beef;2:return 3;3:return 1;4:return 32'h0000_3000;default:return 0;endcase endfunction
 module mkTbPLIOHostQDXBIntegration(Empty);
- PLIOHostCoreIfc host<-mkPLIOHostCore;QDXBCardIfc card<-mkQDXBCard;RegFile#(Bit#(30),Bit#(32)) mem<-mkRegFileFull;
- Reg#(BStage) stage<-mkReg(BBind0);Reg#(Bit#(8)) initWord<-mkReg(0);Reg#(Bool)workerSent<-mkReg(False);Reg#(PlioOut)cardImage<-mkReg(plioOutDefault());Reg#(Bool)launched<-mkReg(False);
- Reg#(Bool)memResp<-mkReg(False);Reg#(Bool)memRespWrite<-mkReg(False);Reg#(Bit#(32))memRespData<-mkReg(0);Reg#(Bit#(16))watchdog<-mkReg(0);
- rule b0(stage==BBind0);host.bindDma(0,0,0,25'h10000,True,True);stage<=BBind1a;endrule
- rule b1a(stage==BBind1a);host.bindDma(0,1,0,25'h10000,True,True);stage<=BBind1b;endrule
- rule b1b(stage==BBind1b);host.bindDma(0,1,0,25'h10000,True,True);stage<=BBind1c;endrule
- rule b1c(stage==BBind1c);host.bindDma(0,1,0,25'h10000,True,True);stage<=BBind2a;endrule
- rule b2a(stage==BBind2a);host.bindDma(0,2,0,25'h10000,True,True);stage<=BBind2b;endrule
- rule b2b(stage==BBind2b);host.bindDma(0,2,0,25'h10000,True,True);stage<=BBind2c;endrule
- rule b2c(stage==BBind2c);host.bindDma(0,2,0,25'h10000,True,True);stage<=BBind2d;endrule
- rule b2d(stage==BBind2d);host.bindDma(0,2,0,25'h10000,True,True);for(Integer i=0;i<8;i=i+1)mem.upd(fromInteger(16'h400+i),cmdWord(i));for(Integer i=0;i<4;i=i+1)mem.upd(fromInteger(16'h800+i),0);stage<=BInit;endrule
- rule init(stage==BInit);mem.upd(30'hc00+zeroExtend(initWord),32'h9900_0000+(zeroExtend(initWord)<<2));if(initWord==127)stage<=BReset;else initWord<=initWord+1;endrule
- rule launch(!launched&&stage>=BReset&&stage!=BDone&&card.ready);Vector#(8,PlioOut)cards=replicate(plioOutDefault());cards[0]=cardImage;Vector#(8,PlioIn)h=host.drive(cards,stage==BReset);card.startCycle(h[0]);launched<=True;endrule
- rule consume(launched&&card.cycleDone&&stage>=BReset&&stage!=BDone);
-  BackplaneDrive bp=card.backplane;PlioOut ci=fromBackplaneB(bp);Vector#(8,PlioOut)cards=replicate(plioOutDefault());cards[0]=ci;
-  Bool send=bWorker(stage)&&!workerSent&&!host.workerCompletionValid;HostWorkerRequest wr=bReq(stage);
-  Bool req=host.memoryRequestValid;Bool reqWr=host.memoryWrite;Bit#(32)reqAddr=host.memoryAddress;Bit#(32)reqData=host.memoryWriteData;
-  host.advance(cards,send,wr,True,memResp,False,memResp&&!memRespWrite,memRespData,stage==BReset);
-  if(req)begin if(reqWr)mem.upd(reqAddr[31:2],reqData);else memRespData<=mem.sub(reqAddr[31:2]);memRespWrite<=reqWr;memResp<=True;end else memResp<=False;
-  if(send)workerSent<=True;
-  if(host.workerCompletionValid)begin HostWorkerCompletion c=host.workerCompletion;if(c.status!=HostSuccess)begin $display("FAIL M4.5 QDX-B worker status=%0d stage=%0d",pack(c.status),pack(stage));$finish(1);end if(stage==BReadCap&&c.data!=qdxCapValue)begin $display("FAIL M4.5 QDX-B discovery %08x",c.data);$finish(1);end if(stage==BReadCap)$display("M45TRACE|card=qdxb|event=discover|cap=%08x",c.data);host.clearWorkerCompletion;stage<=bNext(stage);workerSent<=False;end
-  if(stage==BReset)begin stage<=BReadCap;workerSent<=False;$display("M45TRACE|card=qdxb|event=reset");end
-  if(stage==BRun&&host.notificationPending(0,0))begin
-   Bit#(32)c0=mem.sub(30'h800);Bit#(32)c1=mem.sub(30'h801);Bit#(32)c2=mem.sub(30'h802);Bit#(32)c3=mem.sub(30'h803);
-   if(c0!=32'h0000_beef||c1!=32'h0008_0000||c2!=1||c3!=0)begin $display("FAIL M4.5 QDX-B CQ %08x %08x %08x %08x",c0,c1,c2,c3);$finish(1);end
-   if(card.qdxError!=QdxErrNone||card.qdxbLastStatus!=ST_SUCCESS||card.sqHead!=1||card.sqTail!=1||card.cqTail!=1||card.fakeFlushCount!=1)begin $display("FAIL M4.5 QDX-B final state status=%04x flush=%0d",card.qdxbLastStatus,card.fakeFlushCount);$finish(1);end
-   $display("M45TRACE|card=qdxb|event=end_to_end|sq_dma=1|payload_dma=1|cq_dma=1|notify=1|durable=1|flush=1");stage<=BDone;
-  end
-  if(card.protocolFault)begin $display("FAIL M4.5 QDX-B physical protocol fault");$finish(1);end
-  cardImage<=ci;card.finishCycle;launched<=False;watchdog<=watchdog+1;if(watchdog>12000)begin $display("FAIL M4.5 QDX-B watchdog role=%0d qdx=%0d qdxb=%0d",pack(host.debugRole),pack(card.qdxState),pack(card.qdxbState));$finish(1);end
- endrule
+ PLIOHostCoreIfc host<-mkPLIOHostCore;QDXBCardIfc card<-mkQDXBCard;RegFile#(Bit#(30),Bit#(32))mem<-mkRegFileFull;Reg#(BStage)stage<-mkReg(BBind0);Reg#(Bit#(8))initWord<-mkReg(0);Reg#(Bool)workerSent<-mkReg(False);Reg#(PlioOut)cardImage<-mkReg(plioOutDefault());Reg#(Bool)launched<-mkReg(False);Reg#(Bool)memResp<-mkReg(False);Reg#(Bool)memRespWrite<-mkReg(False);Reg#(Bit#(32))memRespData<-mkReg(0);Reg#(Bit#(16))watchdog<-mkReg(0);
+ rule b0(stage==BBind0);host.bindDma(0,0,0,25'h10000,True,True);stage<=BBind1a;endrule rule b1a(stage==BBind1a);host.bindDma(0,1,0,25'h10000,True,True);stage<=BBind1b;endrule rule b1b(stage==BBind1b);host.bindDma(0,1,0,25'h10000,True,True);stage<=BBind1c;endrule rule b1c(stage==BBind1c);host.bindDma(0,1,0,25'h10000,True,True);stage<=BBind2a;endrule rule b2a(stage==BBind2a);host.bindDma(0,2,0,25'h10000,True,True);stage<=BBind2b;endrule rule b2b(stage==BBind2b);host.bindDma(0,2,0,25'h10000,True,True);stage<=BBind2c;endrule rule b2c(stage==BBind2c);host.bindDma(0,2,0,25'h10000,True,True);stage<=BBind2d;endrule rule b2d(stage==BBind2d);host.bindDma(0,2,0,25'h10000,True,True);stage<=BInitCmd;initWord<=0;endrule
+ rule initCmd(stage==BInitCmd);if(initWord<8)mem.upd(30'h400+zeroExtend(initWord),cmdWord(truncate(initWord)));else mem.upd(30'h800+zeroExtend(initWord-8),0);if(initWord==11)begin stage<=BInitPayload;initWord<=0;end else initWord<=initWord+1;endrule
+ rule initPayload(stage==BInitPayload);mem.upd(30'hc00+zeroExtend(initWord),32'h9900_0000+(zeroExtend(initWord)<<2));if(initWord==127)stage<=BReset;else initWord<=initWord+1;endrule
+ rule handleCompletion(!launched&&host.workerCompletionValid&&bWorker(stage));HostWorkerCompletion c=host.workerCompletion;if(c.status!=HostSuccess)begin $display("FAIL M4.5 QDX-B worker status=%0d stage=%0d",pack(c.status),pack(stage));$finish(1);end if(stage==BReadCap&&c.data!=qdxCapValue)begin $display("FAIL M4.5 QDX-B discovery %08x",c.data);$finish(1);end if(stage==BReadCap)$display("M45TRACE|card=qdxb|event=discover|cap=%08x",c.data);host.clearWorkerCompletion;stage<=bNext(stage);workerSent<=False;endrule
+ rule launch(!launched&&bActive(stage)&&!host.workerCompletionValid&&!(stage==BRun&&host.notificationPending(0,0))&&card.ready);Vector#(8,PlioOut)cards=replicate(plioOutDefault());cards[0]=cardImage;Vector#(8,PlioIn)h=host.drive(cards,stage==BReset);card.startCycle(h[0]);launched<=True;endrule
+ rule consume(launched&&card.cycleDone);BackplaneDrive bp=card.backplane;PlioOut ci=fromBackplaneB(bp);Vector#(8,PlioOut)cards=replicate(plioOutDefault());cards[0]=ci;Bool send=bWorker(stage)&&!workerSent;HostWorkerRequest wr=bReq(stage);Bool req=host.memoryRequestValid;Bool reqWr=host.memoryWrite;Bit#(32)reqAddr=host.memoryAddress;Bit#(32)reqData=host.memoryWriteData;host.advance(cards,send,wr,True,memResp,False,memResp&&!memRespWrite,memRespData,stage==BReset);if(req)begin if(reqWr)mem.upd(reqAddr[31:2],reqData);else memRespData<=mem.sub(reqAddr[31:2]);memRespWrite<=reqWr;memResp<=True;end else memResp<=False;if(stage==BReset)begin stage<=BReadCap;workerSent<=False;$display("M45TRACE|card=qdxb|event=reset");end else if(send)workerSent<=True;if(card.protocolFault)begin $display("FAIL M4.5 QDX-B physical protocol fault");$finish(1);end cardImage<=ci;card.finishCycle;launched<=False;watchdog<=watchdog+1;if(watchdog>16000)begin $display("FAIL M4.5 QDX-B watchdog role=%0d qdx=%0d qdxb=%0d",pack(host.debugRole),pack(card.qdxState),pack(card.qdxbState));$finish(1);end endrule
+ rule checkDone(!launched&&stage==BRun&&host.notificationPending(0,0));Bit#(32)c0=mem.sub(30'h800);Bit#(32)c1=mem.sub(30'h801);Bit#(32)c2=mem.sub(30'h802);Bit#(32)c3=mem.sub(30'h803);if(c0!=32'h0000_beef||c1!=32'h0008_0000||c2!=1||c3!=0)begin $display("FAIL M4.5 QDX-B CQ %08x %08x %08x %08x",c0,c1,c2,c3);$finish(1);end if(card.qdxError!=QdxErrNone||card.qdxbLastStatus!=stSuccess||card.sqHead!=1||card.sqTail!=1||card.cqTail!=1||card.fakeFlushCount!=1)begin $display("FAIL M4.5 QDX-B final state status=%04x flush=%0d",card.qdxbLastStatus,card.fakeFlushCount);$finish(1);end $display("M45TRACE|card=qdxb|event=end_to_end|sq_dma=1|payload_dma=1|cq_dma=1|notify=1|durable=1|flush=1");stage<=BDone;endrule
  rule done(stage==BDone&&!launched);$display("PASS M4.5 real PLIOHostCore <-> physical QDX-B card end-to-end");$finish(0);endrule
 endmodule
 endpackage
