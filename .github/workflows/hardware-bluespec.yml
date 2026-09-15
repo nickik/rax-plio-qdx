@@ -66,3 +66,6 @@ jobs:
 
       - name: QIC Phase 5 Rust/Bluesim verification
         run: bash hardware/scripts/test-qic-phase5.sh
+
+      - name: QIC Phase 6 Rust/Bluesim verification
+        run: bash hardware/scripts/test-qic-phase6.sh
