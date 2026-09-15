@@ -6,3 +6,7 @@ license.workspace = true
 
 [dependencies]
 plio-logical-model = { path = "../../plio-logical/rust" }
+qli-model = { path = "../../qli/rust" }
+pti-model = { path = "../../pti/rust" }
+plio-tx-model = { path = "../../plio-tx/rust" }
+plio-qic-model = { path = "../../qic/rust" }
