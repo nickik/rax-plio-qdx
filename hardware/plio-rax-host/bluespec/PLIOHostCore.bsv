@@ -339,10 +339,10 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     method Action revokeDma(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};Bit#(128)mark=128'h1<<idx;capValidMask<=capValidMask&~mark;if(role==CoreDma&&slot==activeSlot&&channel==dmaChannel)dmaRevokePending<=True;endmethod
     method Bit#(4) dmaGeneration(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};Bit#(128)mark=128'h1<<idx;return((capEverMask&mark)!=0)?caps.sub(idx).generation:0;endmethod
 
-    method Bool workerCompletionValid=workerCompletionPending[0];
+    method Bool workerCompletionValid=workerCompletionPending[1];
     method HostWorkerCompletion workerCompletion=workerCompletionReg;
     method Action clearWorkerCompletion;workerCompletionPending[1]<=False;endmethod
-    method Bool dmaCompletionValid=dmaCompletionPending[0];
+    method Bool dmaCompletionValid=dmaCompletionPending[1];
     method DmaM3Status dmaCompletionStatus=dmaCompletionStatusReg;
     method Bit#(5) dmaCompletionBeats=dmaCompletionBeatsReg;
     method Action clearDmaCompletion;dmaCompletionPending[1]<=False;endmethod
