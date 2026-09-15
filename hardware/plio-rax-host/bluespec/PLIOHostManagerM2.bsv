@@ -1,6 +1,7 @@
 package PLIOHostManagerM2;
 
 import Vector::*;
+import RegFile::*;
 import QLITypes::*;
 import QICInterfaces::*;
 
@@ -32,6 +33,11 @@ typedef struct {
     HostM2Fault fault;
 } NotificationDataCheck deriving (Bits, Eq, FShow);
 
+typedef struct {
+    Bool valid;
+    Bit#(5) index;
+} ClaimChoice deriving (Bits, Eq, FShow);
+
 function Bit#(4) m2OddParity32(Bit#(32) word);
     return { ~(^word[31:24]), ~(^word[23:16]), ~(^word[15:8]), ~(^word[7:0]) };
 endfunction
@@ -47,6 +53,18 @@ function GrantChoice chooseM2Request(Bit#(3) cursor, Vector#(8, PlioOut) cards);
         Bit#(3) slot = cursor + fromInteger(i);
         if (!found && cards[slot].request) begin
             choice = GrantChoice { valid: True, slot: slot };
+            found = True;
+        end
+    end
+    return choice;
+endfunction
+
+function ClaimChoice firstClaim(Bit#(32) eligible);
+    ClaimChoice choice = ClaimChoice { valid: False, index: 0 };
+    Bool found = False;
+    for (Integer i = 0; i < 32; i = i + 1) begin
+        if (!found && unpack(eligible[i])) begin
+            choice = ClaimChoice { valid: True, index: fromInteger(i) };
             found = True;
         end
     end
@@ -126,11 +144,11 @@ module mkPLIOHostManagerM2(PLIOHostManagerM2Ifc);
     Reg#(HostM2Fault) faultReg <- mkReg(M2Reset);
 
     Vector#(8, Reg#(Bit#(16))) grantCounts <- replicateM(mkReg(0));
-    Vector#(32, Reg#(Bool)) pending <- replicateM(mkReg(False));
-    Vector#(32, Reg#(Bit#(32))) payload <- replicateM(mkReg(0));
-    Vector#(32, Reg#(Bool)) enabled <- replicateM(mkReg(True));
-    Vector#(32, Reg#(Bool)) masked <- replicateM(mkReg(False));
-    Vector#(32, Reg#(Bit#(4))) classCode <- replicateM(mkReg(0));
+    Reg#(Bit#(32)) pendingBits <- mkReg(0);
+    Reg#(Bit#(32)) enabledBits <- mkReg('1);
+    Reg#(Bit#(32)) maskedBits <- mkReg(0);
+    RegFile#(Bit#(5), Bit#(32)) payloadFile <- mkRegFileFull;
+    RegFile#(Bit#(5), Bit#(4)) classFile <- mkRegFileFull;
 
     method Vector#(8, PlioIn) drive(Vector#(8, PlioOut) cards, Bool notificationReady, Bool reset);
         Vector#(8, PlioIn) outs = replicate(plioInDefault());
@@ -174,10 +192,7 @@ module mkPLIOHostManagerM2(PLIOHostManagerM2Ifc);
                 state <= M2Idle;
                 cursor <= 0;
                 waitCycles <= 0;
-                for (Integer i = 0; i < 32; i = i + 1) begin
-                    pending[i] <= False;
-                    payload[i] <= 0;
-                end
+                pendingBits <= 0;
             end
             else begin
                 case (state)
@@ -238,12 +253,9 @@ module mkPLIOHostManagerM2(PLIOHostManagerM2Ifc);
                             NotificationDataCheck c = checkNotificationData(card);
                             if (c.valid) begin
                                 Bit#(5) idx = { activeSlot, activeChannel };
-                                for (Integer i = 0; i < 32; i = i + 1) begin
-                                    if (idx == fromInteger(i)) begin
-                                        pending[i] <= True;
-                                        payload[i] <= c.payload;
-                                    end
-                                end
+                                Bit#(32) mark = 32'b1 << idx;
+                                pendingBits <= pendingBits | mark;
+                                payloadFile.upd(idx, c.payload);
                                 state <= M2Idle;
                                 cursor <= activeSlot + 1;
                                 waitCycles <= 0;
@@ -278,6 +290,7 @@ module mkPLIOHostManagerM2(PLIOHostManagerM2Ifc);
     method Bit#(9) debugWaitCycles = waitCycles;
     method Bool debugFaultValid = faultValid;
     method HostM2Fault debugFault = faultReg;
+
     method Bit#(16) debugGrantCount(Bit#(3) slot);
         Bit#(16) value = 0;
         for (Integer i = 0; i < 8; i = i + 1)
@@ -287,96 +300,57 @@ module mkPLIOHostManagerM2(PLIOHostManagerM2Ifc);
 
     method Bool notificationPending(Bit#(3) slot, Bit#(2) channel);
         Bit#(5) idx = { slot, channel };
-        Bool value = False;
-        for (Integer i = 0; i < 32; i = i + 1)
-            if (idx == fromInteger(i)) value = pending[i];
-        return value;
+        return unpack(pendingBits[idx]);
     endmethod
 
     method Bit#(32) notificationPayload(Bit#(3) slot, Bit#(2) channel);
         Bit#(5) idx = { slot, channel };
-        Bit#(32) value = 0;
-        for (Integer i = 0; i < 32; i = i + 1)
-            if (idx == fromInteger(i)) value = payload[i];
-        return value;
+        return payloadFile.sub(idx);
     endmethod
 
     method Action setNotificationConfig(Bit#(3) slot, Bit#(2) channel, Bool en, Bool mask, Bit#(4) cls);
         action
             Bit#(5) idx = { slot, channel };
-            for (Integer i = 0; i < 32; i = i + 1) begin
-                if (idx == fromInteger(i)) begin
-                    enabled[i] <= en;
-                    masked[i] <= mask;
-                    classCode[i] <= cls;
-                end
-            end
+            Bit#(32) mark = 32'b1 << idx;
+            if (en) enabledBits <= enabledBits | mark;
+            else enabledBits <= enabledBits & ~mark;
+            if (mask) maskedBits <= maskedBits | mark;
+            else maskedBits <= maskedBits & ~mark;
+            classFile.upd(idx, cls);
         endaction
     endmethod
 
     method Bool claimValid;
-        Bool found = False;
-        for (Integer i = 0; i < 32; i = i + 1)
-            if (!found && pending[i] && enabled[i] && !masked[i]) found = True;
-        return found;
+        ClaimChoice c = firstClaim(pendingBits & enabledBits & ~maskedBits);
+        return c.valid;
     endmethod
 
     method Bit#(3) claimSlot;
-        Bool found = False;
-        Bit#(5) idx = 0;
-        for (Integer i = 0; i < 32; i = i + 1) begin
-            if (!found && pending[i] && enabled[i] && !masked[i]) begin
-                found = True;
-                idx = fromInteger(i);
-            end
-        end
-        return idx[4:2];
+        ClaimChoice c = firstClaim(pendingBits & enabledBits & ~maskedBits);
+        return c.index[4:2];
     endmethod
 
     method Bit#(2) claimChannel;
-        Bool found = False;
-        Bit#(5) idx = 0;
-        for (Integer i = 0; i < 32; i = i + 1) begin
-            if (!found && pending[i] && enabled[i] && !masked[i]) begin
-                found = True;
-                idx = fromInteger(i);
-            end
-        end
-        return idx[1:0];
+        ClaimChoice c = firstClaim(pendingBits & enabledBits & ~maskedBits);
+        return c.index[1:0];
     endmethod
 
     method Bit#(32) claimPayload;
-        Bool found = False;
-        Bit#(32) value = 0;
-        for (Integer i = 0; i < 32; i = i + 1) begin
-            if (!found && pending[i] && enabled[i] && !masked[i]) begin
-                found = True;
-                value = payload[i];
-            end
-        end
-        return value;
+        ClaimChoice c = firstClaim(pendingBits & enabledBits & ~maskedBits);
+        return payloadFile.sub(c.index);
     endmethod
 
     method Bit#(4) claimClass;
-        Bool found = False;
-        Bit#(4) value = 0;
-        for (Integer i = 0; i < 32; i = i + 1) begin
-            if (!found && pending[i] && enabled[i] && !masked[i]) begin
-                found = True;
-                value = classCode[i];
-            end
-        end
-        return value;
+        ClaimChoice c = firstClaim(pendingBits & enabledBits & ~maskedBits);
+        return classFile.sub(c.index);
     endmethod
 
     method Action claimFirst;
         action
-            Bool found = False;
-            for (Integer i = 0; i < 32; i = i + 1) begin
-                if (!found && pending[i] && enabled[i] && !masked[i]) begin
-                    found = True;
-                    pending[i] <= False;
-                end
+            ClaimChoice c = firstClaim(pendingBits & enabledBits & ~maskedBits);
+            if (c.valid) begin
+                Bit#(32) mark = 32'b1 << c.index;
+                pendingBits <= pendingBits & ~mark;
             end
         endaction
     endmethod
