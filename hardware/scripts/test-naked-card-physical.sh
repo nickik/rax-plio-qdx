@@ -18,7 +18,9 @@ echo "== Exact Rust / Bluesim QLI-16 codec equivalence =="
 bash "$ROOT/scripts/test-qli16-codec.sh"
 
 echo "== Rust complete NakedCard physical stack =="
-cargo test --manifest-path "$ROOT/Cargo.toml" -p naked-card --test physical_stack -- --nocapture
+cargo test --manifest-path "$ROOT/Cargo.toml" -p naked-card --test physical_stack -- --nocapture --test-threads=1 \
+    | tee "$BUILD/naked-rust.log"
+grep -o 'NAKEDTRACE|v1|[^[:space:]]*' "$BUILD/naked-rust.log" | sort > "$BUILD/naked-rust.trace"
 
 echo "== Bluesim full worker NakedCard =="
 bsc -u -sim -p "$SEARCH" \
@@ -46,5 +48,13 @@ for words in 1 4 8 16; do
     grep -q "^NAKEDTRACE|v1|case=h2d|words=${words}|status=0$" "$BUILD/naked-probe.log"
 done
 grep -q '^NAKEDTRACE|v1|case=notification|channel=2|ready=1$' "$BUILD/naked-probe.log"
+
+{
+    grep '^NAKEDTRACE|' "$BUILD/naked-worker.log"
+    grep '^NAKEDTRACE|' "$BUILD/naked-probe.log"
+} | sort > "$BUILD/naked-bsv.trace"
+
+echo "== Exact Rust / Bluesim full-stack milestone equivalence =="
+diff -u "$BUILD/naked-rust.trace" "$BUILD/naked-bsv.trace"
 
 echo "PASS complete NakedCard physical validation ladder"
