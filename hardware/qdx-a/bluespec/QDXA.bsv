@@ -191,10 +191,12 @@ module mkQDXA(QDXAIfc);
             end
             else begin
                 endpointResetPulse <= False;
-                if (mmioResponsePending && qic.mmioResponseReady) mmioResponsePending <= False;
-                if (qic.mmioCancel) mmioResponsePending <= False;
 
-                if (acceptsMmio) begin
+                if (mmioResponsePending) begin
+                    if (qic.mmioResponseReady || qic.mmioCancel)
+                        mmioResponsePending <= False;
+                end
+                else if (acceptsMmio) begin
                     MmioResponse resp = mmioError();
                     Bool legal = False;
                     if (!req.write) begin
@@ -253,38 +255,39 @@ module mkQDXA(QDXAIfc);
                     mmioResponseReg <= legal ? resp : mmioError();
                     mmioResponsePending <= True;
                 end
-
-                case (state)
-                    ADisabled: begin end
-                    AReadyIdle: begin
-                        Bit#(16) cqUsed=cqTail-cqHead;
-                        if (sqHead!=sqTail && cqUsed<4) begin sqWord<=0; state<=ASqRequest; end
-                    end
-                    ASqRequest: if (qic.dmaRequestReady) begin sqWord<=0; state<=ASqReceive; end
-                    ASqReceive: if (qic.dmaReadValid) begin
-                        QdxACommand next=commandBuffer; next[sqWord]=qic.dmaRead.data; commandBuffer<=next;
-                        if (sqWord==7) state<=ASqCompletion; else sqWord<=sqWord+1;
-                    end
-                    ASqCompletion: if (qic.dmaCompletionValid) begin
-                        if (qic.dmaCompletion.status==DmaOk && qic.dmaCompletion.wordsCompleted==8) begin sqHead<=sqHead+1; state<=AEndpointOffer; end
-                        else begin errorReg<=QdxErrSqDma; state<=AFault; end
-                    end
-                    AEndpointOffer: if (endpoint.commandReady) state<=AEndpointCompletion;
-                    AEndpointCompletion: begin
-                        Bit#(16) cqUsed=cqTail-cqHead;
-                        if (endpoint.completionValid && cqUsed<4) begin completionBuffer<=endpoint.completion; cqWord<=0; state<=ACqRequest; end
-                    end
-                    ACqRequest: if (qic.dmaRequestReady) begin cqWord<=0; state<=ACqSend; end
-                    ACqSend: if (qic.dmaWriteReady) begin if (cqWord==3) state<=ACqCompletion; else cqWord<=cqWord+1; end
-                    ACqCompletion: if (qic.dmaCompletionValid) begin
-                        if (qic.dmaCompletion.status==DmaOk && qic.dmaCompletion.wordsCompleted==4) begin
-                            Bool wasEmpty=cqTail==cqHead; cqTail<=cqTail+1;
-                            if (wasEmpty && notifyEnable) state<=ANotify; else state<=AReadyIdle;
-                        end else begin errorReg<=QdxErrCqDma; state<=AFault; end
-                    end
-                    ANotify: if (qic.notificationReady) state<=AReadyIdle;
-                    AFault: begin end
-                endcase
+                else begin
+                    case (state)
+                        ADisabled: begin end
+                        AReadyIdle: begin
+                            Bit#(16) cqUsed=cqTail-cqHead;
+                            if (sqHead!=sqTail && cqUsed<4) begin sqWord<=0; state<=ASqRequest; end
+                        end
+                        ASqRequest: if (qic.dmaRequestReady) begin sqWord<=0; state<=ASqReceive; end
+                        ASqReceive: if (qic.dmaReadValid) begin
+                            QdxACommand next=commandBuffer; next[sqWord]=qic.dmaRead.data; commandBuffer<=next;
+                            if (sqWord==7) state<=ASqCompletion; else sqWord<=sqWord+1;
+                        end
+                        ASqCompletion: if (qic.dmaCompletionValid) begin
+                            if (qic.dmaCompletion.status==DmaOk && qic.dmaCompletion.wordsCompleted==8) begin sqHead<=sqHead+1; state<=AEndpointOffer; end
+                            else begin errorReg<=QdxErrSqDma; state<=AFault; end
+                        end
+                        AEndpointOffer: if (endpoint.commandReady) state<=AEndpointCompletion;
+                        AEndpointCompletion: begin
+                            Bit#(16) cqUsed=cqTail-cqHead;
+                            if (endpoint.completionValid && cqUsed<4) begin completionBuffer<=endpoint.completion; cqWord<=0; state<=ACqRequest; end
+                        end
+                        ACqRequest: if (qic.dmaRequestReady) begin cqWord<=0; state<=ACqSend; end
+                        ACqSend: if (qic.dmaWriteReady) begin if (cqWord==3) state<=ACqCompletion; else cqWord<=cqWord+1; end
+                        ACqCompletion: if (qic.dmaCompletionValid) begin
+                            if (qic.dmaCompletion.status==DmaOk && qic.dmaCompletion.wordsCompleted==4) begin
+                                Bool wasEmpty=cqTail==cqHead; cqTail<=cqTail+1;
+                                if (wasEmpty && notifyEnable) state<=ANotify; else state<=AReadyIdle;
+                            end else begin errorReg<=QdxErrCqDma; state<=AFault; end
+                        end
+                        ANotify: if (qic.notificationReady) state<=AReadyIdle;
+                        AFault: begin end
+                    endcase
+                end
             end
         endaction
     endmethod
