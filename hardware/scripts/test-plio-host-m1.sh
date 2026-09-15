@@ -43,11 +43,11 @@ grep '^PLIOHOSTM2TRACE|' "$BUILD/m2-rust.log" > "$BUILD/m2-rust.trace"
 test "$(wc -l < "$BUILD/m2-rust.trace")" -eq 8
 
 echo "== M2 Bluesim manager model =="
-bsc -u -sim -p "$SEARCH" \
+bsc +RTS -K64m -RTS -u -sim -p "$SEARCH" \
     -bdir "$BUILD/m2-sim" -simdir "$BUILD/m2-sim" -info-dir "$BUILD/m2-sim" \
     -g mkTbPLIOHostManagerM2 "$ROOT/plio-rax-host/bluespec/TbPLIOHostManagerM2.bsv"
 
-bsc -sim -p "$SEARCH" \
+bsc +RTS -K64m -RTS -sim -p "$SEARCH" \
     -bdir "$BUILD/m2-sim" -simdir "$BUILD/m2-sim" \
     -e mkTbPLIOHostManagerM2 -o "$BUILD/tb-plio-host-m2"
 
@@ -64,7 +64,7 @@ bsc -u -verilog -p "$SEARCH" \
     -bdir "$BUILD/m1-rtl" -vdir "$BUILD/m1-rtl" -info-dir "$BUILD/m1-rtl" \
     -g mkPLIOWorkerHost "$ROOT/plio-rax-host/bluespec/PLIOWorkerHost.bsv"
 
-bsc -u -verilog -p "$SEARCH" \
+bsc +RTS -K64m -RTS -u -verilog -p "$SEARCH" \
     -bdir "$BUILD/m2-rtl" -vdir "$BUILD/m2-rtl" -info-dir "$BUILD/m2-rtl" \
     -g mkPLIOHostManagerM2 "$ROOT/plio-rax-host/bluespec/PLIOHostManagerM2.bsv"
 
