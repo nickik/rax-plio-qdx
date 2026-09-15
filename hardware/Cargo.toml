@@ -5,6 +5,7 @@ members = [
     "qli/rust",
     "qli16/rust",
     "pti/rust",
+    "plio-tx/rust",
     "qic/rust",
     "testbench/rust",
     "naked-card/rust",
