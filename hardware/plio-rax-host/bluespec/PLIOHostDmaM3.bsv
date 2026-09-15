@@ -32,7 +32,6 @@ interface PLIOHostDmaM3Ifc;
     method Action revoke(Bit#(3) slot, Bit#(4) channel);
     method Bit#(4) generation(Bit#(3) slot, Bit#(4) channel);
     method Bool capabilityValid(Bit#(3) slot, Bit#(4) channel);
-
     method Action start(Bit#(3) slot, Bit#(32) dmaAddress, Bit#(5) words, Bool deviceRead);
     method Action offerDeviceWrite(Bit#(32) word, Bit#(4) parity);
     method Bool memoryRequestValid;
@@ -47,12 +46,10 @@ interface PLIOHostDmaM3Ifc;
     method Action acknowledgeDeviceRead;
     method Action waitCycle;
     method Action resetHost;
-
     method Bool completionValid;
     method DmaM3Status completionStatus;
     method Bit#(5) completionBeats;
     method Action clearCompletion;
-
     method DmaM3State debugState;
     method Bit#(5) debugAcknowledged;
     method Bit#(9) debugWaitCycles;
@@ -63,7 +60,6 @@ module mkPLIOHostDmaM3(PLIOHostDmaM3Ifc);
     RegFile#(Bit#(7), DmaCapability) caps <- mkRegFileFull();
     Reg#(Bit#(128)) validMask <- mkReg(0);
     Reg#(Bit#(128)) everMask <- mkReg(0);
-
     Reg#(DmaM3State) state <- mkReg(DmaIdle);
     Reg#(Bit#(3)) activeSlot <- mkReg(0);
     Reg#(Bit#(4)) activeChannel <- mkReg(0);
@@ -76,7 +72,6 @@ module mkPLIOHostDmaM3(PLIOHostDmaM3Ifc);
     Reg#(Bit#(32)) pendingRead <- mkReg(0);
     Reg#(Bit#(9)) waitCycles <- mkReg(0);
     Reg#(Bool) revokePending <- mkReg(False);
-
     Reg#(Bool) completionPending <- mkReg(False);
     Reg#(DmaM3Status) completionStatusReg <- mkReg(DmaOk);
     Reg#(Bit#(5)) completionBeatsReg <- mkReg(0);
@@ -93,15 +88,18 @@ module mkPLIOHostDmaM3(PLIOHostDmaM3Ifc);
     endfunction
 
     method Action bindCapability(Bit#(3) slot, Bit#(4) channel, Bit#(32) base, Bit#(25) length, Bool deviceRead, Bool deviceWrite)
-        if (!completionPending && length != 0 && length <= 25'h1000000 && base[1:0] == 0
-            && !(state != DmaIdle && slot == activeSlot && channel == activeChannel));
-        Bit#(7) idx = capIndex(slot, channel);
-        Bit#(128) bitMask = 128'h1 << idx;
-        Bit#(4) gen = 0;
-        if ((everMask & bitMask) != 0) gen = caps.sub(idx).generation + 1;
-        caps.upd(idx, DmaCapability { base: base, length: length, deviceRead: deviceRead, deviceWrite: deviceWrite, generation: gen });
-        validMask <= validMask | bitMask;
-        everMask <= everMask | bitMask;
+        if (!completionPending);
+        Bool activeSame = state != DmaIdle && slot == activeSlot && channel == activeChannel;
+        Bool legal = length != 0 && length <= 25'h1000000 && base[1:0] == 0 && !activeSame;
+        if (legal) begin
+            Bit#(7) idx = capIndex(slot, channel);
+            Bit#(128) bitMask = 128'h1 << idx;
+            Bit#(4) gen = 0;
+            if ((everMask & bitMask) != 0) gen = caps.sub(idx).generation + 1;
+            caps.upd(idx, DmaCapability { base: base, length: length, deviceRead: deviceRead, deviceWrite: deviceWrite, generation: gen });
+            validMask <= validMask | bitMask;
+            everMask <= everMask | bitMask;
+        end
     endmethod
 
     method Action revoke(Bit#(3) slot, Bit#(4) channel);
@@ -241,7 +239,6 @@ module mkPLIOHostDmaM3(PLIOHostDmaM3Ifc);
     method Action clearCompletion if (completionPending);
         completionPending <= False;
     endmethod
-
     method DmaM3State debugState = state;
     method Bit#(5) debugAcknowledged = acknowledged;
     method Bit#(9) debugWaitCycles = waitCycles;
