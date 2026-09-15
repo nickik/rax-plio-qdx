@@ -45,18 +45,21 @@ function Bit#(32) sqWord(Bit#(3) i);
     endcase
 endfunction
 
-function PlioIn peerBus(PeerState p, Bool rd, Bit#(32) base, Bit#(5) beat);
+function PlioIn peerBus(PeerState p, Bool rd, Bit#(32) base, Bit#(5) beat, Bool responsePending);
     PlioIn b=plioInDefault();
     case (p)
         PeerGrant:b.grant=True;
         PeerDmaAddress:begin b.grant=True;b.ack=True; end
         PeerDmaData:begin
-            b.grant=True;b.ack=True;
-            if (rd) begin
-                Bit#(32) a=base+(zeroExtend(beat)<<2); Bit#(32) data=0;
-                if (base==32'h1200_1000) data=sqWord(truncate(beat));
-                else data=32'h9900_0000+(a-32'h3000);
-                b.adValid=True;b.ad=data;b.parValid=True;b.par=oddParity32P1(data);
+            b.grant=True;
+            if (responsePending) begin
+                b.ack=True;
+                if (rd) begin
+                    Bit#(32) a=base+(zeroExtend(beat)<<2); Bit#(32) data=0;
+                    if (base==32'h1200_1000) data=sqWord(truncate(beat));
+                    else data=32'h9900_0000+(a-32'h3000);
+                    b.adValid=True;b.ad=data;b.parValid=True;b.par=oddParity32P1(data);
+                end
             end
         end
         PeerNotificationAddress:begin b.grant=True;b.ack=True; end
@@ -75,6 +78,7 @@ module mkTbQDXBCard(Empty);
     Reg#(Bit#(32)) peerBase <- mkReg(0);
     Reg#(Bit#(5)) peerBeat <- mkReg(0);
     Reg#(Bit#(5)) peerTotal <- mkReg(0);
+    Reg#(Bool) dataResponsePending <- mkReg(False);
     Reg#(Bool) notificationSeen <- mkReg(False);
     Reg#(Bool) sawPayload <- mkReg(False);
     Reg#(Bool) sawCq <- mkReg(False);
@@ -82,9 +86,10 @@ module mkTbQDXBCard(Empty);
 
     function PlioIn currentBus();
         PlioIn b=plioInDefault();
-        if (work==WReset) begin b.reset=True; return b; end
-        if (isProgramming(work)) return workerBus(work,wp);
-        return peerBus(peer,peerRead,peerBase,peerBeat);
+        if (work==WReset) b.reset=True;
+        else if (isProgramming(work)) b=workerBus(work,wp);
+        else b=peerBus(peer,peerRead,peerBase,peerBeat,dataResponsePending);
+        return b;
     endfunction
 
     rule launch (card.ready && work!=WDone); card.startCycle(currentBus()); endrule
@@ -95,6 +100,7 @@ module mkTbQDXBCard(Empty);
 
         if (work==WReset) begin
             if (bp.adParValid || bp.controlValid || bp.responseValid || bp.request) begin $display("FAIL drive during reset"); $finish(1); end
+            dataResponsePending<=False;
             $display("QDXBCARDTRACE|v1|event=reset|drive=0"); next=WSqBase; nextWp=WAddr;
         end
         else if (isProgramming(work)) begin
@@ -109,7 +115,10 @@ module mkTbQDXBCard(Empty);
         end
         else begin
             case (peer)
-                PeerIdle:if (bp.request) nextPeer=PeerGrant;
+                PeerIdle:begin
+                    dataResponsePending<=False;
+                    if (bp.request) nextPeer=PeerGrant;
+                end
                 PeerGrant:if (bp.controlValid && bp.control.addressStrobe) begin
                     if (bp.control.space==1) begin
                         BurstWords bw=unpack(bp.control.burstLen);
@@ -124,7 +133,7 @@ module mkTbQDXBCard(Empty);
                             if (bp.ad!=32'h2300_2000 || total!=4) begin $display("FAIL CQ DMA addr/burst");$finish(1); end
                             sawCq<=True;
                         end
-                        peerRead<=bp.control.read; peerBase<=bp.ad; peerBeat<=0; peerTotal<=total; nextPeer=PeerDmaAddress;
+                        peerRead<=bp.control.read; peerBase<=bp.ad; peerBeat<=0; peerTotal<=total; dataResponsePending<=False; nextPeer=PeerDmaAddress;
                     end
                     else if (bp.control.space==2) begin
                         if (!bp.adParValid || bp.ad!=0) begin $display("FAIL notification address");$finish(1); end
@@ -132,14 +141,25 @@ module mkTbQDXBCard(Empty);
                     end
                     else begin $display("FAIL unexpected manager space");$finish(1); end
                 end
-                PeerDmaAddress:if (bp.controlValid && bp.control.addressStrobe) nextPeer=PeerDmaData;
-                PeerDmaData:if (bp.controlValid && bp.control.dataStrobe) begin
-                    if (!peerRead && peerBase==32'h2300_2000) begin
-                        Bit#(32) expect=0;
-                        case (peerBeat) 0:expect=32'h0000_beef; 1:expect=32'h0008_0000; 2:expect=1; default:expect=0; endcase
-                        if (!bp.adParValid || bp.ad!=expect || bp.par!=oddParity32P1(expect)) begin $display("FAIL CQ beat=%0d expect=%08x got=%08x",peerBeat,expect,bp.ad);$finish(1); end
+                PeerDmaAddress:if (bp.controlValid && bp.control.addressStrobe) begin
+                    dataResponsePending<=False;
+                    nextPeer=PeerDmaData;
+                end
+                PeerDmaData:begin
+                    if (dataResponsePending) begin
+                        dataResponsePending<=False;
+                        Bit#(5) n=peerBeat+1;
+                        peerBeat<=n;
+                        if (n==peerTotal) nextPeer=PeerIdle;
                     end
-                    Bit#(5) n=peerBeat+1; peerBeat<=n; if (n==peerTotal) nextPeer=PeerIdle;
+                    else if (bp.controlValid && bp.control.dataStrobe) begin
+                        if (!peerRead && peerBase==32'h2300_2000) begin
+                            Bit#(32) expect=0;
+                            case (peerBeat) 0:expect=32'h0000_beef; 1:expect=32'h0008_0000; 2:expect=1; default:expect=0; endcase
+                            if (!bp.adParValid || bp.ad!=expect || bp.par!=oddParity32P1(expect)) begin $display("FAIL CQ beat=%0d expect=%08x got=%08x",peerBeat,expect,bp.ad);$finish(1); end
+                        end
+                        dataResponsePending<=True;
+                    end
                 end
                 PeerNotificationAddress:if (bp.controlValid && bp.control.addressStrobe) nextPeer=PeerNotificationData;
                 PeerNotificationData:if (bp.controlValid && bp.control.dataStrobe) begin
