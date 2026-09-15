@@ -99,9 +99,6 @@ module mkTbNakedCardFaultPhysical(Empty);
             end
             PeerDmaData: begin
                 b.grant = True;
-                // A PLIO target responds only to a data phase that was actually
-                // observed on the previous physical round trip.  This keeps
-                // injected ACK/ERR responses aligned with the beat they retire.
                 if (responsePending && m != FDataTimeout && waitLeft == 0) begin
                     if (isBusError(m) && beat == faultBeat(m)) b.err = True;
                     else begin
@@ -371,3 +368,5 @@ module mkTbNakedCardFaultPhysical(Empty);
         $finish(0);
     endrule
 endmodule
+
+endpackage
