@@ -12,7 +12,17 @@ import QDXAProfileDma::*;
 import QDXBFakeMedia::*;
 import QDXBEndpoint::*;
 
-typedef enum { CardIdle, CardRx, CardLocalLoad, CardLocal0, CardLocal1, CardApply, CardTx, CardExpose } QdxBCardPhase deriving (Bits,Eq,FShow);
+typedef enum {
+    CardIdle,
+    CardRx,
+    CardLocalLoad,
+    CardLocalPreview,
+    CardLocal0,
+    CardLocal1,
+    CardApply,
+    CardTx,
+    CardExpose
+} QdxBCardPhase deriving (Bits,Eq,FShow);
 
 interface QDXBCardIfc;
     method Bool ready;
@@ -21,6 +31,7 @@ interface QDXBCardIfc;
     method BackplaneDrive backplane;
     method Action finishCycle;
     method Bool protocolFault;
+    method UnifiedQicState qicState;
     method QdxAState qdxState;
     method QdxAError qdxError;
     method Bit#(16) sqHead;
@@ -34,7 +45,7 @@ endinterface
 
 module mkQDXBCard(QDXBCardIfc);
     PLIOQICIfc qic <- mkPLIOQIC;
-    QLI16CodecIfc local <- mkQLI16Codec;
+    QLI16CodecIfc codec <- mkQLI16Codec;
     QDXAIfc qdx <- mkQDXA;
     QDXBMediaIfc media <- mkQDXBFakeMedia;
     QDXBEndpointIfc qdxb <- mkQDXBEndpoint(media);
@@ -42,6 +53,7 @@ module mkQDXBCard(QDXBCardIfc);
 
     Reg#(QdxBCardPhase) phase <- mkReg(CardIdle);
     Reg#(PlioIn) sampledBus <- mkReg(plioInDefault());
+    Reg#(QliOut) heldQicSemantic <- mkReg(qliOutDefault());
     Reg#(QliIn) heldQli <- mkReg(qliInDefault());
     Reg#(BackplaneDrive) exposed <- mkReg(backplaneDriveDefault());
     Reg#(Bool) fault <- mkReg(False);
@@ -52,7 +64,7 @@ module mkQDXBCard(QDXBCardIfc);
         action
             if (image.reset) begin
                 qic.advance(image,qliInDefault());
-                local.resetCodec;
+                codec.resetCodec;
                 QliOut qr=qliOutDefault(); qr.reset=True;
                 QdxAEndpointOut eo=qdx.endpointPort(qr);
                 QdxAEndpointIn ei=qdxb.endpointDrive(eo);
@@ -72,21 +84,28 @@ module mkQDXBCard(QDXBCardIfc);
     rule loadLocal (phase==CardLocalLoad);
         PlioIn b=sampledBus;
         QliOut emptyQic=qliOutDefault();
+        emptyQic.reset=b.reset;
         QliIn corePreview=qdx.qicPort(emptyQic);
         QliIn mergedPreview=mergeProfileDma(qdx.debugState,corePreview,qdxb.dmaDrive);
         QliOut qicSemantic=qic.driveQli(b,mergedPreview);
+        heldQicSemantic<=qicSemantic;
+        phase<=CardLocalPreview;
+    endrule
+
+    rule loadPhysicalLocal (phase==CardLocalPreview);
+        QliOut qicSemantic=heldQicSemantic;
         QliIn coreSemantic=qdx.qicPort(qicSemantic);
         QliIn mergedSemantic=mergeProfileDma(qdx.debugState,coreSemantic,qdxb.dmaDrive);
-        local.load(qicSemantic,mergedSemantic);
+        codec.load(qicSemantic,mergedSemantic);
         phase<=CardLocal0;
     endrule
 
-    rule local0 (phase==CardLocal0); local.step; phase<=CardLocal1; endrule
-    rule local1 (phase==CardLocal1); local.step; phase<=CardApply; endrule
+    rule local0 (phase==CardLocal0); codec.step; phase<=CardLocal1; endrule
+    rule local1 (phase==CardLocal1); codec.step; phase<=CardApply; endrule
 
-    rule applyLocal (phase==CardApply && local.cycleComplete);
-        QliIn toQic=local.toQic;
-        QliOut toDevice=local.toDevice;
+    rule applyLocal (phase==CardApply && codec.cycleComplete);
+        QliIn toQic=codec.toQic;
+        QliOut toDevice=codec.toDevice;
         QdxAEndpointOut eo=qdx.endpointPort(toDevice);
         QdxAEndpointIn ei=qdxb.endpointDrive(eo);
         QdxAProfileDmaOut pd=profileDmaResponse(qdx.debugState,toDevice);
@@ -101,14 +120,15 @@ module mkQDXBCard(QDXBCardIfc);
         BackplaneDrive bp=phy.backplane;
         qic.advance(sampledBus,heldQli);
         exposed<=bp;
-        if (phy.protocolFault || local.protocolFault) fault<=True;
+        if (phy.protocolFault || codec.protocolFault) fault<=True;
         phy.finishCycle; phase<=CardExpose;
     endrule
 
     method Bool cycleDone=phase==CardExpose;
     method BackplaneDrive backplane if (phase==CardExpose)=exposed;
     method Action finishCycle if (phase==CardExpose); phase<=CardIdle; endmethod
-    method Bool protocolFault=fault || phy.protocolFault || local.protocolFault;
+    method Bool protocolFault=fault || phy.protocolFault || codec.protocolFault;
+    method UnifiedQicState qicState=qic.debugState;
     method QdxAState qdxState=qdx.debugState;
     method QdxAError qdxError=qdx.debugError;
     method Bit#(16) sqHead=qdx.debugSqHead;
