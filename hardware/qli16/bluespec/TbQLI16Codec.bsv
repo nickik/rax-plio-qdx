@@ -8,7 +8,6 @@ import QLI16Codec::*;
 function QliOut qicStimulus(Bit#(8) c);
     QliOut q = qliOutDefault();
     MmioRequest mmio = MmioRequest { address:32'h0000_0100, write:False, byteEnable:4'hf, writeData:0 };
-    MmioResponse response = mmioReadOk(32'h89ab_cdef);
     DmaRequest request = DmaRequest { direction:DeviceToHost, address:32'h1234_5000, words:BurstFour };
     DmaCompletion completion = DmaCompletion { status:DmaBusError, wordsCompleted:3 };
     case (c)
@@ -17,7 +16,7 @@ function QliOut qicStimulus(Bit#(8) c);
         5,6: q.dmaRequestReady=True;
         7: begin q.dmaCompletionValid=True; q.dmaCompletion=completion; end
         9: q.notificationReady=True;
-        default: noAction;
+        default: begin end
     endcase
     return q;
 endfunction
@@ -33,7 +32,7 @@ function QliIn deviceStimulus(Bit#(8) c);
         5,6: begin d.dmaRequestValid=True; d.dmaRequest=request; end
         7: d.dmaCompletionReady=True;
         8,9: begin d.notificationValid=True; d.notification=n; end
-        default: noAction;
+        default: begin end
     endcase
     return d;
 endfunction
