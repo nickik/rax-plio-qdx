@@ -11,6 +11,11 @@ run_tb(){ local top="$1" src="$2" tag="$3"; local dir="$BUILD/$tag"; mkdir -p "$
 echo '== M4.5 NakedCard physical host/card compatibility ==';run_tb mkTbPLIOHostNakedIntegration "$ROOT/m4.5/bluespec/TbPLIOHostNakedIntegration.bsv" naked
 echo '== M4.5 QDX-A physical host/card compatibility ==';run_tb mkTbPLIOHostQDXAIntegration "$ROOT/m4.5/bluespec/TbPLIOHostQDXAIntegration.bsv" qdxa
 echo '== M4.5 QDX-B full host/card transaction ==';run_tb mkTbPLIOHostQDXBIntegration "$ROOT/m4.5/bluespec/TbPLIOHostQDXBIntegration.bsv" qdxb
-grep -q 'event=end_to_end|sq_dma=1|cq_dma=1|notify=1|cq_exact=1' "$BUILD/qdxa/run.log";grep -q 'event=end_to_end|sq_dma=1|payload_dma=1|cq_dma=1|notify=1|durable=1|flush=1' "$BUILD/qdxb/run.log"
-bash "$ROOT/scripts/test-plio-host-m4.sh";bash "$ROOT/scripts/test-qdx-a-card.sh";bash "$ROOT/scripts/test-qdx-b.sh"
+grep -q 'event=end_to_end|sq_dma=1|cq_dma=1|notify=1|cq_exact=1' "$BUILD/qdxa/run.log"
+grep -q 'event=end_to_end|sq_dma=1|payload_dma=1|cq_dma=1|notify=1|durable=1|flush_count=0' "$BUILD/qdxb/run.log"
+# Exact-head acceptance includes the existing physical and card regressions as well as M4.
+bash "$ROOT/scripts/test-plio-host-m4.sh"
+bash "$ROOT/scripts/test-naked-card-physical.sh"
+bash "$ROOT/scripts/test-qdx-a-card.sh"
+bash "$ROOT/scripts/test-qdx-b.sh"
 echo 'PASS M4.5 PLIOHostCore physical NakedCard/QDX-A/QDX-B integration gate'

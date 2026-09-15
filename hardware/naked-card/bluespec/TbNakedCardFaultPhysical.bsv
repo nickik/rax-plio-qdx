@@ -72,6 +72,7 @@ module mkTbNakedCardFaultPhysical(Empty);
     Reg#(PeerState) peer <- mkReg(PeerIdle);
     Reg#(Bit#(5)) peerBeat <- mkReg(0);
     Reg#(Bit#(9)) peerWait <- mkReg(0);
+    Reg#(Bool) dataResponsePending <- mkReg(False);
     Reg#(Bit#(3)) notificationTransactions <- mkReg(0);
     Reg#(Bool) requestPending <- mkReg(True);
     Reg#(Bit#(5)) deviceIndex <- mkReg(0);
@@ -87,7 +88,8 @@ module mkTbNakedCardFaultPhysical(Empty);
         };
     endfunction
 
-    function PlioIn peerBus(PeerState p, FaultMode m, Bit#(5) beat, Bit#(9) waitLeft);
+    function PlioIn peerBus(PeerState p, FaultMode m, Bit#(5) beat,
+                            Bit#(9) waitLeft, Bool responsePending);
         PlioIn b = plioInDefault();
         case (p)
             PeerGrant: b.grant = True;
@@ -97,7 +99,10 @@ module mkTbNakedCardFaultPhysical(Empty);
             end
             PeerDmaData: begin
                 b.grant = True;
-                if (m != FDataTimeout && waitLeft == 0) begin
+                // A PLIO target responds only to a data phase that was actually
+                // observed on the previous physical round trip.  This keeps
+                // injected ACK/ERR responses aligned with the beat they retire.
+                if (responsePending && m != FDataTimeout && waitLeft == 0) begin
                     if (isBusError(m) && beat == faultBeat(m)) b.err = True;
                     else begin
                         b.ack = True;
@@ -138,6 +143,7 @@ module mkTbNakedCardFaultPhysical(Empty);
         peer <= PeerIdle;
         peerBeat <= 0;
         peerWait <= 0;
+        dataResponsePending <= False;
         notificationTransactions <= 0;
         requestPending <= True;
         deviceIndex <= 0;
@@ -145,7 +151,7 @@ module mkTbNakedCardFaultPhysical(Empty);
     endrule
 
     rule startReceive (phase == 1 && phy.ready && mode != FDone);
-        phy.startReceive(peerBus(peer, mode, peerBeat, peerWait));
+        phy.startReceive(peerBus(peer, mode, peerBeat, peerWait, dataResponsePending));
         phase <= 2;
     endrule
 
@@ -247,6 +253,7 @@ module mkTbNakedCardFaultPhysical(Empty);
             peer <= PeerIdle;
             peerBeat <= 0;
             peerWait <= 0;
+            dataResponsePending <= False;
             requestPending <= True;
             deviceIndex <= 0;
         end
@@ -297,6 +304,7 @@ module mkTbNakedCardFaultPhysical(Empty);
             PeerGrant: begin
                 if (bp.controlValid && bp.control.addressStrobe) begin
                     peerBeat <= 0;
+                    dataResponsePending <= False;
                     if (bp.control.space == 1) begin
                         next = PeerDmaAddress;
                         if (mode == FWaits) nextWait = 3;
@@ -314,24 +322,30 @@ module mkTbNakedCardFaultPhysical(Empty);
                 if (nextWait > 0) nextWait = nextWait - 1;
                 else if (mode != FAddressTimeout) begin
                     next = PeerDmaData;
-                    if (mode == FWaits) nextWait = 2;
-                    else if (mode == FDataTimeout) nextWait = 300;
-                    else nextWait = 0;
+                    nextWait = 0;
+                    dataResponsePending <= False;
                 end
             end
             PeerDmaData: begin
-                if (nextWait > 0) nextWait = nextWait - 1;
-                else if (mode != FDataTimeout
-                    && bp.controlValid && bp.control.dataStrobe) begin
-                    if (isBusError(mode) && peerBeat == faultBeat(mode)) begin
-                        next = PeerIdle;
+                if (dataResponsePending) begin
+                    if (nextWait > 0) nextWait = nextWait - 1;
+                    else if (mode != FDataTimeout) begin
+                        dataResponsePending <= False;
+                        if (isBusError(mode) && peerBeat == faultBeat(mode)) begin
+                            next = PeerIdle;
+                        end
+                        else begin
+                            Bit#(5) n = peerBeat + 1;
+                            peerBeat <= n;
+                            if (n == 4) next = PeerIdle;
+                        end
                     end
-                    else begin
-                        Bit#(5) n = peerBeat + 1;
-                        peerBeat <= n;
-                        if (n == 4) next = PeerIdle;
-                        else if (mode == FWaits) nextWait = 2;
-                    end
+                end
+                else if (bp.controlValid && bp.control.dataStrobe) begin
+                    dataResponsePending <= True;
+                    if (mode == FWaits) nextWait = 2;
+                    else if (mode == FDataTimeout) nextWait = 300;
+                    else nextWait = 0;
                 end
             end
             PeerNotificationAddress: begin
@@ -357,5 +371,3 @@ module mkTbNakedCardFaultPhysical(Empty);
         $finish(0);
     endrule
 endmodule
-
-endpackage
