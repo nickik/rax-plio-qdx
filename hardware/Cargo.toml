@@ -14,6 +14,7 @@ members = [
     "trace/rust",
     "plio-rax-host/rust",
     "plio-rax-host/m2-rust",
+    "plio-rax-host/m3-rust",
 ]
 
 [workspace.package]
