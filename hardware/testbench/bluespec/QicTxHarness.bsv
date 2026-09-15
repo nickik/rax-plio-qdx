@@ -27,6 +27,7 @@ module mkQicTxHarness(QicTxHarnessIfc);
         return x.spaceValid || x.addressStrobe || x.dataStrobe;
     endfunction
     function Bool hasData(PlioOut x); return x.adValid && x.parValid; endfunction
+    function Bool needsDriveImage(PlioOut x); return hasControl(x) || hasData(x); endfunction
     function QicPtiDrive baseDrive(PtiToken t);
         QicPtiDrive q=qicPtiDriveDefault(); q.token=t; return q;
     endfunction
@@ -40,8 +41,7 @@ module mkQicTxHarness(QicTxHarnessIfc);
     method Action start(PlioOut image) if (state==HIdle);
         action
             held<=image; donePulse<=False;
-            if (hasControl(image)) state<=HControl;
-            else if (hasData(image)) state<=HDataLo;
+            if (needsDriveImage(image)) state<=HControl;
             else state<=HTurn;
         endaction
     endmethod
@@ -62,7 +62,7 @@ module mkQicTxHarness(QicTxHarnessIfc);
                 HTurn: begin q=baseDrive(ptiToken(PtiIdle,0,0)); tx.advance(reset,q,b); state<=HExpose; end
                 HExpose: begin
                     q=baseDrive(ptiToken(PtiIdle,0,0));
-                    q.driveEnable=hasControl(held); q.responseEnable=held.ack||held.err;
+                    q.driveEnable=needsDriveImage(held); q.responseEnable=held.ack||held.err;
                     q.responseAck=held.ack; q.responseErr=held.err; q.busRequest=held.request;
                     exposed<=tx.driveBackplane(reset,q,b); tx.advance(reset,q,b);
                     donePulse<=True; state<=HIdle;
