@@ -99,9 +99,10 @@ endfunction
 
 function Action emitTrace(Bit#(16) cycle, PlioIn pi, QliIn qi, PlioOut po, QliOut qo);
     action
+        Bit#(32) cycle32 = zeroExtend(cycle);
         $display(
             "TRACE|v1|c=%08x|pi=%0d.%0d.%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qi=%0d.%0d.%0d.%08x.0.0.00000000.0.0.0.00000000.0.0.0|po=%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qo=%0d.%0d.%08x.%0d.%01x.%08x.%0d.%0d.0.0.00000000.0.0.00.0.%0d|ev=%s",
-            zeroExtend(cycle),
+            cycle32,
             pack(pi.reset), pack(pi.selected), pack(pi.grant), pack(pi.adValid), pi.ad,
             pack(pi.parValid), pi.parity, pack(pi.spaceValid), pack(pi.space),
             pack(pi.addressStrobe), pack(pi.read), pi.byteEnable, pack(pi.burst),
