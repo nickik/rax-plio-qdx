@@ -92,16 +92,16 @@ function Bit#(8) statusCode(DmaStatus s);
 endfunction
 
 function Action emitTrace(Bit#(16) c, PlioIn pi, QliIn qi, PlioOut po, QliOut qo);
-    Bit#(1) drqv = pack(qi.dmaRequestValid);
-    Bit#(1) ddir = qi.dmaRequestValid ? pack(qi.dmaRequest.direction) : 0;
-    Bit#(32) daddr = qi.dmaRequestValid ? qi.dmaRequest.address : 0;
-    Bit#(2) dwords = qi.dmaRequestValid ? pack(qi.dmaRequest.words) : 0;
-    Bit#(1) dwv = pack(qi.dmaWriteValid);
-    Bit#(32) dwd = qi.dmaWriteValid ? qi.dmaWrite.data : 0;
-    Bit#(1) compv = pack(qo.dmaCompletionValid);
-    Bit#(8) comps = qo.dmaCompletionValid ? statusCode(qo.dmaCompletion.status) : 0;
-    Bit#(5) compw = qo.dmaCompletionValid ? qo.dmaCompletion.wordsCompleted : 0;
     action
+        Bit#(1) drqv = pack(qi.dmaRequestValid);
+        Bit#(1) ddir = qi.dmaRequestValid ? pack(qi.dmaRequest.direction) : 0;
+        Bit#(32) daddr = qi.dmaRequestValid ? qi.dmaRequest.address : 0;
+        Bit#(2) dwords = qi.dmaRequestValid ? pack(qi.dmaRequest.words) : 0;
+        Bit#(1) dwv = pack(qi.dmaWriteValid);
+        Bit#(32) dwd = qi.dmaWriteValid ? qi.dmaWrite.data : 0;
+        Bit#(1) compv = pack(qo.dmaCompletionValid);
+        Bit#(8) comps = qo.dmaCompletionValid ? statusCode(qo.dmaCompletion.status) : 0;
+        Bit#(5) compw = qo.dmaCompletionValid ? qo.dmaCompletion.wordsCompleted : 0;
         Bit#(32) cycle32 = zeroExtend(c);
         Bit#(32) piAd = pi.adValid ? pi.ad : 0;
         Bit#(4) piParity = pi.parValid ? pi.parity : 0;
