@@ -1,5 +1,5 @@
 use plio_host_core_model::{CoreInput, MemoryInput, PLIOHostCore};
-use plio_host_dma_model::{DmaError, MemoryResponse};
+use plio_host_dma_model::MemoryResponse;
 use plio_host_model::{WorkerRequest, WorkerResult, WorkerWidth};
 use plio_logical_model::{odd_parity_32, BurstWords, CardToBus, Space};
 
@@ -48,7 +48,11 @@ fn worker(core: &mut PLIOHostCore, epoch: u32, r: u32, write: bool) {
     if !write { i.cards[slot as usize].ad=Some(value); i.cards[slot as usize].par=Some(odd_parity_32(value)); }
     let out=core.step(i); assert!(one_hot_owner(&out));
     let c=core.take_worker_completion().expect("worker completion");
-    match c.result { WorkerResult::Success(v) => { if write { assert_eq!(v,0); } else { assert_eq!(v,value); } }, other => panic!("worker stress failed: {other:?}") }
+    match c {
+        Ok(WorkerResult::WriteOk) if write => {}
+        Ok(WorkerResult::Read(v)) if !write => assert_eq!(v, value),
+        other => panic!("worker stress failed: {other:?}"),
+    }
     println!("PLIOHOSTSTRESS|v1|seed={SEED0:08x}|epoch={epoch}|kind={}|slot={slot}|aw={aw}|dw={dw}|cursor={}|ok=1", if write{"worker_write"}else{"worker_read"}, core.debug().arbitration_cursor);
 }
 
@@ -65,7 +69,7 @@ fn notification(core: &mut PLIOHostCore, epoch:u32, r:u32) {
 }
 
 fn dma(core:&mut PLIOHostCore, epoch:u32, r:u32, read:bool) {
-    let slot=1u8; let ch=3u8; let aw=((r>>8)&3) as usize; let dw=((r>>10)&3) as usize; let mw=((r>>12)&3) as usize; let rw=((r>>14)&3) as usize;
+    let slot=1u8; let aw=((r>>8)&3) as usize; let dw=((r>>10)&3) as usize; let mw=((r>>12)&3) as usize; let rw=((r>>14)&3) as usize;
     let payload=r^0x1357_9bdf; let handle=0x3000_0040u32;
     let mut i=CoreInput::default(); i.cards[slot as usize]=req(); let out=core.step(i); assert!(one_hot_owner(&out));
     for _ in 0..aw { let mut i=CoreInput::default(); i.cards[slot as usize]=req(); let out=core.step(i); assert!(one_hot_owner(&out)); }
