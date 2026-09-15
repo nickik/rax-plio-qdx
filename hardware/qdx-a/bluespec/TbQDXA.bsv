@@ -51,7 +51,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r1 (phase == 1);
-        QliOut q = mmioWrite(REG_SQ_BASE, 4'hf, 32'h1200_1000);
+        QliOut q = mmioWrite(regSqBase, 4'hf, 32'h1200_1000);
         QliIn d = dut.qicPort(q);
         if (!d.mmioReady) begin $display("FAIL SQ_BASE not ready"); $finish(1); end
         dut.advance(q, qdxAEndpointInDefault());
@@ -67,7 +67,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r3 (phase == 3);
-        QliOut q = mmioWrite(REG_SQ_SIZE, 4'h3, 4);
+        QliOut q = mmioWrite(regSqSize, 4'h3, 4);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 4;
     endrule
@@ -81,7 +81,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r5 (phase == 5);
-        QliOut q = mmioWrite(REG_CQ_BASE, 4'hf, 32'h2300_2000);
+        QliOut q = mmioWrite(regCqBase, 4'hf, 32'h2300_2000);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 6;
     endrule
@@ -95,7 +95,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r7 (phase == 7);
-        QliOut q = mmioWrite(REG_CQ_SIZE, 4'h3, 4);
+        QliOut q = mmioWrite(regCqSize, 4'h3, 4);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 8;
     endrule
@@ -110,7 +110,7 @@ module mkTbQDXA(Empty);
 
     rule r9 (phase == 9);
         // ENABLE | NOTIFY_EN
-        QliOut q = mmioWrite(REG_QDX_CONTROL, 4'hf, 32'h0000_0005);
+        QliOut q = mmioWrite(regQdxControl, 4'hf, 32'h0000_0005);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 10;
     endrule
@@ -124,7 +124,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r11 (phase == 11);
-        QliOut q = mmioWrite(REG_SQ_TAIL, 4'h3, 1);
+        QliOut q = mmioWrite(regSqTail, 4'h3, 1);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 12;
     endrule
