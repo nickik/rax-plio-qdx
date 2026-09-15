@@ -1,6 +1,6 @@
 use plio_logical_model::{odd_parity_32, BusToCard, BurstWords, CardToBus, Space};
 use plio_qic_model::Qic;
-use plio_tx_model::{BackplaneControl, BackplaneSample, PlioTx, PtiDirection, QicPtiDrive};
+use plio_tx_model::{BackplaneSample, PlioTx, PtiDirection, QicPtiDrive};
 use pti_model::{encode_control, encode_data_beat, ControlImage, Token, TokenKind};
 use qli_model::{DeviceToQic, DmaDirection, DmaRequest, DmaStatus, DmaWord, MmioResponse, NotificationRequest};
 
@@ -21,8 +21,16 @@ fn qdrive(token: Token) -> QicPtiDrive {
 fn through_tx(tx: &mut PlioTx, card: CardToBus) -> plio_tx_model::BackplaneDrive {
     let has_control = card.space.is_some() || card.address_strobe || card.data_strobe;
     let has_data = card.ad.is_some() || card.par.is_some();
+    let drives_bus = has_control || has_data;
 
-    if has_control {
+    // IDLE is the only legal PTI direction-change slot. The receive-side tests
+    // leave PLIO-TX in TX_TO_QIC, so turn back before presenting outbound tokens.
+    clock_slot(tx, qdrive(idle()), BackplaneSample::default());
+
+    // PLIO-TX needs one control image for every driven transaction. A worker
+    // read response can drive AD/PAR without driving the control pins, so emit
+    // a metadata-only control token in that case.
+    if drives_bus {
         let c = ControlImage {
             space: card.space.unwrap_or(Space::Worker) as u8,
             address_strobe: card.address_strobe,
@@ -31,7 +39,7 @@ fn through_tx(tx: &mut PlioTx, card: CardToBus) -> plio_tx_model::BackplaneDrive
             burst_len: card.burst.blen(),
             data_strobe: card.data_strobe,
             drive_ad_par: has_data,
-            drive_control: true,
+            drive_control: has_control,
         };
         clock_slot(tx, qdrive(encode_control(c).unwrap()), BackplaneSample::default());
     }
@@ -46,7 +54,7 @@ fn through_tx(tx: &mut PlioTx, card: CardToBus) -> plio_tx_model::BackplaneDrive
 
     let q = QicPtiDrive {
         token: idle(),
-        drive_enable: has_control,
+        drive_enable: drives_bus,
         response_enable: card.ack || card.err,
         response_ack: card.ack,
         response_err: card.err,
