@@ -110,8 +110,8 @@ function Bit#(2) dmaDirCode(DmaDirection d);
     return d == HostToDevice ? 0 : 1;
 endfunction
 
-function Bit#(3) dmaStatusCode(DmaStatus s);
-    Bit#(3) result = 0;
+function Bit#(8) dmaStatusCode(DmaStatus s);
+    Bit#(8) result = 0;
     case (s)
         DmaOk: result = 0;
         DmaBusError: result = 1;
