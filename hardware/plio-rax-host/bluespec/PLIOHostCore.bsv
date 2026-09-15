@@ -87,7 +87,7 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     Reg#(HostWorkerRequest) workerReq <- mkReg(HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 });
     Reg#(HostWorkerState) workerState <- mkReg(HostIdle);
     Reg#(Bit#(9)) workerWait <- mkReg(0);
-    Vector#(2, Reg#(Bool)) workerCompletionPending <- mkCReg(2, False);
+    Array#(Reg#(Bool)) workerCompletionPending <- mkCReg(2, False);
     Reg#(HostWorkerCompletion) workerCompletionReg <- mkReg(HostWorkerCompletion { status:HostSuccess, data:0 });
 
     Reg#(Bit#(2)) notificationChannel <- mkReg(0);
@@ -111,7 +111,7 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     Reg#(Bit#(32)) dmaPendingRead <- mkReg(0);
     Reg#(Bit#(9)) dmaWait <- mkReg(0);
     Reg#(Bool) dmaRevokePending <- mkReg(False);
-    Vector#(2, Reg#(Bool)) dmaCompletionPending <- mkCReg(2, False);
+    Array#(Reg#(Bool)) dmaCompletionPending <- mkCReg(2, False);
     Reg#(DmaM3Status) dmaCompletionStatusReg <- mkReg(DmaOk);
     Reg#(Bit#(5)) dmaCompletionBeatsReg <- mkReg(0);
     Reg#(Bool) dmaAddressPending <- mkReg(False);
