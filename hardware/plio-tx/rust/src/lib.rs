@@ -59,7 +59,8 @@ pub struct BackplaneSample {
     pub selected: bool,
     pub grant: bool,
 
-    /// Simulation-only ownership hints used to detect electrical contention.
+    /// Simulation-only ownership hints. They detect overlap; they do not model
+    /// analog resolution or PLIO protocol policy.
     pub external_ad_par_drive: bool,
     pub external_control_drive: bool,
     pub external_response_drive: bool,
@@ -110,28 +111,6 @@ pub struct PtiObserve {
     pub contention: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SlotEval {
-    direction_illegal: bool,
-    drive_rise_illegal: bool,
-    response_illegal: bool,
-    token_illegal: bool,
-    missing_control: bool,
-    missing_data: bool,
-    contention_now: bool,
-}
-
-impl SlotEval {
-    fn protocol_fault(self) -> bool {
-        self.direction_illegal
-            || self.drive_rise_illegal
-            || self.response_illegal
-            || self.token_illegal
-            || self.missing_control
-            || self.missing_data
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct PlioTx {
     out_control: Option<ControlImage>,
@@ -166,6 +145,8 @@ impl PlioTx {
         }
     }
 
+    /// Combinational image for the current PTI slot. Slot state is committed by
+    /// `clock`; therefore a just-presented CONTROL or DATA_HI affects later slots.
     pub fn drive(
         &self,
         reset: bool,
@@ -179,13 +160,10 @@ impl PlioTx {
         let direction_illegal = self.direction.is_some()
             && qic.token.kind != TokenKind::Idle
             && self.direction != Some(qic.direction);
-
         let drive_rise_illegal = qic.drive_enable
             && !self.drive_active
             && !self.previous_slot_idle;
-
         let response_illegal = qic.response_enable && qic.response_ack && qic.response_err;
-
         let token_illegal = self.token_illegal(qic, direction_illegal);
 
         let mut backplane = BackplaneDrive::default();
@@ -193,8 +171,8 @@ impl PlioTx {
 
         let mut missing_control = false;
         let mut missing_data = false;
-
         let effective_drive = qic.drive_enable && !drive_rise_illegal;
+
         if effective_drive {
             match self.out_control {
                 Some(control) => {
@@ -226,85 +204,65 @@ impl PlioTx {
             self.receive_token(qic.token.kind, bus)
         };
 
-        let observe = PtiObserve {
-            rx_token,
-            sample_ack: if qic.response_enable { false } else { bus.ack },
-            sample_err: if qic.response_enable { false } else { bus.err },
-            sample_selected: bus.selected,
-            sample_grant: bus.grant,
-            protocol_fault: self.protocol_fault
-                || direction_illegal
-                || drive_rise_illegal
-                || response_illegal
-                || token_illegal
-                || missing_control
-                || missing_data,
-            contention: self.contention || contention_now,
-        };
-
-        // Keep evaluation construction centralized for the clock path as well.
-        let _ = SlotEval {
-            direction_illegal,
-            drive_rise_illegal,
-            response_illegal,
-            token_illegal,
-            missing_control,
-            missing_data,
-            contention_now,
-        };
-
-        (backplane, observe)
+        (
+            backplane,
+            PtiObserve {
+                rx_token,
+                sample_ack: if qic.response_enable { false } else { bus.ack },
+                sample_err: if qic.response_enable { false } else { bus.err },
+                sample_selected: bus.selected,
+                sample_grant: bus.grant,
+                protocol_fault: self.protocol_fault
+                    || direction_illegal
+                    || drive_rise_illegal
+                    || response_illegal
+                    || token_illegal
+                    || missing_control
+                    || missing_data,
+                contention: self.contention || contention_now,
+            },
+        )
     }
 
+    /// Commit one PT_STB slot.
     pub fn clock(&mut self, reset: bool, qic: QicPtiDrive, bus: BackplaneSample) {
         if reset {
             *self = Self::new();
             return;
         }
 
-        let (backplane, observe) = self.drive(reset, qic, bus);
+        let previous_slot_idle = self.previous_slot_idle;
+        let previous_drive_active = self.drive_active;
+        let (_, observe) = self.drive(reset, qic, bus);
         let direction_illegal = self.direction.is_some()
             && qic.token.kind != TokenKind::Idle
             && self.direction != Some(qic.direction);
-        let drive_rise_illegal = qic.drive_enable && !self.drive_active && !self.previous_slot_idle;
-        let response_illegal = qic.response_enable && qic.response_ack && qic.response_err;
-        let token_illegal = self.token_illegal(qic, direction_illegal);
-        let missing_control = qic.drive_enable && !drive_rise_illegal && self.out_control.is_none();
-        let missing_data = qic.drive_enable
-            && !drive_rise_illegal
-            && self.out_control.map(|c| c.drive_ad_par).unwrap_or(false)
-            && self.out_data.is_none();
-        let contention_now = (backplane.ad_par.is_some() && bus.external_ad_par_drive)
-            || (backplane.control.is_some() && bus.external_control_drive)
-            || (backplane.response.is_some() && bus.external_response_drive);
 
-        let eval = SlotEval {
-            direction_illegal,
-            drive_rise_illegal,
-            response_illegal,
-            token_illegal,
-            missing_control,
-            missing_data,
-            contention_now,
-        };
+        self.protocol_fault = observe.protocol_fault;
+        self.contention = observe.contention;
 
-        self.protocol_fault |= eval.protocol_fault();
-        self.contention |= contention_now || observe.contention;
-
-        // PTD direction: reset leaves it unestablished. IDLE may establish or
-        // change direction. A non-IDLE slot may establish the first direction,
-        // but may not change an already established direction.
         if qic.token.kind == TokenKind::Idle {
+            // IDLE is the only legal direction-change slot. It also abandons
+            // any incomplete halfword pair rather than carrying it across a
+            // turnaround.
+            if self.out_low_pending.is_some() || self.in_low_pending {
+                self.protocol_fault = true;
+            }
+            self.out_low_pending = None;
+            self.in_low_pending = false;
+            self.in_sample = None;
             self.direction = Some(qic.direction);
-        } else if self.direction.is_none() {
-            self.direction = Some(qic.direction);
-        }
-
-        if direction_illegal {
+            if qic.direction == PtiDirection::QicToTx && qic.token.ptd != 0 {
+                self.protocol_fault = true;
+            }
+        } else if direction_illegal {
             self.out_low_pending = None;
             self.in_low_pending = false;
             self.in_sample = None;
         } else {
+            if self.direction.is_none() {
+                self.direction = Some(qic.direction);
+            }
             match qic.direction {
                 PtiDirection::QicToTx => self.clock_qic_to_tx(qic.token),
                 PtiDirection::TxToQic => self.clock_tx_to_qic(qic.token.kind, bus),
@@ -312,18 +270,16 @@ impl PlioTx {
         }
 
         self.previous_slot_idle = qic.token.kind == TokenKind::Idle;
-
         self.drive_active = if !qic.drive_enable {
             false
-        } else if self.drive_active {
+        } else if previous_drive_active {
             true
         } else {
-            self.previous_slot_idle_before(qic)
+            previous_slot_idle
         };
     }
 
-    /// Convenience helper matching one sampled PT_STB event: observe the
-    /// current slot, then commit its state changes.
+    /// One complete logical PTI slot: observe first, then commit state.
     pub fn step(
         &mut self,
         reset: bool,
@@ -339,15 +295,6 @@ impl PlioTx {
     pub fn committed_control(&self) -> Option<ControlImage> { self.out_control }
     pub fn protocol_fault(&self) -> bool { self.protocol_fault }
     pub fn contention(&self) -> bool { self.contention }
-
-    fn previous_slot_idle_before(&self, _qic: QicPtiDrive) -> bool {
-        // This helper exists only to make the clock update read naturally.
-        // `previous_slot_idle` still contains the pre-clock value here because
-        // Rust evaluates the assignment to `drive_active` after the explicit
-        // previous_slot_idle update above. Capture semantics are therefore
-        // handled by the local in `clock` in the next revision if needed.
-        self.previous_slot_idle
-    }
 
     fn receive_token(&self, kind: TokenKind, bus: BackplaneSample) -> Option<Token> {
         match kind {
@@ -370,17 +317,26 @@ impl PlioTx {
     fn token_illegal(&self, qic: QicPtiDrive, direction_illegal: bool) -> bool {
         if direction_illegal { return true; }
 
+        if qic.token.kind == TokenKind::Idle {
+            return self.out_low_pending.is_some()
+                || self.in_low_pending
+                || (qic.direction == PtiDirection::QicToTx && qic.token.ptd != 0);
+        }
+
         match qic.direction {
-            PtiDirection::QicToTx => match qic.token.kind {
-                TokenKind::Idle => qic.token.ptd != 0 || self.out_low_pending.is_some(),
-                TokenKind::Control => {
-                    self.out_low_pending.is_some() || decode_control(qic.token).is_err()
+            PtiDirection::QicToTx => {
+                if qic.token.ptd & !0x3ffff != 0 { return true; }
+                match qic.token.kind {
+                    TokenKind::Idle => unreachable!(),
+                    TokenKind::Control => {
+                        self.out_low_pending.is_some() || decode_control(qic.token).is_err()
+                    }
+                    TokenKind::DataLo => self.out_low_pending.is_some(),
+                    TokenKind::DataHi => self.out_low_pending.is_none(),
                 }
-                TokenKind::DataLo => self.out_low_pending.is_some(),
-                TokenKind::DataHi => self.out_low_pending.is_none(),
-            },
+            }
             PtiDirection::TxToQic => match qic.token.kind {
-                TokenKind::Idle => self.in_low_pending,
+                TokenKind::Idle => unreachable!(),
                 TokenKind::Control => self.in_low_pending,
                 TokenKind::DataLo => self.in_low_pending,
                 TokenKind::DataHi => !self.in_low_pending || self.in_sample.is_none(),
@@ -395,9 +351,7 @@ impl PlioTx {
         }
 
         match token.kind {
-            TokenKind::Idle => {
-                if token.ptd != 0 { self.protocol_fault = true; }
-            }
+            TokenKind::Idle => unreachable!(),
             TokenKind::Control => match decode_control(token) {
                 Ok(image) => self.out_control = Some(image),
                 Err(_) => self.protocol_fault = true,
@@ -424,7 +378,7 @@ impl PlioTx {
         }
 
         match kind {
-            TokenKind::Idle => {}
+            TokenKind::Idle => unreachable!(),
             TokenKind::Control => {}
             TokenKind::DataLo => {
                 self.in_sample = Some((bus.ad, bus.par & 0x0f));
@@ -489,6 +443,7 @@ mod tests {
         let (_, lo) = tx.step(false, QicPtiDrive { direction: PtiDirection::TxToQic, token: Token { kind: TokenKind::DataLo, ptd: 0 }, ..Default::default() }, first);
         let (_, hi) = tx.step(false, QicPtiDrive { direction: PtiDirection::TxToQic, token: Token { kind: TokenKind::DataHi, ptd: 0 }, ..Default::default() }, second);
         assert_eq!(lo.rx_token.unwrap().data(), 0x3344);
+        assert_eq!(lo.rx_token.unwrap().parity(), 0b10);
         assert_eq!(hi.rx_token.unwrap().data(), 0x1122);
         assert_eq!(hi.rx_token.unwrap().parity(), 0b10);
     }
@@ -524,8 +479,8 @@ mod tests {
     #[test]
     fn direction_change_requires_idle() {
         let mut tx = PlioTx::new();
-        let lo = Token::new(TokenKind::DataLo, 1, 0).unwrap();
-        tx.step(false, QicPtiDrive { token: lo, ..Default::default() }, BackplaneSample::default());
+        let control = ControlImage { space: 0, ..ControlImage::default() };
+        tx.step(false, QicPtiDrive { token: encode_control(control).unwrap(), ..Default::default() }, BackplaneSample::default());
         let (_, obs) = tx.step(false, QicPtiDrive { direction: PtiDirection::TxToQic, token: Token { kind: TokenKind::Control, ptd: 0 }, ..Default::default() }, BackplaneSample::default());
         assert!(obs.protocol_fault);
     }
@@ -549,6 +504,16 @@ mod tests {
         let tx = PlioTx::new();
         let (drive, obs) = tx.drive(false, QicPtiDrive { response_enable: true, response_ack: true, response_err: true, ..Default::default() }, BackplaneSample::default());
         assert_eq!(drive.response, None);
+        assert!(obs.protocol_fault);
+    }
+
+    #[test]
+    fn drive_enable_rise_without_previous_idle_is_suppressed() {
+        let mut tx = PlioTx::new();
+        let control = ControlImage { drive_control: true, ..ControlImage::default() };
+        tx.step(false, QicPtiDrive { token: encode_control(control).unwrap(), ..Default::default() }, BackplaneSample::default());
+        let (drive, obs) = tx.step(false, QicPtiDrive { drive_enable: true, ..Default::default() }, BackplaneSample::default());
+        assert!(drive.control.is_none());
         assert!(obs.protocol_fault);
     }
 
