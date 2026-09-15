@@ -171,7 +171,7 @@ module mkTbQDXBCard(Empty);
             if (notificationSeen && nextPeer==PeerIdle) begin
                 idleCycles<=idleCycles+1;
                 if (card.qdxState==AReadyIdle) begin
-                    if (!sawPayload || !sawCq || card.qdxError!=QdxErrNone || card.qdxbLastStatus!=ST_SUCCESS
+                    if (!sawPayload || !sawCq || card.qdxError!=QdxErrNone || card.qdxbLastStatus!=stSuccess
                         || card.sqHead!=1 || card.sqTail!=1 || card.cqHead!=0 || card.cqTail!=1) begin
                         $display("FAIL final QDX-B card state");$finish(1);
                     end
