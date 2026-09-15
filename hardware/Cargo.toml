@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "plio-logical/rust",
+    "plio-rax-host/rust",
     "qli/rust",
     "qli16/rust",
     "pti/rust",

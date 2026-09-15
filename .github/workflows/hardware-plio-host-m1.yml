@@ -1,0 +1,46 @@
+name: Hardware PLIO Host M0-M1
+
+on:
+  push:
+    branches:
+      - plio-host-adapter-m0-m1
+    paths:
+      - 'hardware/plio-rax-host/**'
+      - 'hardware/plio-logical/**'
+      - 'hardware/testbench/**'
+      - 'hardware/Cargo.toml'
+      - 'hardware/scripts/test-plio-host-m1.sh'
+      - '.github/workflows/hardware-plio-host-m1.yml'
+  pull_request:
+    paths:
+      - 'hardware/plio-rax-host/**'
+      - 'hardware/plio-logical/**'
+      - 'hardware/testbench/**'
+      - 'hardware/Cargo.toml'
+      - 'hardware/scripts/test-plio-host-m1.sh'
+      - '.github/workflows/hardware-plio-host-m1.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: hardware-plio-host-m1-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plio-host-m1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Bluespec compiler
+        run: |
+          set -euo pipefail
+          curl -L -o /tmp/bsc.tar.gz https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-ubuntu-24.04.tar.gz
+          tar -xzf /tmp/bsc.tar.gz -C /tmp
+          BSC_BIN="$(find /tmp -type f -path '*/bin/bsc' | head -n1)"
+          test -n "$BSC_BIN"
+          echo "$(dirname "$BSC_BIN")" >> "$GITHUB_PATH"
+      - name: Tool check
+        run: rustc --version && cargo --version && bsc -version
+      - name: Run PLIO host M0/M1 validation
+        run: bash hardware/scripts/test-plio-host-m1.sh
