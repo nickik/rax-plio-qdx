@@ -54,7 +54,7 @@ Three type bits encode eight token classes:
 | `100` | `DMA_HEADER` | DMA request header word |
 | `101` | `DMA_DATA` | DMA data halfword |
 | `110` | `DMA_COMPLETION` | DMA completion |
-| `111` | `NOTIFICATION` | Notification request |
+| `111` | `NOTIFICATION` | device->QIC request or QIC->device completion |
 
 `IDLE` is not a QLI message. It may be used for turnaround and unused local slots.
 
@@ -172,16 +172,49 @@ LD[15:8] = 0
 
 The decoded completion MUST still satisfy semantic QLI validation rules.
 
-## 10. Notification encoding
+## 10. Notification request and completion encoding
 
-One `NOTIFICATION` token:
+`NOTIFICATION` is directional and uses one token in either direction:
 
 ```text
 LD[1:0] channel (0..3)
 LD[15:2] = 0
 ```
 
-The semantic QLI Notification remains completion-based. Encoding the request on QLI-16 does not mean the Notification has completed. The QIC must not signal semantic `notification_ready` until the corresponding PLIO Notification is ACKed.
+Direction defines its meaning:
+
+```text
+LDIR = 1   device -> QIC   Notification request
+LDIR = 0   QIC -> device   Notification completion
+```
+
+The semantic QLI Notification remains completion-based. Accepting the device->QIC request token with `LACK` means only that the physical request has crossed QLI-16; it MUST NOT produce semantic `notification_ready`.
+
+After accepting that request, the QIC-side QLI-16 endpoint retains it and continues presenting the same semantic `notification_request` to QIC until QIC reports semantic `notification_ready`, which occurs only after the corresponding PLIO CONTROLLER data beat is ACKed.
+
+The endpoint then emits the opposite-direction `NOTIFICATION` token with the same channel. Acceptance of that completion token produces semantic `notification_ready` at the device-side endpoint.
+
+```text
+device                       QIC
+   |                           |
+   |-- NOTIFICATION(ch) ------>|
+   |<--------- LACK -----------|   physical request accepted
+   |                           |
+   |       PLIO transaction    |
+   |                           |
+   |<-- NOTIFICATION(ch) ------|   semantic completion
+   |----------- LACK --------->|
+   | notification_ready        |
+```
+
+Rules:
+
+- request direction is always device->QIC;
+- completion direction is always QIC->device;
+- completion channel MUST equal the retained request channel;
+- reserved payload bits MUST be zero in both directions;
+- a duplicate request while the same request is retained is not a second semantic Notification;
+- reset discards a retained request or pending completion without synthesizing `notification_ready`.
 
 ## 11. Reset
 
@@ -197,13 +230,14 @@ Reset remains out-of-band. `LRESET` cancels any partially encoded message and re
 - a decoder MUST reject reserved bits that are non-zero;
 - a decoder MUST reject unexpected token kinds or premature end-of-message;
 - QIC->device `MMIO_RESPONSE` with non-zero payload MUST be rejected;
+- QIC->device `NOTIFICATION` is valid only as completion of the retained same-channel request;
 - malformed physical framing is a local protocol error and MUST NOT create a different valid QLI operation.
 
 ## 13. Rust / Bluespec conformance requirement
 
 Rust is the executable reference encoding.
 
-Bluespec MUST produce identical token vectors for the canonical cases:
+Bluespec MUST produce identical token vectors and stateful link behavior for the canonical cases:
 
 - 8/16/32-bit MMIO reads and writes;
 - ReadOk, WriteOk, Error responses;
@@ -211,10 +245,13 @@ Bluespec MUST produce identical token vectors for the canonical cases:
 - both DMA directions and all 1/4/8/16 burst encodings;
 - representative DMA data words;
 - every DMA completion status and boundary word count;
-- all four Notification channels;
-- malformed/reserved encodings rejected identically.
+- all four Notification request/completion channels;
+- held final tokens under backpressure;
+- direction turnaround through an idle slot;
+- malformed/reserved encodings rejected identically;
+- reset discarding partial link state.
 
-The CI conformance test compares canonical Rust and Bluespec token vectors.
+The CI conformance test compares canonical Rust and Bluespec physical slot traces as well as decoded semantic results.
 
 ## 14. Relationship to FPGA implementation
 
