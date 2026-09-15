@@ -1,0 +1,10 @@
+[package]
+name = "qdx-b-model"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+qdx-a-model = { path = "../../qdx-a/rust" }
+qli-model = { path = "../../qli/rust" }
+plio-logical-model = { path = "../../plio-logical/rust" }
