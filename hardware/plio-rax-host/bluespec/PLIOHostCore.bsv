@@ -16,31 +16,26 @@ typedef enum {
 } PLIOHostCoreFault deriving (Bits, Eq, FShow);
 
 function Bit#(5) coreBurstWords(BurstWords b);
-    Bit#(5) words = 1;
+    Bit#(5) n = 1;
     case (b)
-        BurstOne: words = 1;
-        BurstFour: words = 4;
-        BurstEight: words = 8;
-        BurstSixteen: words = 16;
+        BurstOne: n = 1;
+        BurstFour: n = 4;
+        BurstEight: n = 8;
+        BurstSixteen: n = 16;
     endcase
-    return words;
+    return n;
 endfunction
 
-function GrantChoice coreChooseRequest(Bit#(3) cursor, Vector#(8, PlioOut) cards);
-    return chooseM2Request(cursor, cards);
-endfunction
-
-function Bool coreDmaAddressBasicValid(PlioOut card);
-    Bool ok = card.adValid && card.parValid && card.spaceValid && card.space == PlioHostDma
-              && card.byteEnable == 4'hf && card.ad[1:0] == 0;
-    if (ok) ok = m2ParityMatches(card.ad, card.parity, 4'hf);
+function Bool coreDmaAddressBasicValid(PlioOut c);
+    Bool ok = c.adValid && c.parValid && c.spaceValid && c.space == PlioHostDma
+              && c.byteEnable == 4'hf && c.ad[1:0] == 0;
+    if (ok) ok = m2ParityMatches(c.ad, c.parity, 4'hf);
     return ok;
 endfunction
 
 interface PLIOHostCoreIfc;
     method Vector#(8, PlioIn) drive(Vector#(8, PlioOut) cards, Bool reset);
-    method Action advance(
-        Vector#(8, PlioOut) cards,
+    method Action advance(Vector#(8, PlioOut) cards,
         Bool workerValid, HostWorkerRequest workerRequest,
         Bool memoryRequestReady,
         Bool memoryResponseValid, Bool memoryFault, Bool memoryReadDataValid, Bit#(32) memoryReadData,
@@ -85,28 +80,51 @@ interface PLIOHostCoreIfc;
 endinterface
 
 module mkPLIOHostCore(PLIOHostCoreIfc);
-    PLIOWorkerHostIfc worker <- mkPLIOWorkerHost;
-    PLIOHostDmaM3Ifc dma <- mkPLIOHostDmaM3;
-
     Reg#(PLIOHostCoreRole) role <- mkReg(CoreIdle);
     Reg#(Bit#(3)) activeSlot <- mkReg(0);
-    Reg#(Bit#(2)) notificationChannel <- mkReg(0);
     Reg#(Bit#(3)) cursor <- mkReg(0);
     Reg#(Bit#(9)) waitCycles <- mkReg(0);
-    Reg#(Bool) queuedWorkerValid <- mkReg(False);
-    Reg#(HostWorkerRequest) queuedWorker <- mkReg(HostWorkerRequest { slot: 0, address: 0, width: HostW32, write: False, value: 0 });
-    Reg#(Bool) dmaAddressPending <- mkReg(False);
-    Reg#(Bool) dmaAddressBasicValid <- mkReg(False);
-    Reg#(Bool) dmaDirectionRead <- mkReg(False);
-    Reg#(Bool) writeAckPending <- mkReg(False);
     Reg#(Bool) faultValid <- mkReg(False);
     Reg#(PLIOHostCoreFault) faultReg <- mkReg(CoreNoFault);
 
+    // One-deep host-worker queue + the verified M1 phase semantics.
+    Reg#(Bool) queuedWorkerValid <- mkReg(False);
+    Reg#(HostWorkerRequest) queuedWorker <- mkReg(HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 });
+    Reg#(HostWorkerRequest) workerReq <- mkReg(HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 });
+    Reg#(HostWorkerState) workerState <- mkReg(HostIdle);
+    Reg#(Bit#(9)) workerWait <- mkReg(0);
+    Reg#(Bool) workerCompletionPending <- mkReg(False);
+    Reg#(HostWorkerCompletion) workerCompletionReg <- mkReg(HostWorkerCompletion { status:HostSuccess, data:0 });
+
+    // Notification state uses M2's validated address/data helpers.
+    Reg#(Bit#(2)) notificationChannel <- mkReg(0);
     Reg#(Bit#(32)) notificationPendingBits <- mkReg(0);
     RegFile#(Bit#(5), Bit#(32)) notificationPayloadFile <- mkRegFileFull;
     Reg#(Bit#(32)) notificationEnabledBits <- mkReg('1);
     Reg#(Bit#(32)) notificationMaskedBits <- mkReg(0);
     RegFile#(Bit#(5), Bit#(4)) notificationClassFile <- mkRegFileFull;
+
+    // Integrated M3 capability table and DMA machine.
+    RegFile#(Bit#(7), DmaCapability) caps <- mkRegFileFull;
+    Reg#(Bit#(128)) capValidMask <- mkReg(0);
+    Reg#(Bit#(128)) capEverMask <- mkReg(0);
+    Reg#(DmaM3State) dmaState <- mkReg(DmaIdle);
+    Reg#(Bit#(4)) dmaChannel <- mkReg(0);
+    Reg#(Bit#(4)) dmaGenerationReg <- mkReg(0);
+    Reg#(Bool) dmaDirectionRead <- mkReg(False);
+    Reg#(Bit#(32)) dmaPhysicalAddress <- mkReg(0);
+    Reg#(Bit#(5)) dmaTotal <- mkReg(0);
+    Reg#(Bit#(5)) dmaAcknowledged <- mkReg(0);
+    Reg#(Bit#(32)) dmaPendingWrite <- mkReg(0);
+    Reg#(Bit#(32)) dmaPendingRead <- mkReg(0);
+    Reg#(Bit#(9)) dmaWait <- mkReg(0);
+    Reg#(Bool) dmaRevokePending <- mkReg(False);
+    Reg#(Bool) dmaCompletionPending <- mkReg(False);
+    Reg#(DmaM3Status) dmaCompletionStatusReg <- mkReg(DmaOk);
+    Reg#(Bit#(5)) dmaCompletionBeatsReg <- mkReg(0);
+    Reg#(Bool) dmaAddressPending <- mkReg(False);
+    Reg#(Bool) dmaAddressValid <- mkReg(False);
+    Reg#(Bool) writeAckPending <- mkReg(False);
 
     function Action finishCard();
         action
@@ -118,252 +136,188 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
         endaction
     endfunction
 
+    function Action finishDma(DmaM3Status status, Bit#(5) beats);
+        action
+            dmaCompletionPending <= True;
+            dmaCompletionStatusReg <= status;
+            dmaCompletionBeatsReg <= beats;
+            dmaState <= DmaIdle;
+            dmaWait <= 0;
+            dmaRevokePending <= False;
+        endaction
+    endfunction
+
     method Vector#(8, PlioIn) drive(Vector#(8, PlioOut) cards, Bool reset);
         Vector#(8, PlioIn) outs = replicate(plioInDefault());
         if (reset) begin
-            for (Integer i = 0; i < 8; i = i + 1) outs[i].reset = True;
+            for (Integer i=0; i<8; i=i+1) outs[i].reset = True;
         end
         else begin
             case (role)
                 CoreIdle: begin end
                 CoreWorker: begin
-                    if (worker.selectedSlotValid) outs[worker.selectedSlot] = worker.drive(False);
+                    PlioIn o = plioInDefault();
+                    o.selected = True;
+                    o.read = !workerReq.write;
+                    o.byteEnable = hostByteEnable(workerReq);
+                    o.burst = BurstOne;
+                    if (workerState == HostAddress) begin
+                        o.adValid=True; o.ad=workerReq.address; o.parValid=True; o.parity=hostOddParity32(workerReq.address);
+                        o.spaceValid=True; o.space=PlioWorker; o.addressStrobe=True;
+                    end
+                    else if (workerState == HostData) begin
+                        o.dataStrobe=True;
+                        if (workerReq.write) begin
+                            Bit#(32) d=hostBusWriteData(workerReq); o.adValid=True; o.ad=d; o.parValid=True; o.parity=hostOddParity32(d);
+                        end
+                    end
+                    outs[activeSlot] = o;
                 end
                 CoreGrant: begin
                     outs[activeSlot].grant = True;
-                    PlioOut card = cards[activeSlot];
+                    PlioOut c = cards[activeSlot];
                     if (dmaAddressPending) begin
-                        if (!dmaAddressBasicValid || (dma.completionValid && dma.completionStatus == DmaProtection)) outs[activeSlot].err = True;
-                        else if (dma.debugState != DmaIdle) outs[activeSlot].ack = True;
-                    end
-                    else if (card.addressStrobe) begin
-                        if (card.spaceValid && card.space == PlioController) begin
-                            NotificationAddressCheck c = checkNotificationAddress(card);
-                            if (c.valid) outs[activeSlot].ack = True;
-                            else outs[activeSlot].err = True;
-                        end
-                        else if (!(card.spaceValid && card.space == PlioHostDma)) begin
-                            outs[activeSlot].err = True;
-                        end
-                    end
-                    else if (waitCycles == 255) outs[activeSlot].err = True;
-                end
-                CoreNotification: begin
-                    outs[activeSlot].grant = True;
-                    PlioOut card = cards[activeSlot];
-                    if (card.dataStrobe) begin
-                        NotificationDataCheck c = checkNotificationData(card);
-                        if (c.valid) outs[activeSlot].ack = True;
+                        if (dmaAddressValid) outs[activeSlot].ack = True;
                         else outs[activeSlot].err = True;
                     end
-                    else if (waitCycles == 255) outs[activeSlot].err = True;
+                    else if (c.addressStrobe && c.spaceValid && c.space == PlioController) begin
+                        NotificationAddressCheck n=checkNotificationAddress(c);
+                        if (n.valid) outs[activeSlot].ack=True; else outs[activeSlot].err=True;
+                    end
+                    else if (c.addressStrobe && !(c.spaceValid && c.space == PlioHostDma)) outs[activeSlot].err=True;
+                    else if (waitCycles==255) outs[activeSlot].err=True;
+                end
+                CoreNotification: begin
+                    outs[activeSlot].grant=True;
+                    PlioOut c=cards[activeSlot];
+                    if (c.dataStrobe) begin NotificationDataCheck n=checkNotificationData(c); if(n.valid) outs[activeSlot].ack=True; else outs[activeSlot].err=True; end
+                    else if (waitCycles==255) outs[activeSlot].err=True;
                 end
                 CoreDma: begin
-                    outs[activeSlot].grant = True;
-                    PlioOut card = cards[activeSlot];
-                    if (dma.completionValid && dma.completionStatus != DmaOk) begin
-                        outs[activeSlot].err = True;
+                    outs[activeSlot].grant=True;
+                    PlioOut c=cards[activeSlot];
+                    if (writeAckPending) outs[activeSlot].ack=True;
+                    else if (dmaCompletionPending && dmaCompletionStatusReg != DmaOk) outs[activeSlot].err=True;
+                    else if (dmaState==DmaReadReady && c.dataStrobe) begin
+                        outs[activeSlot].ack=True; outs[activeSlot].adValid=True; outs[activeSlot].ad=dmaPendingRead;
+                        outs[activeSlot].parValid=True; outs[activeSlot].parity=oddParity32M3(dmaPendingRead);
                     end
-                    else if (writeAckPending) begin
-                        outs[activeSlot].ack = True;
-                    end
-                    else if (dma.deviceReadValid && card.dataStrobe) begin
-                        outs[activeSlot].ack = True;
-                        outs[activeSlot].adValid = True;
-                        outs[activeSlot].ad = dma.deviceReadData;
-                        outs[activeSlot].parValid = True;
-                        outs[activeSlot].parity = dma.deviceReadParity;
-                    end
+                    else if (dmaWait==255 && dmaState!=DmaIdle) outs[activeSlot].err=True;
                 end
             endcase
         end
         return outs;
     endmethod
 
-    method Action advance(
-        Vector#(8, PlioOut) cards,
+    method Action advance(Vector#(8, PlioOut) cards,
         Bool workerValid, HostWorkerRequest workerRequest,
         Bool memoryRequestReady,
         Bool memoryResponseValid, Bool memoryFault, Bool memoryReadDataValid, Bit#(32) memoryReadData,
         Bool reset);
         action
             if (reset) begin
-                if (!worker.completionValid) worker.advance(plioOutDefault(), True);
-                dma.resetHost;
-                role <= CoreIdle;
-                activeSlot <= 0;
-                cursor <= 0;
-                waitCycles <= 0;
-                queuedWorkerValid <= False;
-                dmaAddressPending <= False;
-                writeAckPending <= False;
-                notificationPendingBits <= 0;
-                faultValid <= False;
+                if (role==CoreWorker) begin workerCompletionPending<=True; workerCompletionReg<=HostWorkerCompletion{status:HostReset,data:0}; end
+                if (role==CoreDma || dmaState!=DmaIdle) finishDma(DmaReset,dmaAcknowledged);
+                role<=CoreIdle; activeSlot<=0; cursor<=0; waitCycles<=0; workerState<=HostIdle; workerWait<=0; queuedWorkerValid<=False;
+                notificationPendingBits<=0; dmaAddressPending<=False; writeAckPending<=False; faultValid<=False;
             end
             else begin
-                if (workerValid && !queuedWorkerValid) begin
-                    queuedWorker <= workerRequest;
-                    queuedWorkerValid <= True;
-                end
+                if (workerValid && !queuedWorkerValid) begin queuedWorker<=workerRequest; queuedWorkerValid<=True; end
 
                 case (role)
                     CoreIdle: begin
-                        if (queuedWorkerValid && worker.ready) begin
-                            worker.start(queuedWorker);
-                            activeSlot <= queuedWorker.slot;
-                            queuedWorkerValid <= False;
-                            role <= CoreWorker;
+                        if (queuedWorkerValid && !workerCompletionPending) begin
+                            if (hostRequestValid(queuedWorker)) begin workerReq<=queuedWorker; activeSlot<=queuedWorker.slot; workerState<=HostAddress; workerWait<=0; role<=CoreWorker; end
+                            queuedWorkerValid<=False;
                         end
                         else if (!queuedWorkerValid && !workerValid) begin
-                            GrantChoice c = coreChooseRequest(cursor, cards);
-                            if (c.valid) begin
-                                activeSlot <= c.slot;
-                                role <= CoreGrant;
-                                waitCycles <= 0;
-                                faultValid <= False;
-                            end
+                            GrantChoice g=chooseM2Request(cursor,cards);
+                            if(g.valid) begin activeSlot<=g.slot; role<=CoreGrant; waitCycles<=0; faultValid<=False; end
                         end
                     end
                     CoreWorker: begin
-                        if (worker.completionValid) begin
-                            role <= CoreIdle;
+                        PlioOut c=cards[activeSlot];
+                        if (c.err) begin workerCompletionPending<=True;workerCompletionReg<=HostWorkerCompletion{status:HostBusError,data:0};workerState<=HostIdle;role<=CoreIdle;workerWait<=0; end
+                        else if (workerState==HostAddress && c.ack) begin workerState<=HostData;workerWait<=0; end
+                        else if (workerState==HostData && c.ack) begin
+                            if (workerReq.write) workerCompletionReg<=HostWorkerCompletion{status:HostSuccess,data:0};
+                            else if(c.adValid&&c.parValid&&hostParityMatches(c.ad,c.parity,hostByteEnable(workerReq))) workerCompletionReg<=HostWorkerCompletion{status:HostSuccess,data:hostExtractReadData(workerReq,c.ad)};
+                            else workerCompletionReg<=HostWorkerCompletion{status:HostParityError,data:0};
+                            workerCompletionPending<=True;workerState<=HostIdle;role<=CoreIdle;workerWait<=0;
                         end
-                        else begin
-                            worker.advance(cards[activeSlot], False);
-                        end
+                        else if(workerWait==255) begin workerCompletionPending<=True;workerCompletionReg<=HostWorkerCompletion{status:HostTimeout,data:0};workerState<=HostIdle;role<=CoreIdle;workerWait<=0; end
+                        else workerWait<=workerWait+1;
                     end
                     CoreGrant: begin
-                        PlioOut card = cards[activeSlot];
+                        PlioOut c=cards[activeSlot];
                         if (dmaAddressPending) begin
-                            if (!dmaAddressBasicValid || (dma.completionValid && dma.completionStatus == DmaProtection)) begin
-                                faultValid <= True;
-                                faultReg <= CoreDmaProtection;
-                                finishCard();
-                            end
-                            else if (dma.debugState != DmaIdle) begin
-                                dmaAddressPending <= False;
-                                role <= CoreDma;
-                                waitCycles <= 0;
-                            end
+                            if(dmaAddressValid) begin role<=CoreDma;waitCycles<=0;dmaAddressPending<=False; end
+                            else begin dmaCompletionPending<=True;dmaCompletionStatusReg<=DmaProtection;dmaCompletionBeatsReg<=0;faultValid<=True;faultReg<=CoreDmaProtection;finishCard(); end
                         end
-                        else if (!card.request) begin
-                            faultValid <= True;
-                            faultReg <= CoreRequestDropped;
-                            finishCard();
-                        end
-                        else if (card.addressStrobe) begin
-                            if (card.spaceValid && card.space == PlioController) begin
-                                NotificationAddressCheck c = checkNotificationAddress(card);
-                                if (c.valid) begin
-                                    notificationChannel <= c.channel;
-                                    role <= CoreNotification;
-                                    waitCycles <= 0;
-                                end
-                                else begin
-                                    faultValid <= True;
-                                    faultReg <= (c.fault == M2AddressParity) ? CoreAddressParity : CoreBadManagerAddress;
-                                    finishCard();
-                                end
+                        else if(!c.request) begin faultValid<=True;faultReg<=CoreRequestDropped;finishCard(); end
+                        else if(c.addressStrobe) begin
+                            if(c.spaceValid&&c.space==PlioController) begin
+                                NotificationAddressCheck n=checkNotificationAddress(c);
+                                if(n.valid) begin notificationChannel<=n.channel;role<=CoreNotification;waitCycles<=0; end
+                                else begin faultValid<=True;faultReg<=(n.fault==M2AddressParity)?CoreAddressParity:CoreBadManagerAddress;finishCard(); end
                             end
-                            else if (card.spaceValid && card.space == PlioHostDma) begin
-                                Bool basic = coreDmaAddressBasicValid(card);
-                                dmaAddressBasicValid <= basic;
-                                dmaDirectionRead <= card.read;
-                                dmaAddressPending <= True;
-                                waitCycles <= 0;
-                                if (basic) dma.start(activeSlot, card.ad, coreBurstWords(card.burst), card.read);
+                            else if(c.spaceValid&&c.space==PlioHostDma) begin
+                                Bool basic=coreDmaAddressBasicValid(c); Bool valid=False;
+                                Bit#(4) channel=c.ad[31:28];Bit#(4) gen=c.ad[27:24];Bit#(24) off=c.ad[23:0];Bit#(7) idx={activeSlot,channel};Bit#(128) mark=128'h1<<idx;
+                                DmaCapability cap=caps.sub(idx);Bit#(5) words=coreBurstWords(c.burst);Bit#(7) bytes=zeroExtend(words)<<2;Bit#(26) ending=zeroExtend(off)+zeroExtend(bytes);
+                                Bool permission=c.read?cap.deviceRead:cap.deviceWrite;
+                                valid=basic&&(capValidMask&mark)!=0&&cap.generation==gen&&permission&&ending<=zeroExtend(cap.length);
+                                dmaAddressPending<=True;dmaAddressValid<=valid;dmaDirectionRead<=c.read;waitCycles<=0;
+                                if(valid) begin dmaChannel<=channel;dmaGenerationReg<=gen;dmaPhysicalAddress<=cap.base+zeroExtend(off);dmaTotal<=words;dmaAcknowledged<=0;dmaWait<=0;dmaRevokePending<=False;dmaState<=c.read?DmaMemRequest:DmaAwaitWrite; end
                             end
-                            else begin
-                                faultValid <= True;
-                                faultReg <= CoreBadManagerAddress;
-                                finishCard();
-                            end
+                            else begin faultValid<=True;faultReg<=CoreBadManagerAddress;finishCard(); end
                         end
-                        else if (waitCycles == 255) begin
-                            faultValid <= True;
-                            faultReg <= CoreTimeout;
-                            finishCard();
-                        end
-                        else waitCycles <= waitCycles + 1;
+                        else if(waitCycles==255) begin faultValid<=True;faultReg<=CoreTimeout;finishCard(); end
+                        else waitCycles<=waitCycles+1;
                     end
                     CoreNotification: begin
-                        PlioOut card = cards[activeSlot];
-                        if (!card.request) begin
-                            faultValid <= True;
-                            faultReg <= CoreRequestDropped;
-                            finishCard();
+                        PlioOut c=cards[activeSlot];
+                        if(!c.request) begin faultValid<=True;faultReg<=CoreRequestDropped;finishCard(); end
+                        else if(c.dataStrobe) begin
+                            NotificationDataCheck n=checkNotificationData(c);
+                            if(n.valid) begin Bit#(5) idx={activeSlot,notificationChannel};notificationPendingBits<=notificationPendingBits|(32'b1<<idx);notificationPayloadFile.upd(idx,n.payload);faultValid<=False;finishCard(); end
+                            else begin faultValid<=True;faultReg<=(n.fault==M2DataParity)?CoreDataParity:CoreBadManagerAddress;finishCard(); end
                         end
-                        else if (card.dataStrobe) begin
-                            NotificationDataCheck c = checkNotificationData(card);
-                            if (c.valid) begin
-                                Bit#(5) idx = { activeSlot, notificationChannel };
-                                notificationPendingBits <= notificationPendingBits | (32'b1 << idx);
-                                notificationPayloadFile.upd(idx, c.payload);
-                                faultValid <= False;
-                                finishCard();
-                            end
-                            else begin
-                                faultValid <= True;
-                                faultReg <= (c.fault == M2DataParity) ? CoreDataParity : CoreBadManagerAddress;
-                                finishCard();
-                            end
-                        end
-                        else if (waitCycles == 255) begin
-                            faultValid <= True;
-                            faultReg <= CoreTimeout;
-                            finishCard();
-                        end
-                        else waitCycles <= waitCycles + 1;
+                        else if(waitCycles==255) begin faultValid<=True;faultReg<=CoreTimeout;finishCard(); end
+                        else waitCycles<=waitCycles+1;
                     end
                     CoreDma: begin
-                        PlioOut card = cards[activeSlot];
-                        if (!card.request) begin
-                            dma.resetHost;
-                            faultValid <= True;
-                            faultReg <= CoreRequestDropped;
-                            finishCard();
-                        end
-                        else if (dma.completionValid && dma.completionStatus != DmaOk) begin
-                            case (dma.completionStatus)
-                                DmaProtection: faultReg <= CoreDmaProtection;
-                                DmaMemoryFault: faultReg <= CoreDmaMemory;
-                                DmaParity: faultReg <= CoreDmaParity;
-                                DmaTimeout: faultReg <= CoreTimeout;
-                                DmaReset: faultReg <= CoreDmaReset;
-                                DmaRevoked: faultReg <= CoreDmaRevoked;
-                                default: faultReg <= CoreNoFault;
-                            endcase
-                            faultValid <= True;
-                            finishCard();
-                        end
-                        else if (writeAckPending) begin
-                            writeAckPending <= False;
-                            if (dma.completionValid) finishCard();
+                        PlioOut c=cards[activeSlot];
+                        if(!c.request) begin finishDma(DmaReset,dmaAcknowledged);faultValid<=True;faultReg<=CoreRequestDropped;finishCard(); end
+                        else if(writeAckPending) begin writeAckPending<=False;if(dmaCompletionPending) finishCard(); end
+                        else if(dmaCompletionPending&&dmaCompletionStatusReg!=DmaOk) begin
+                            case(dmaCompletionStatusReg) DmaProtection:faultReg<=CoreDmaProtection;DmaMemoryFault:faultReg<=CoreDmaMemory;DmaParity:faultReg<=CoreDmaParity;DmaTimeout:faultReg<=CoreTimeout;DmaReset:faultReg<=CoreDmaReset;DmaRevoked:faultReg<=CoreDmaRevoked;default:faultReg<=CoreNoFault;endcase
+                            faultValid<=True;finishCard();
                         end
                         else begin
-                            case (dma.debugState)
+                            case(dmaState)
                                 DmaAwaitWrite: begin
-                                    if (card.dataStrobe && card.adValid && card.parValid) dma.offerDeviceWrite(card.ad, card.parity);
-                                    else dma.waitCycle;
-                                end
-                                DmaMemRequest: begin
-                                    if (memoryRequestReady) dma.memoryRequestAccepted;
-                                    else dma.waitCycle;
-                                end
-                                DmaMemResponse: begin
-                                    if (memoryResponseValid) begin
-                                        dma.memoryResponse(memoryFault, memoryReadDataValid, memoryReadData);
-                                        if (!dmaDirectionRead && !memoryFault) writeAckPending <= True;
+                                    if(c.dataStrobe&&c.adValid&&c.parValid) begin
+                                        if(dmaRevokePending) finishDma(DmaRevoked,dmaAcknowledged);
+                                        else if(!parityMatchesM3(c.ad,c.parity)) finishDma(DmaParity,dmaAcknowledged);
+                                        else begin dmaPendingWrite<=c.ad;dmaWait<=0;dmaState<=DmaMemRequest; end
                                     end
-                                    else dma.waitCycle;
+                                    else if(dmaWait==255) finishDma(DmaTimeout,dmaAcknowledged); else dmaWait<=dmaWait+1;
+                                end
+                                DmaMemRequest: begin if(memoryRequestReady) begin dmaWait<=0;dmaState<=DmaMemResponse;end else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);else dmaWait<=dmaWait+1; end
+                                DmaMemResponse: begin
+                                    if(memoryResponseValid) begin
+                                        if(memoryFault || (dmaDirectionRead&&!memoryReadDataValid)) finishDma(DmaMemoryFault,dmaAcknowledged);
+                                        else if(dmaDirectionRead) begin dmaPendingRead<=memoryReadData;dmaWait<=0;dmaState<=DmaReadReady; end
+                                        else begin Bit#(5) nxt=dmaAcknowledged+1;dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;writeAckPending<=True;if(dmaRevokePending)finishDma(DmaRevoked,nxt);else if(nxt==dmaTotal)finishDma(DmaOk,nxt);else dmaState<=DmaAwaitWrite; end
+                                    end
+                                    else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);else dmaWait<=dmaWait+1;
                                 end
                                 DmaReadReady: begin
-                                    if (card.dataStrobe) dma.acknowledgeDeviceRead;
-                                    else dma.waitCycle;
+                                    if(c.dataStrobe) begin Bit#(5) nxt=dmaAcknowledged+1;dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;if(dmaRevokePending)finishDma(DmaRevoked,nxt);else if(nxt==dmaTotal)begin finishDma(DmaOk,nxt);finishCard();end else dmaState<=DmaMemRequest; end
+                                    else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);else dmaWait<=dmaWait+1;
                                 end
-                                DmaIdle: begin
-                                    if (dma.completionValid) finishCard();
-                                end
+                                DmaIdle: begin if(dmaCompletionPending&&dmaCompletionStatusReg==DmaOk)finishCard(); end
                             endcase
                         end
                     end
@@ -372,73 +326,45 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
         endaction
     endmethod
 
-    method Bool memoryRequestValid = role == CoreDma && dma.memoryRequestValid;
-    method Bool memoryWrite = dma.memoryWrite;
-    method Bit#(32) memoryAddress = dma.memoryAddress;
-    method Bit#(32) memoryWriteData = dma.memoryWriteData;
+    method Bool memoryRequestValid = role==CoreDma && dmaState==DmaMemRequest;
+    method Bool memoryWrite = !dmaDirectionRead;
+    method Bit#(32) memoryAddress = dmaPhysicalAddress;
+    method Bit#(32) memoryWriteData = dmaPendingWrite;
 
-    method Action bindDma(Bit#(3) slot, Bit#(4) channel, Bit#(32) base, Bit#(25) length, Bool deviceRead, Bool deviceWrite);
-        dma.bindCapability(slot, channel, base, length, deviceRead, deviceWrite);
+    method Action bindDma(Bit#(3) slot,Bit#(4) channel,Bit#(32) base,Bit#(25) length,Bool deviceRead,Bool deviceWrite);
+        Bit#(7) idx={slot,channel};Bit#(128) mark=128'h1<<idx;Bool activeSame=role==CoreDma&&slot==activeSlot&&channel==dmaChannel;
+        if(length!=0&&length<=25'h1000000&&base[1:0]==0&&!activeSame&&!dmaCompletionPending)begin Bit#(4) gen=0;if((capEverMask&mark)!=0)gen=caps.sub(idx).generation+1;caps.upd(idx,DmaCapability{base:base,length:length,deviceRead:deviceRead,deviceWrite:deviceWrite,generation:gen});capValidMask<=capValidMask|mark;capEverMask<=capEverMask|mark;end
     endmethod
-    method Action revokeDma(Bit#(3) slot, Bit#(4) channel); dma.revoke(slot, channel); endmethod
-    method Bit#(4) dmaGeneration(Bit#(3) slot, Bit#(4) channel) = dma.generation(slot, channel);
+    method Action revokeDma(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};Bit#(128)mark=128'h1<<idx;capValidMask<=capValidMask&~mark;if(role==CoreDma&&slot==activeSlot&&channel==dmaChannel)dmaRevokePending<=True;endmethod
+    method Bit#(4) dmaGeneration(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};Bit#(128)mark=128'h1<<idx;return((capEverMask&mark)!=0)?caps.sub(idx).generation:0;endmethod
 
-    method Bool workerCompletionValid = worker.completionValid;
-    method HostWorkerCompletion workerCompletion = worker.completion;
-    method Action clearWorkerCompletion; worker.clearCompletion; endmethod
-    method Bool dmaCompletionValid = dma.completionValid;
-    method DmaM3Status dmaCompletionStatus = dma.completionStatus;
-    method Bit#(5) dmaCompletionBeats = dma.completionBeats;
-    method Action clearDmaCompletion; dma.clearCompletion; endmethod
+    method Bool workerCompletionValid=workerCompletionPending;
+    method HostWorkerCompletion workerCompletion=workerCompletionReg;
+    method Action clearWorkerCompletion;workerCompletionPending<=False;endmethod
+    method Bool dmaCompletionValid=dmaCompletionPending;
+    method DmaM3Status dmaCompletionStatus=dmaCompletionStatusReg;
+    method Bit#(5) dmaCompletionBeats=dmaCompletionBeatsReg;
+    method Action clearDmaCompletion;dmaCompletionPending<=False;endmethod
 
-    method Bool notificationPending(Bit#(3) slot, Bit#(2) channel);
-        Bit#(5) idx = { slot, channel };
-        return unpack(notificationPendingBits[idx]);
-    endmethod
-    method Bit#(32) notificationPayload(Bit#(3) slot, Bit#(2) channel) = notificationPayloadFile.sub({slot, channel});
-    method Action setNotificationConfig(Bit#(3) slot, Bit#(2) channel, Bool en, Bool mask, Bit#(4) cls);
-        Bit#(5) idx = { slot, channel };
-        Bit#(32) mark = 32'b1 << idx;
-        if (en) notificationEnabledBits <= notificationEnabledBits | mark;
-        else notificationEnabledBits <= notificationEnabledBits & ~mark;
-        if (mask) notificationMaskedBits <= notificationMaskedBits | mark;
-        else notificationMaskedBits <= notificationMaskedBits & ~mark;
-        notificationClassFile.upd(idx, cls);
-    endmethod
-    method Bool claimValid;
-        ClaimChoice c = firstClaim(notificationPendingBits & notificationEnabledBits & ~notificationMaskedBits);
-        return c.valid;
-    endmethod
-    method Bit#(3) claimSlot;
-        ClaimChoice c = firstClaim(notificationPendingBits & notificationEnabledBits & ~notificationMaskedBits);
-        return c.index[4:2];
-    endmethod
-    method Bit#(2) claimChannel;
-        ClaimChoice c = firstClaim(notificationPendingBits & notificationEnabledBits & ~notificationMaskedBits);
-        return c.index[1:0];
-    endmethod
-    method Bit#(32) claimPayload;
-        ClaimChoice c = firstClaim(notificationPendingBits & notificationEnabledBits & ~notificationMaskedBits);
-        return notificationPayloadFile.sub(c.index);
-    endmethod
-    method Bit#(4) claimClass;
-        ClaimChoice c = firstClaim(notificationPendingBits & notificationEnabledBits & ~notificationMaskedBits);
-        return notificationClassFile.sub(c.index);
-    endmethod
-    method Action claimFirst;
-        ClaimChoice c = firstClaim(notificationPendingBits & notificationEnabledBits & ~notificationMaskedBits);
-        if (c.valid) notificationPendingBits <= notificationPendingBits & ~(32'b1 << c.index);
-    endmethod
+    method Bool notificationPending(Bit#(3) slot,Bit#(2) channel);Bit#(5)idx={slot,channel};return unpack(notificationPendingBits[idx]);endmethod
+    method Bit#(32) notificationPayload(Bit#(3) slot,Bit#(2) channel)=notificationPayloadFile.sub({slot,channel});
+    method Action setNotificationConfig(Bit#(3) slot,Bit#(2) channel,Bool en,Bool mask,Bit#(4) cls);Bit#(5)idx={slot,channel};Bit#(32)mark=32'b1<<idx;if(en)notificationEnabledBits<=notificationEnabledBits|mark;else notificationEnabledBits<=notificationEnabledBits&~mark;if(mask)notificationMaskedBits<=notificationMaskedBits|mark;else notificationMaskedBits<=notificationMaskedBits&~mark;notificationClassFile.upd(idx,cls);endmethod
+    method Bool claimValid;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.valid;endmethod
+    method Bit#(3) claimSlot;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.index[4:2];endmethod
+    method Bit#(2) claimChannel;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.index[1:0];endmethod
+    method Bit#(32) claimPayload;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return notificationPayloadFile.sub(c.index);endmethod
+    method Bit#(4) claimClass;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return notificationClassFile.sub(c.index);endmethod
+    method Action claimFirst;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);if(c.valid)notificationPendingBits<=notificationPendingBits&~(32'b1<<c.index);endmethod
 
-    method PLIOHostCoreRole debugRole = role;
-    method Bool debugActiveSlotValid = role != CoreIdle;
-    method Bit#(3) debugActiveSlot = activeSlot;
-    method Bit#(3) debugCursor = cursor;
-    method Bit#(9) debugWaitCycles = (role == CoreWorker) ? worker.debugWaitCycles : ((role == CoreDma) ? dma.debugWaitCycles : waitCycles);
-    method DmaM3State debugDmaState = dma.debugState;
-    method Bit#(5) debugDmaAcknowledged = dma.debugAcknowledged;
-    method Bool debugFaultValid = faultValid;
-    method PLIOHostCoreFault debugFault = faultReg;
+    method PLIOHostCoreRole debugRole=role;
+    method Bool debugActiveSlotValid=role!=CoreIdle;
+    method Bit#(3) debugActiveSlot=activeSlot;
+    method Bit#(3) debugCursor=cursor;
+    method Bit#(9) debugWaitCycles=(role==CoreWorker)?workerWait:((role==CoreDma)?dmaWait:waitCycles);
+    method DmaM3State debugDmaState=dmaState;
+    method Bit#(5) debugDmaAcknowledged=dmaAcknowledged;
+    method Bool debugFaultValid=faultValid;
+    method PLIOHostCoreFault debugFault=faultReg;
 endmodule
 
 endpackage
