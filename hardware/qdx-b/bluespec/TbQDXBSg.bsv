@@ -81,8 +81,8 @@ module mkTbQDXBSg(Empty);
                     d.readValid=True; d.readWord=DmaWord {data:hostReadWord(ts,a)}; hostMoved<=hostMoved+1;
                 end
                 else if (hostReq.direction==DeviceToHost && p.writeValid) begin
-                    Bit#(32) expect=expectedRead(a);
-                    if (p.writeWord.data!=expect) begin $display("FAIL SG READ a=%08x expect=%08x got=%08x",a,expect,p.writeWord.data); $finish(1); end
+                    Bit#(32) expected=expectedRead(a);
+                    if (p.writeWord.data!=expected) begin $display("FAIL SG READ a=%08x expect=%08x got=%08x",a,expected,p.writeWord.data); $finish(1); end
                     d.writeReady=True; hostMoved<=hostMoved+1; readWords<=readWords+1;
                 end
             end

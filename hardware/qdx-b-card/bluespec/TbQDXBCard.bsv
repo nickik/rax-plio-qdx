@@ -154,9 +154,9 @@ module mkTbQDXBCard(Empty);
                     end
                     else if (bp.controlValid && bp.control.dataStrobe) begin
                         if (!peerRead && peerBase==32'h2300_2000) begin
-                            Bit#(32) expect=0;
-                            case (peerBeat) 0:expect=32'h0000_beef; 1:expect=32'h0008_0000; 2:expect=1; default:expect=0; endcase
-                            if (!bp.adParValid || bp.ad!=expect || bp.par!=oddParity32P1(expect)) begin $display("FAIL CQ beat=%0d expect=%08x got=%08x",peerBeat,expect,bp.ad);$finish(1); end
+                            Bit#(32) expected=0;
+                            case (peerBeat) 0:expected=32'h0000_beef; 1:expected=32'h0008_0000; 2:expected=1; default:expected=0; endcase
+                            if (!bp.adParValid || bp.ad!=expected || bp.par!=oddParity32P1(expected)) begin $display("FAIL CQ beat=%0d expect=%08x got=%08x",peerBeat,expected,bp.ad);$finish(1); end
                         end
                         dataResponsePending<=True;
                     end
