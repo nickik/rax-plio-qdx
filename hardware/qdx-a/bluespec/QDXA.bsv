@@ -32,18 +32,18 @@ typedef enum {
 
 Bit#(32) qdxCapValue = 32'h0032_4501;
 
-Bit#(32) REG_QDX_CAP     = 32'h0000_1000;
-Bit#(32) REG_QDX_STATUS  = 32'h0000_1004;
-Bit#(32) REG_QDX_CONTROL = 32'h0000_1008;
-Bit#(32) REG_SQ_BASE     = 32'h0000_1010;
-Bit#(32) REG_SQ_SIZE     = 32'h0000_1014;
-Bit#(32) REG_SQ_TAIL     = 32'h0000_1018;
-Bit#(32) REG_CQ_BASE     = 32'h0000_1020;
-Bit#(32) REG_CQ_SIZE     = 32'h0000_1024;
-Bit#(32) REG_CQ_HEAD     = 32'h0000_1028;
-Bit#(32) REG_SQ_HEAD     = 32'h0000_1030;
-Bit#(32) REG_CQ_TAIL     = 32'h0000_1034;
-Bit#(32) REG_QDX_ERROR   = 32'h0000_1038;
+Bit#(32) regQdxCap     = 32'h0000_1000;
+Bit#(32) regQdxStatus  = 32'h0000_1004;
+Bit#(32) regQdxControl = 32'h0000_1008;
+Bit#(32) regSqBase     = 32'h0000_1010;
+Bit#(32) regSqSize     = 32'h0000_1014;
+Bit#(32) regSqTail     = 32'h0000_1018;
+Bit#(32) regCqBase     = 32'h0000_1020;
+Bit#(32) regCqSize     = 32'h0000_1024;
+Bit#(32) regCqHead     = 32'h0000_1028;
+Bit#(32) regSqHead     = 32'h0000_1030;
+Bit#(32) regCqTail     = 32'h0000_1034;
+Bit#(32) regQdxError   = 32'h0000_1038;
 
 function Bit#(32) sqEntryAddress(Bit#(32) base, Bit#(16) position);
     Bit#(24) delta = zeroExtend(position[1:0]) << 5;
@@ -134,50 +134,32 @@ module mkQDXA(QDXAIfc);
         case (state)
             ASqRequest: begin
                 d.dmaRequestValid = True;
-                d.dmaRequest = DmaRequest {
-                    direction: HostToDevice,
-                    address: sqEntryAddress(sqBase, sqHead),
-                    words: BurstEight
-                };
+                d.dmaRequest = DmaRequest { direction: HostToDevice, address: sqEntryAddress(sqBase, sqHead), words: BurstEight };
             end
-            ASqReceive: begin
-                d.dmaReadReady = True;
-            end
-            ASqCompletion: begin
-                d.dmaCompletionReady = True;
-            end
+            ASqReceive: d.dmaReadReady = True;
+            ASqCompletion: d.dmaCompletionReady = True;
             ACqRequest: begin
                 d.dmaRequestValid = True;
-                d.dmaRequest = DmaRequest {
-                    direction: DeviceToHost,
-                    address: cqEntryAddress(cqBase, cqTail),
-                    words: BurstFour
-                };
+                d.dmaRequest = DmaRequest { direction: DeviceToHost, address: cqEntryAddress(cqBase, cqTail), words: BurstFour };
             end
             ACqSend: begin
                 d.dmaWriteValid = True;
                 d.dmaWrite = DmaWord { data: completionBuffer[cqWord] };
             end
-            ACqCompletion: begin
-                d.dmaCompletionReady = True;
-            end
+            ACqCompletion: d.dmaCompletionReady = True;
             ANotify: begin
                 d.notificationValid = True;
                 d.notification = NotificationRequest { channel: 0 };
             end
             default: begin end
         endcase
-
         return d;
     endmethod
 
     method QdxAEndpointOut endpointPort(QdxAQicToChip qic);
         QdxAEndpointOut e = qdxAEndpointOutDefault();
         e.reset = qic.reset || endpointResetPulse;
-        if (state == AEndpointOffer) begin
-            e.commandValid = True;
-            e.command = commandBuffer;
-        end
+        if (state == AEndpointOffer) begin e.commandValid = True; e.command = commandBuffer; end
         if (state == AEndpointCompletion) begin
             Bit#(16) used = cqTail - cqHead;
             e.completionReady = used < 4;
@@ -190,256 +172,116 @@ module mkQDXA(QDXAIfc);
             Bool canAcceptMmio = !mmioResponsePending && !qic.reset;
             Bool acceptsMmio = canAcceptMmio && qic.mmioRequestValid;
             MmioRequest req = qic.mmioRequest;
-            Bool softReset = acceptsMmio
-                && req.write
-                && req.address == REG_QDX_CONTROL
-                && req.byteEnable == 4'hf
-                && req.writeData[1] == 1'b1;
+            Bool softReset = acceptsMmio && req.write && req.address == regQdxControl && req.byteEnable == 4'hf && req.writeData[1] == 1'b1;
 
             if (qic.reset) begin
-                state <= ADisabled;
-                errorReg <= QdxErrNone;
-                enabled <= False;
-                notifyEnable <= False;
+                state <= ADisabled; errorReg <= QdxErrNone; enabled <= False; notifyEnable <= False;
                 sqBase <= 0; sqSize <= 0; sqHead <= 0; sqTail <= 0;
                 cqBase <= 0; cqSize <= 0; cqHead <= 0; cqTail <= 0;
-                mmioResponsePending <= False;
-                commandBuffer <= replicate(0);
-                completionBuffer <= replicate(0);
-                sqWord <= 0; cqWord <= 0;
-                endpointResetPulse <= True;
+                mmioResponsePending <= False; commandBuffer <= replicate(0); completionBuffer <= replicate(0);
+                sqWord <= 0; cqWord <= 0; endpointResetPulse <= True;
             end
             else if (softReset) begin
-                state <= ADisabled;
-                errorReg <= QdxErrNone;
-                enabled <= False;
-                notifyEnable <= False;
+                state <= ADisabled; errorReg <= QdxErrNone; enabled <= False; notifyEnable <= False;
                 sqBase <= 0; sqSize <= 0; sqHead <= 0; sqTail <= 0;
                 cqBase <= 0; cqSize <= 0; cqHead <= 0; cqTail <= 0;
-                commandBuffer <= replicate(0);
-                completionBuffer <= replicate(0);
-                sqWord <= 0; cqWord <= 0;
-                endpointResetPulse <= True;
-                mmioResponseReg <= mmioWriteOk();
-                mmioResponsePending <= True;
+                commandBuffer <= replicate(0); completionBuffer <= replicate(0); sqWord <= 0; cqWord <= 0;
+                endpointResetPulse <= True; mmioResponseReg <= mmioWriteOk(); mmioResponsePending <= True;
             end
             else begin
                 endpointResetPulse <= False;
-
-                if (mmioResponsePending && qic.mmioResponseReady)
-                    mmioResponsePending <= False;
-
-                if (qic.mmioCancel)
-                    mmioResponsePending <= False;
+                if (mmioResponsePending && qic.mmioResponseReady) mmioResponsePending <= False;
+                if (qic.mmioCancel) mmioResponsePending <= False;
 
                 if (acceptsMmio) begin
                     MmioResponse resp = mmioError();
                     Bool legal = False;
-
                     if (!req.write) begin
                         case (req.address)
-                            REG_QDX_CAP: begin
-                                legal = req.byteEnable == 4'hf;
-                                if (legal) resp = mmioReadOk(qdxCapValue);
-                            end
-                            REG_QDX_STATUS: begin
-                                legal = req.byteEnable == 4'hf;
-                                if (legal) resp = mmioReadOk(statusValue(state));
-                            end
-                            REG_QDX_CONTROL: begin
-                                legal = req.byteEnable == 4'hf;
-                                if (legal) resp = mmioReadOk({29'b0, notifyEnable, 1'b0, enabled});
-                            end
-                            REG_SQ_BASE: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(sqBase); end
-                            REG_SQ_SIZE: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(sqSize)); end
-                            REG_SQ_TAIL: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(sqTail)); end
-                            REG_CQ_BASE: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(cqBase); end
-                            REG_CQ_SIZE: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(cqSize)); end
-                            REG_CQ_HEAD: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(cqHead)); end
-                            REG_SQ_HEAD: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(sqHead)); end
-                            REG_CQ_TAIL: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(cqTail)); end
-                            REG_QDX_ERROR: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(errorValue(errorReg)); end
+                            regQdxCap: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(qdxCapValue); end
+                            regQdxStatus: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(statusValue(state)); end
+                            regQdxControl: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk({29'b0,notifyEnable,1'b0,enabled}); end
+                            regSqBase: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(sqBase); end
+                            regSqSize: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(sqSize)); end
+                            regSqTail: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(sqTail)); end
+                            regCqBase: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(cqBase); end
+                            regCqSize: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(cqSize)); end
+                            regCqHead: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(cqHead)); end
+                            regSqHead: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(sqHead)); end
+                            regCqTail: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(cqTail)); end
+                            regQdxError: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(errorValue(errorReg)); end
                             default: begin end
                         endcase
                     end
                     else begin
                         case (req.address)
-                            REG_QDX_CONTROL: begin
-                                legal = req.byteEnable == 4'hf && state == ADisabled;
+                            regQdxControl: begin
+                                legal = req.byteEnable==4'hf && state==ADisabled;
                                 if (legal) begin
-                                    notifyEnable <= req.writeData[2] == 1'b1;
-                                    if (req.writeData[0] == 1'b1) begin
-                                        if (validConfiguration(sqBase,sqSize,cqBase,cqSize)) begin
-                                            enabled <= True;
-                                            errorReg <= QdxErrNone;
-                                            state <= AReadyIdle;
-                                        end
-                                        else begin
-                                            enabled <= True;
-                                            errorReg <= QdxErrBadConfig;
-                                            state <= AFault;
-                                        end
-                                    end
-                                    else begin
-                                        enabled <= False;
-                                    end
-                                    resp = mmioWriteOk();
+                                    notifyEnable <= req.writeData[2]==1'b1;
+                                    if (req.writeData[0]==1'b1) begin
+                                        if (validConfiguration(sqBase,sqSize,cqBase,cqSize)) begin enabled<=True; errorReg<=QdxErrNone; state<=AReadyIdle; end
+                                        else begin enabled<=True; errorReg<=QdxErrBadConfig; state<=AFault; end
+                                    end else enabled<=False;
+                                    resp=mmioWriteOk();
                                 end
                             end
-                            REG_SQ_BASE: begin
-                                legal = req.byteEnable==4'hf && state==ADisabled;
-                                if (legal) begin sqBase<=req.writeData; resp=mmioWriteOk(); end
-                            end
-                            REG_SQ_SIZE: begin
-                                legal = req.byteEnable==4'h3 && state==ADisabled;
-                                if (legal) begin sqSize<=req.writeData[15:0]; resp=mmioWriteOk(); end
-                            end
-                            REG_CQ_BASE: begin
-                                legal = req.byteEnable==4'hf && state==ADisabled;
-                                if (legal) begin cqBase<=req.writeData; resp=mmioWriteOk(); end
-                            end
-                            REG_CQ_SIZE: begin
-                                legal = req.byteEnable==4'h3 && state==ADisabled;
-                                if (legal) begin cqSize<=req.writeData[15:0]; resp=mmioWriteOk(); end
-                            end
-                            REG_SQ_TAIL: begin
-                                legal = req.byteEnable==4'h3 && isReadyState(state);
+                            regSqBase: begin legal=req.byteEnable==4'hf && state==ADisabled; if (legal) begin sqBase<=req.writeData; resp=mmioWriteOk(); end end
+                            regSqSize: begin legal=req.byteEnable==4'h3 && state==ADisabled; if (legal) begin sqSize<=req.writeData[15:0]; resp=mmioWriteOk(); end end
+                            regCqBase: begin legal=req.byteEnable==4'hf && state==ADisabled; if (legal) begin cqBase<=req.writeData; resp=mmioWriteOk(); end end
+                            regCqSize: begin legal=req.byteEnable==4'h3 && state==ADisabled; if (legal) begin cqSize<=req.writeData[15:0]; resp=mmioWriteOk(); end end
+                            regSqTail: begin
+                                legal=req.byteEnable==4'h3 && isReadyState(state);
                                 if (legal) begin
-                                    Bit#(16) newTail = req.writeData[15:0];
-                                    Bit#(16) occupancy = newTail - sqHead;
-                                    if (occupancy <= 4) begin
-                                        sqTail <= newTail;
-                                        resp = mmioWriteOk();
-                                    end
-                                    else begin
-                                        legal = False;
-                                        errorReg <= QdxErrQueueProtocol;
-                                        state <= AFault;
-                                    end
+                                    Bit#(16) newTail=req.writeData[15:0]; Bit#(16) occupancy=newTail-sqHead;
+                                    if (occupancy<=4) begin sqTail<=newTail; resp=mmioWriteOk(); end
+                                    else begin legal=False; errorReg<=QdxErrQueueProtocol; state<=AFault; end
                                 end
                             end
-                            REG_CQ_HEAD: begin
-                                legal = req.byteEnable==4'h3 && isReadyState(state);
+                            regCqHead: begin
+                                legal=req.byteEnable==4'h3 && isReadyState(state);
                                 if (legal) begin
-                                    Bit#(16) newHead = req.writeData[15:0];
-                                    Bit#(16) used = cqTail - cqHead;
-                                    Bit#(16) consumed = newHead - cqHead;
-                                    if (consumed <= used) begin
-                                        cqHead <= newHead;
-                                        resp = mmioWriteOk();
-                                    end
-                                    else begin
-                                        legal = False;
-                                        errorReg <= QdxErrQueueProtocol;
-                                        state <= AFault;
-                                    end
+                                    Bit#(16) newHead=req.writeData[15:0]; Bit#(16) used=cqTail-cqHead; Bit#(16) consumed=newHead-cqHead;
+                                    if (consumed<=used) begin cqHead<=newHead; resp=mmioWriteOk(); end
+                                    else begin legal=False; errorReg<=QdxErrQueueProtocol; state<=AFault; end
                                 end
                             end
                             default: begin end
                         endcase
                     end
-
                     mmioResponseReg <= legal ? resp : mmioError();
                     mmioResponsePending <= True;
                 end
 
                 case (state)
                     ADisabled: begin end
-
                     AReadyIdle: begin
-                        Bit#(16) cqUsed = cqTail - cqHead;
-                        if (sqHead != sqTail && cqUsed < 4) begin
-                            sqWord <= 0;
-                            state <= ASqRequest;
-                        end
+                        Bit#(16) cqUsed=cqTail-cqHead;
+                        if (sqHead!=sqTail && cqUsed<4) begin sqWord<=0; state<=ASqRequest; end
                     end
-
-                    ASqRequest: begin
-                        if (qic.dmaRequestReady) begin
-                            sqWord <= 0;
-                            state <= ASqReceive;
-                        end
+                    ASqRequest: if (qic.dmaRequestReady) begin sqWord<=0; state<=ASqReceive; end
+                    ASqReceive: if (qic.dmaReadValid) begin
+                        QdxACommand next=commandBuffer; next[sqWord]=qic.dmaRead.data; commandBuffer<=next;
+                        if (sqWord==7) state<=ASqCompletion; else sqWord<=sqWord+1;
                     end
-
-                    ASqReceive: begin
-                        if (qic.dmaReadValid) begin
-                            QdxACommand next = commandBuffer;
-                            next[sqWord] = qic.dmaRead.data;
-                            commandBuffer <= next;
-                            if (sqWord == 7)
-                                state <= ASqCompletion;
-                            else
-                                sqWord <= sqWord + 1;
-                        end
+                    ASqCompletion: if (qic.dmaCompletionValid) begin
+                        if (qic.dmaCompletion.status==DmaOk && qic.dmaCompletion.wordsCompleted==8) begin sqHead<=sqHead+1; state<=AEndpointOffer; end
+                        else begin errorReg<=QdxErrSqDma; state<=AFault; end
                     end
-
-                    ASqCompletion: begin
-                        if (qic.dmaCompletionValid) begin
-                            if (qic.dmaCompletion.status == DmaOk
-                                && qic.dmaCompletion.wordsCompleted == 8) begin
-                                sqHead <= sqHead + 1;
-                                state <= AEndpointOffer;
-                            end
-                            else begin
-                                errorReg <= QdxErrSqDma;
-                                state <= AFault;
-                            end
-                        end
-                    end
-
-                    AEndpointOffer: begin
-                        if (endpoint.commandReady)
-                            state <= AEndpointCompletion;
-                    end
-
+                    AEndpointOffer: if (endpoint.commandReady) state<=AEndpointCompletion;
                     AEndpointCompletion: begin
-                        Bit#(16) cqUsed = cqTail - cqHead;
-                        if (endpoint.completionValid && cqUsed < 4) begin
-                            completionBuffer <= endpoint.completion;
-                            cqWord <= 0;
-                            state <= ACqRequest;
-                        end
+                        Bit#(16) cqUsed=cqTail-cqHead;
+                        if (endpoint.completionValid && cqUsed<4) begin completionBuffer<=endpoint.completion; cqWord<=0; state<=ACqRequest; end
                     end
-
-                    ACqRequest: begin
-                        if (qic.dmaRequestReady) begin
-                            cqWord <= 0;
-                            state <= ACqSend;
-                        end
+                    ACqRequest: if (qic.dmaRequestReady) begin cqWord<=0; state<=ACqSend; end
+                    ACqSend: if (qic.dmaWriteReady) begin if (cqWord==3) state<=ACqCompletion; else cqWord<=cqWord+1; end
+                    ACqCompletion: if (qic.dmaCompletionValid) begin
+                        if (qic.dmaCompletion.status==DmaOk && qic.dmaCompletion.wordsCompleted==4) begin
+                            Bool wasEmpty=cqTail==cqHead; cqTail<=cqTail+1;
+                            if (wasEmpty && notifyEnable) state<=ANotify; else state<=AReadyIdle;
+                        end else begin errorReg<=QdxErrCqDma; state<=AFault; end
                     end
-
-                    ACqSend: begin
-                        if (qic.dmaWriteReady) begin
-                            if (cqWord == 3)
-                                state <= ACqCompletion;
-                            else
-                                cqWord <= cqWord + 1;
-                        end
-                    end
-
-                    ACqCompletion: begin
-                        if (qic.dmaCompletionValid) begin
-                            if (qic.dmaCompletion.status == DmaOk
-                                && qic.dmaCompletion.wordsCompleted == 4) begin
-                                Bool wasEmpty = cqTail == cqHead;
-                                cqTail <= cqTail + 1;
-                                if (wasEmpty && notifyEnable)
-                                    state <= ANotify;
-                                else
-                                    state <= AReadyIdle;
-                            end
-                            else begin
-                                errorReg <= QdxErrCqDma;
-                                state <= AFault;
-                            end
-                        end
-                    end
-
-                    ANotify: begin
-                        if (qic.notificationReady)
-                            state <= AReadyIdle;
-                    end
-
+                    ANotify: if (qic.notificationReady) state<=AReadyIdle;
                     AFault: begin end
                 endcase
             end
