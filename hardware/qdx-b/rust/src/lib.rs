@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
+
 use plio_logical_model::BurstWords;
 use qdx_a_model::{EndpointIn, EndpointOut, QdxACommand, QdxACompletion};
 use qli_model::{DmaCompletion, DmaDirection, DmaRequest, DmaStatus, DmaWord};
@@ -90,10 +94,155 @@ impl Command {
     }
 }
 
+pub trait BlockBackend: Send {
+    fn block_size(&self) -> usize;
+    fn total_blocks(&self) -> u32;
+    fn read_only(&self) -> bool { false }
+    fn read_block(&mut self, lba: u32, dst: &mut [u32]) -> Result<(), String>;
+    fn write_block(&mut self, lba: u32, src: &[u32]) -> Result<(), String>;
+    fn flush(&mut self) -> Result<(), String> { Ok(()) }
+}
+
 #[derive(Debug, Clone)]
+pub struct RamDisk {
+    block_size: usize,
+    blocks: u32,
+    data: Vec<u32>,
+    read_only: bool,
+}
+
+impl RamDisk {
+    pub fn new(blocks: u32, block_size: usize) -> Result<Self, String> {
+        Self::with_read_only(blocks, block_size, false)
+    }
+
+    pub fn with_read_only(blocks: u32, block_size: usize, read_only: bool) -> Result<Self, String> {
+        validate_geometry(blocks, block_size)?;
+        let words = (blocks as usize)
+            .checked_mul(block_size / 4)
+            .ok_or("RAM disk size overflow")?;
+        Ok(Self { block_size, blocks, data: vec![0; words], read_only })
+    }
+
+    fn range(&self, lba: u32) -> Result<std::ops::Range<usize>, String> {
+        if lba >= self.blocks { return Err("QDX-B LBA exceeds namespace capacity".into()); }
+        let words = self.block_size / 4;
+        let start = lba as usize * words;
+        Ok(start..start + words)
+    }
+}
+
+impl BlockBackend for RamDisk {
+    fn block_size(&self) -> usize { self.block_size }
+    fn total_blocks(&self) -> u32 { self.blocks }
+    fn read_only(&self) -> bool { self.read_only }
+
+    fn read_block(&mut self, lba: u32, dst: &mut [u32]) -> Result<(), String> {
+        let range = self.range(lba)?;
+        if dst.len() < range.len() { return Err("destination buffer too small".into()); }
+        dst[..range.len()].copy_from_slice(&self.data[range]);
+        Ok(())
+    }
+
+    fn write_block(&mut self, lba: u32, src: &[u32]) -> Result<(), String> {
+        if self.read_only { return Err("namespace is read-only".into()); }
+        let range = self.range(lba)?;
+        if src.len() < range.len() { return Err("source buffer too small".into()); }
+        let n = range.len();
+        self.data[range].copy_from_slice(&src[..n]);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct FileDisk {
+    file: File,
+    block_size: usize,
+    blocks: u32,
+    read_only: bool,
+}
+
+impl FileDisk {
+    pub fn create(path: impl AsRef<Path>, blocks: u32, block_size: usize) -> Result<Self, String> {
+        validate_geometry(blocks, block_size)?;
+        let bytes = (blocks as u64)
+            .checked_mul(block_size as u64)
+            .ok_or("file disk size overflow")?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|e| format!("create QDX-B file disk: {e}"))?;
+        file.set_len(bytes).map_err(|e| format!("size QDX-B file disk: {e}"))?;
+        Ok(Self { file, block_size, blocks, read_only: false })
+    }
+
+    pub fn open(path: impl AsRef<Path>, block_size: usize, read_only: bool) -> Result<Self, String> {
+        if block_size < 4 || block_size & 3 != 0 { return Err("block size must be a multiple of 4".into()); }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(!read_only)
+            .open(path)
+            .map_err(|e| format!("open QDX-B file disk: {e}"))?;
+        let len = file.metadata().map_err(|e| format!("stat QDX-B file disk: {e}"))?.len();
+        if len == 0 || len % block_size as u64 != 0 { return Err("file disk size must contain whole blocks".into()); }
+        let blocks = u32::try_from(len / block_size as u64).map_err(|_| "file disk has too many blocks")?;
+        validate_geometry(blocks, block_size)?;
+        Ok(Self { file, block_size, blocks, read_only })
+    }
+
+    fn seek_block(&mut self, lba: u32) -> Result<(), String> {
+        if lba >= self.blocks { return Err("QDX-B LBA exceeds namespace capacity".into()); }
+        self.file
+            .seek(SeekFrom::Start(u64::from(lba) * self.block_size as u64))
+            .map(|_| ())
+            .map_err(|e| format!("seek QDX-B file disk: {e}"))
+    }
+}
+
+impl BlockBackend for FileDisk {
+    fn block_size(&self) -> usize { self.block_size }
+    fn total_blocks(&self) -> u32 { self.blocks }
+    fn read_only(&self) -> bool { self.read_only }
+
+    fn read_block(&mut self, lba: u32, dst: &mut [u32]) -> Result<(), String> {
+        self.seek_block(lba)?;
+        let words = self.block_size / 4;
+        if dst.len() < words { return Err("destination buffer too small".into()); }
+        let mut bytes = vec![0u8; self.block_size];
+        self.file.read_exact(&mut bytes).map_err(|e| format!("read QDX-B file disk: {e}"))?;
+        for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+            dst[i] = u32::from_le_bytes(chunk.try_into().unwrap());
+        }
+        Ok(())
+    }
+
+    fn write_block(&mut self, lba: u32, src: &[u32]) -> Result<(), String> {
+        if self.read_only { return Err("namespace is read-only".into()); }
+        self.seek_block(lba)?;
+        let words = self.block_size / 4;
+        if src.len() < words { return Err("source buffer too small".into()); }
+        let mut bytes = Vec::with_capacity(self.block_size);
+        for word in src.iter().take(words) { bytes.extend_from_slice(&word.to_le_bytes()); }
+        self.file.write_all(&bytes).map_err(|e| format!("write QDX-B file disk: {e}"))
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        self.file.sync_data().map_err(|e| format!("flush QDX-B file disk: {e}"))
+    }
+}
+
+fn validate_geometry(blocks: u32, block_size: usize) -> Result<(), String> {
+    if blocks == 0 { return Err("QDX-B namespace must contain at least one block".into()); }
+    if block_size < 4 || block_size & 3 != 0 { return Err("QDX-B block size must be a multiple of 4".into()); }
+    Ok(())
+}
+
 pub struct FakeMedia {
-    ns512: Vec<u32>,
-    ns1024: Vec<u32>,
+    ns512: Box<dyn BlockBackend>,
+    ns1024: Box<dyn BlockBackend>,
     pub flushes: u32,
 }
 
@@ -103,59 +252,63 @@ impl Default for FakeMedia {
 
 impl FakeMedia {
     pub fn new() -> Self {
-        Self {
-            ns512: vec![0; NS_BLOCKS as usize * 128],
-            ns1024: vec![0; NS_BLOCKS as usize * 256],
-            flushes: 0,
+        Self::with_backends(
+            Box::new(RamDisk::new(NS_BLOCKS, 512).expect("valid QDX-B NS1 RAM disk")),
+            Box::new(RamDisk::new(NS_BLOCKS, 1024).expect("valid QDX-B NS2 RAM disk")),
+        ).expect("valid default QDX-B media")
+    }
+
+    pub fn with_backends(ns512: Box<dyn BlockBackend>, ns1024: Box<dyn BlockBackend>) -> Result<Self, String> {
+        if ns512.block_size() != 512 || ns512.total_blocks() != NS_BLOCKS {
+            return Err("QDX-B namespace 1 must be 64 x 512-byte blocks".into());
         }
+        if ns1024.block_size() != 1024 || ns1024.total_blocks() != NS_BLOCKS {
+            return Err("QDX-B namespace 2 must be 64 x 1024-byte blocks".into());
+        }
+        Ok(Self { ns512, ns1024, flushes: 0 })
+    }
+
+    pub fn file_backed(path512: impl AsRef<Path>, path1024: impl AsRef<Path>) -> Result<Self, String> {
+        Self::with_backends(
+            Box::new(FileDisk::create(path512, NS_BLOCKS, 512)?),
+            Box::new(FileDisk::create(path1024, NS_BLOCKS, 1024)?),
+        )
     }
 
     pub const fn block_size(namespace_id: u16) -> Option<usize> {
         match namespace_id { 1 => Some(512), 2 => Some(1024), _ => None }
     }
 
-    fn block_slice(&self, ns: u16, lba: u32) -> Option<&[u32]> {
-        let words = Self::block_size(ns)? / 4;
-        if lba >= NS_BLOCKS { return None; }
-        let start = lba as usize * words;
+    fn backend_mut(&mut self, ns: u16) -> Option<&mut (dyn BlockBackend + '_)> {
         match ns {
-            1 => Some(&self.ns512[start..start + words]),
-            2 => Some(&self.ns1024[start..start + words]),
-            _ => None,
-        }
-    }
-
-    fn block_slice_mut(&mut self, ns: u16, lba: u32) -> Option<&mut [u32]> {
-        let words = Self::block_size(ns)? / 4;
-        if lba >= NS_BLOCKS { return None; }
-        let start = lba as usize * words;
-        match ns {
-            1 => Some(&mut self.ns512[start..start + words]),
-            2 => Some(&mut self.ns1024[start..start + words]),
+            1 => Some(self.ns512.as_mut()),
+            2 => Some(self.ns1024.as_mut()),
             _ => None,
         }
     }
 
     pub fn seed_block(&mut self, ns: u16, lba: u32, base: u32) {
-        if let Some(block) = self.block_slice_mut(ns, lba) {
-            for (i, w) in block.iter_mut().enumerate() { *w = base.wrapping_add((i as u32) * 4); }
-        }
+        let Some(bytes) = Self::block_size(ns) else { return; };
+        let mut block = vec![0u32; bytes / 4];
+        for (i, w) in block.iter_mut().enumerate() { *w = base.wrapping_add((i as u32) * 4); }
+        if let Some(backend) = self.backend_mut(ns) { let _ = backend.write_block(lba, &block); }
     }
 
-    pub fn read_block(&self, ns: u16, lba: u32, dst: &mut [u32; 256]) -> bool {
-        let Some(block) = self.block_slice(ns, lba) else { return false; };
-        dst[..block.len()].copy_from_slice(block);
-        true
+    pub fn read_block(&mut self, ns: u16, lba: u32, dst: &mut [u32; 256]) -> bool {
+        let Some(backend) = self.backend_mut(ns) else { return false; };
+        backend.read_block(lba, dst).is_ok()
     }
 
     pub fn write_block(&mut self, ns: u16, lba: u32, src: &[u32; 256]) -> bool {
-        let Some(block) = self.block_slice_mut(ns, lba) else { return false; };
-        let n = block.len();
-        block.copy_from_slice(&src[..n]);
-        true
+        let Some(backend) = self.backend_mut(ns) else { return false; };
+        backend.write_block(lba, src).is_ok()
     }
 
-    pub fn flush(&mut self, _ns: u16) { self.flushes = self.flushes.wrapping_add(1); }
+    pub fn flush(&mut self, ns: u16) {
+        if let Some(backend) = self.backend_mut(ns) {
+            if backend.flush().is_ok() { self.flushes = self.flushes.wrapping_add(1); }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
