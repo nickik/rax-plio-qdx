@@ -101,17 +101,14 @@ pub struct QdxA {
     error: QdxAError,
     enabled: bool,
     notify_enable: bool,
-
     sq_base: u32,
     sq_size: u16,
     sq_head: u16,
     sq_tail: u16,
-
     cq_base: u32,
     cq_size: u16,
     cq_head: u16,
     cq_tail: u16,
-
     mmio_response: Option<MmioResponse>,
     command_buffer: QdxACommand,
     completion_buffer: QdxACompletion,
@@ -221,22 +218,22 @@ impl QdxA {
         }
 
         self.endpoint_reset_pulse = false;
+
+        // Match the PR #6 Bluespec control priority exactly. MMIO response
+        // consumption/cancel, MMIO request acceptance, and engine advancement
+        // are mutually exclusive within one cycle.
         if self.mmio_response.is_some() && qic.mmio_response_ready {
             self.mmio_response = None;
-        }
-        if qic.mmio_cancel {
+            return;
+        } else if qic.mmio_cancel {
             self.mmio_response = None;
-        }
-
-        let old_state = self.state;
-        if accepts_mmio {
+            return;
+        } else if accepts_mmio {
             self.accept_mmio(req.expect("accepts_mmio implies request"));
+            return;
         }
 
-        // Bluespec state-machine decisions are based on the state at the start
-        // of the cycle. The deterministic differential stimuli avoid issuing an
-        // MMIO state transition that competes with an engine transition.
-        match old_state {
+        match self.state {
             QdxAState::Disabled => {}
             QdxAState::ReadyIdle => {
                 let cq_used = self.cq_tail.wrapping_sub(self.cq_head);
@@ -496,7 +493,17 @@ mod tests {
 
     fn consume_response(chip: &mut QdxA) {
         assert!(chip.qic_port(&QicToDevice::default()).mmio_response.is_some());
-        chip.advance(&QicToDevice { mmio_response_ready: true, ..Default::default() }, &EndpointIn::default());
+        chip.advance(
+            &QicToDevice { mmio_response_ready: true, ..Default::default() },
+            &EndpointIn::default(),
+        );
+    }
+
+    fn write_reg(chip: &mut QdxA, address: u32, byte_enable: u8, data: u32) {
+        let q = mmio_write(address, byte_enable, data);
+        assert!(chip.qic_port(&q).mmio_ready);
+        chip.advance(&q, &EndpointIn::default());
+        consume_response(chip);
     }
 
     fn configure(chip: &mut QdxA) {
@@ -507,9 +514,58 @@ mod tests {
             (REG_CQ_SIZE, 0x3, 4),
             (REG_QDX_CONTROL, 0xf, 5),
         ] {
-            chip.advance(&mmio_write(address, be, data), &EndpointIn::default());
-            consume_response(chip);
+            write_reg(chip, address, be, data);
         }
+    }
+
+    fn launch_sq(chip: &mut QdxA) {
+        write_reg(chip, REG_SQ_TAIL, 0x3, 1);
+        assert_eq!(chip.state(), QdxAState::ReadyIdle);
+        chip.advance(&QicToDevice::default(), &EndpointIn::default());
+        assert_eq!(chip.state(), QdxAState::SqRequest);
+        chip.advance(
+            &QicToDevice { dma_request_ready: true, ..Default::default() },
+            &EndpointIn::default(),
+        );
+        assert_eq!(chip.state(), QdxAState::SqReceive);
+    }
+
+    fn reach_cq_completion(chip: &mut QdxA) {
+        launch_sq(chip);
+        for i in 0..8u32 {
+            chip.advance(
+                &QicToDevice { dma_read: Some(DmaWord { data: 0xa000_0000 + i }), ..Default::default() },
+                &EndpointIn::default(),
+            );
+        }
+        chip.advance(
+            &QicToDevice {
+                dma_completion: Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 8 }),
+                ..Default::default()
+            },
+            &EndpointIn::default(),
+        );
+        assert_eq!(chip.state(), QdxAState::EndpointOffer);
+        chip.advance(
+            &QicToDevice::default(),
+            &EndpointIn { command_ready: true, ..Default::default() },
+        );
+        chip.advance(
+            &QicToDevice::default(),
+            &EndpointIn { completion: Some([1, 2, 3, 4]), ..Default::default() },
+        );
+        assert_eq!(chip.state(), QdxAState::CqRequest);
+        chip.advance(
+            &QicToDevice { dma_request_ready: true, ..Default::default() },
+            &EndpointIn::default(),
+        );
+        for _ in 0..4 {
+            chip.advance(
+                &QicToDevice { dma_write_ready: true, ..Default::default() },
+                &EndpointIn::default(),
+            );
+        }
+        assert_eq!(chip.state(), QdxAState::CqCompletion);
     }
 
     #[test]
@@ -531,29 +587,153 @@ mod tests {
     }
 
     #[test]
-    fn ring_addresses_preserve_dma_channel_generation_byte() {
+    fn ring_addresses_preserve_dma_channel_generation_byte_and_wrap_slot() {
         assert_eq!(sq_entry_address(0xab00_1000, 3), 0xab00_1060);
+        assert_eq!(sq_entry_address(0xab00_1000, 4), 0xab00_1000);
         assert_eq!(cq_entry_address(0xcd00_2000, 3), 0xcd00_2030);
+        assert_eq!(cq_entry_address(0xcd00_2000, 4), 0xcd00_2000);
     }
 
     #[test]
-    fn sq_dma_failure_does_not_advance_head() {
+    fn mmio_response_consumption_has_priority_over_engine_progress() {
         let mut chip = QdxA::new();
         configure(&mut chip);
         chip.advance(&mmio_write(REG_SQ_TAIL, 0x3, 1), &EndpointIn::default());
+        assert_eq!(chip.state(), QdxAState::ReadyIdle);
+        assert_eq!(chip.sq_tail(), 1);
         consume_response(&mut chip);
+        assert_eq!(chip.state(), QdxAState::ReadyIdle);
         chip.advance(&QicToDevice::default(), &EndpointIn::default());
         assert_eq!(chip.state(), QdxAState::SqRequest);
-        chip.advance(&QicToDevice { dma_request_ready: true, ..Default::default() }, &EndpointIn::default());
-        for i in 0..8 {
-            chip.advance(&QicToDevice { dma_read: Some(DmaWord { data: i }), ..Default::default() }, &EndpointIn::default());
-        }
-        chip.advance(&QicToDevice {
-            dma_completion: Some(DmaCompletion { status: DmaStatus::BusError, words_completed: 8 }),
-            ..Default::default()
-        }, &EndpointIn::default());
+    }
+
+    #[test]
+    fn illegal_sq_tail_movement_faults_without_accepting_new_tail() {
+        let mut chip = QdxA::new();
+        configure(&mut chip);
+        chip.advance(&mmio_write(REG_SQ_TAIL, 0x3, 5), &EndpointIn::default());
         assert_eq!(chip.state(), QdxAState::Fault);
-        assert_eq!(chip.sq_head(), 0);
-        assert_eq!(chip.error(), QdxAError::SqDma);
+        assert_eq!(chip.error(), QdxAError::QueueProtocol);
+        assert_eq!(chip.sq_tail(), 0);
+        assert_eq!(chip.qic_port(&QicToDevice::default()).mmio_response, Some(MmioResponse::Error));
+    }
+
+    #[test]
+    fn sq_dma_failure_or_short_completion_does_not_advance_head() {
+        for completion in [
+            DmaCompletion { status: DmaStatus::BusError, words_completed: 8 },
+            DmaCompletion { status: DmaStatus::Ok, words_completed: 7 },
+        ] {
+            let mut chip = QdxA::new();
+            configure(&mut chip);
+            launch_sq(&mut chip);
+            for i in 0..8 {
+                chip.advance(
+                    &QicToDevice { dma_read: Some(DmaWord { data: i }), ..Default::default() },
+                    &EndpointIn::default(),
+                );
+            }
+            chip.advance(
+                &QicToDevice { dma_completion: Some(completion), ..Default::default() },
+                &EndpointIn::default(),
+            );
+            assert_eq!(chip.state(), QdxAState::Fault);
+            assert_eq!(chip.sq_head(), 0);
+            assert_eq!(chip.error(), QdxAError::SqDma);
+        }
+    }
+
+    #[test]
+    fn cq_dma_failure_or_short_completion_does_not_advance_tail() {
+        for completion in [
+            DmaCompletion { status: DmaStatus::BusError, words_completed: 4 },
+            DmaCompletion { status: DmaStatus::Ok, words_completed: 3 },
+        ] {
+            let mut chip = QdxA::new();
+            configure(&mut chip);
+            reach_cq_completion(&mut chip);
+            chip.advance(
+                &QicToDevice { dma_completion: Some(completion), ..Default::default() },
+                &EndpointIn::default(),
+            );
+            assert_eq!(chip.state(), QdxAState::Fault);
+            assert_eq!(chip.cq_tail(), 0);
+            assert_eq!(chip.error(), QdxAError::CqDma);
+        }
+    }
+
+    #[test]
+    fn endpoint_backpressure_keeps_command_stable_and_uncommitted() {
+        let mut chip = QdxA::new();
+        configure(&mut chip);
+        launch_sq(&mut chip);
+        for i in 0..8u32 {
+            chip.advance(
+                &QicToDevice { dma_read: Some(DmaWord { data: 0x5000_0000 + i }), ..Default::default() },
+                &EndpointIn::default(),
+            );
+        }
+        chip.advance(
+            &QicToDevice {
+                dma_completion: Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 8 }),
+                ..Default::default()
+            },
+            &EndpointIn::default(),
+        );
+        let first = chip.endpoint_port(&QicToDevice::default()).command;
+        assert!(first.is_some());
+        for _ in 0..8 {
+            chip.advance(&QicToDevice::default(), &EndpointIn::default());
+            assert_eq!(chip.state(), QdxAState::EndpointOffer);
+            assert_eq!(chip.endpoint_port(&QicToDevice::default()).command, first);
+            assert_eq!(chip.cq_tail(), 0);
+        }
+    }
+
+    #[test]
+    fn hard_reset_during_sq_receive_clears_inflight_state_and_pulses_endpoint_reset() {
+        let mut chip = QdxA::new();
+        configure(&mut chip);
+        launch_sq(&mut chip);
+        chip.advance(
+            &QicToDevice { dma_read: Some(DmaWord { data: 0xdead_beef }), ..Default::default() },
+            &EndpointIn::default(),
+        );
+        chip.advance(&QicToDevice { reset: true, ..Default::default() }, &EndpointIn::default());
+        assert_eq!(chip.state(), QdxAState::Disabled);
+        assert_eq!(chip.error(), QdxAError::None);
+        assert_eq!((chip.sq_head(), chip.sq_tail(), chip.cq_head(), chip.cq_tail()), (0, 0, 0, 0));
+        assert!(chip.endpoint_port(&QicToDevice::default()).reset);
+        assert!(chip.qic_port(&QicToDevice::default()).dma_request.is_none());
+    }
+
+    #[test]
+    fn soft_reset_during_endpoint_wait_clears_all_progress_and_returns_write_ok() {
+        let mut chip = QdxA::new();
+        configure(&mut chip);
+        launch_sq(&mut chip);
+        for i in 0..8 {
+            chip.advance(
+                &QicToDevice { dma_read: Some(DmaWord { data: i }), ..Default::default() },
+                &EndpointIn::default(),
+            );
+        }
+        chip.advance(
+            &QicToDevice {
+                dma_completion: Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 8 }),
+                ..Default::default()
+            },
+            &EndpointIn::default(),
+        );
+        chip.advance(
+            &QicToDevice::default(),
+            &EndpointIn { command_ready: true, ..Default::default() },
+        );
+        assert_eq!(chip.state(), QdxAState::EndpointCompletion);
+        chip.advance(&mmio_write(REG_QDX_CONTROL, 0xf, 0x2), &EndpointIn::default());
+        assert_eq!(chip.state(), QdxAState::Disabled);
+        assert_eq!((chip.sq_head(), chip.sq_tail(), chip.cq_head(), chip.cq_tail()), (0, 0, 0, 0));
+        assert_eq!(chip.qic_port(&QicToDevice::default()).mmio_response, Some(MmioResponse::WriteOk));
+        assert!(chip.endpoint_port(&QicToDevice::default()).reset);
     }
 }
