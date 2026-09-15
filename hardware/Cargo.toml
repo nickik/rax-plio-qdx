@@ -11,6 +11,8 @@ members = [
     "naked-card/rust",
     "qdx-a/rust",
     "qdx-a-card/rust",
+    "qdx-b/rust",
+    "qdx-b-card/rust",
     "trace/rust",
     "plio-rax-host/rust",
     "plio-rax-host/m2-rust",
