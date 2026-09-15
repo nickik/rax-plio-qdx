@@ -16,7 +16,7 @@ function Bool isProgramming(Work w);
     case (w) WSqBase,WSqSize,WCqBase,WCqSize,WControl,WSqTail:return True; default:return False; endcase
 endfunction
 function Bit#(32) workAddress(Work w);
-    case (w) WSqBase:return REG_SQ_BASE; WSqSize:return REG_SQ_SIZE; WCqBase:return REG_CQ_BASE; WCqSize:return REG_CQ_SIZE; WControl:return REG_QDX_CONTROL; WSqTail:return REG_SQ_TAIL; default:return 0; endcase
+    case (w) WSqBase:return regSqBase; WSqSize:return regSqSize; WCqBase:return regCqBase; WCqSize:return regCqSize; WControl:return regQdxControl; WSqTail:return regSqTail; default:return 0; endcase
 endfunction
 function Bit#(32) workData(Work w);
     case (w) WSqBase:return 32'h1200_1000; WSqSize:return 4; WCqBase:return 32'h2300_2000; WCqSize:return 4; WControl:return 5; WSqTail:return 1; default:return 0; endcase
