@@ -29,8 +29,8 @@ endfunction
 function PlioIn workerBus(Work w, WorkerPhase p);
     PlioIn b=plioInDefault(); Bit#(32) a=workAddress(w); Bit#(32) d=workData(w); Bit#(4) be=workBe(w);
     b.selected=True; b.read=False; b.byteEnable=be; b.burst=BurstOne;
-    if (p==WAddr) begin b.adValid=True;b.ad=a;b.parValid=True;b.par=oddParity32P1(a);b.spaceValid=True;b.space=PlioWorker;b.addressStrobe=True; end
-    else begin b.adValid=True;b.ad=d;b.parValid=True;b.par=oddParity32P1(d);b.dataStrobe=True; end
+    if (p==WAddr) begin b.adValid=True;b.ad=a;b.parValid=True;b.parity=oddParity32P1(a);b.spaceValid=True;b.space=PlioWorker;b.addressStrobe=True; end
+    else begin b.adValid=True;b.ad=d;b.parValid=True;b.parity=oddParity32P1(d);b.dataStrobe=True; end
     return b;
 endfunction
 
@@ -58,7 +58,7 @@ function PlioIn peerBus(PeerState p, Bool rd, Bit#(32) base, Bit#(5) beat, Bool 
                     Bit#(32) a=base+(zeroExtend(beat)<<2); Bit#(32) data=0;
                     if (base==32'h1200_1000) data=sqWord(truncate(beat));
                     else data=32'h9900_0000+(a-32'h3000);
-                    b.adValid=True;b.ad=data;b.parValid=True;b.par=oddParity32P1(data);
+                    b.adValid=True;b.ad=data;b.parValid=True;b.parity=oddParity32P1(data);
                 end
             end
         end
@@ -156,7 +156,7 @@ module mkTbQDXBCard(Empty);
                         if (!peerRead && peerBase==32'h2300_2000) begin
                             Bit#(32) expected=0;
                             case (peerBeat) 0:expected=32'h0000_beef; 1:expected=32'h0008_0000; 2:expected=1; default:expected=0; endcase
-                            if (!bp.adParValid || bp.ad!=expected || bp.par!=oddParity32P1(expected)) begin $display("FAIL CQ beat=%0d expect=%08x got=%08x",peerBeat,expected,bp.ad);$finish(1); end
+                            if (!bp.adParValid || bp.ad!=expected || bp.parity!=oddParity32P1(expected)) begin $display("FAIL CQ beat=%0d expect=%08x got=%08x",peerBeat,expected,bp.ad);$finish(1); end
                         end
                         dataResponsePending<=True;
                     end
