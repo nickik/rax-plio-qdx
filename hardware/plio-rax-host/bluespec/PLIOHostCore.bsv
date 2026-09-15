@@ -2,6 +2,7 @@ package PLIOHostCore;
 
 import Vector::*;
 import RegFile::*;
+import CReg::*;
 import QLITypes::*;
 import QICInterfaces::*;
 import PLIOWorkerHost::*;
@@ -40,16 +41,13 @@ interface PLIOHostCoreIfc;
         Bool memoryRequestReady,
         Bool memoryResponseValid, Bool memoryFault, Bool memoryReadDataValid, Bit#(32) memoryReadData,
         Bool reset);
-
     method Bool memoryRequestValid;
     method Bool memoryWrite;
     method Bit#(32) memoryAddress;
     method Bit#(32) memoryWriteData;
-
     method Action bindDma(Bit#(3) slot, Bit#(4) channel, Bit#(32) base, Bit#(25) length, Bool deviceRead, Bool deviceWrite);
     method Action revokeDma(Bit#(3) slot, Bit#(4) channel);
     method Bit#(4) dmaGeneration(Bit#(3) slot, Bit#(4) channel);
-
     method Bool workerCompletionValid;
     method HostWorkerCompletion workerCompletion;
     method Action clearWorkerCompletion;
@@ -57,7 +55,6 @@ interface PLIOHostCoreIfc;
     method DmaM3Status dmaCompletionStatus;
     method Bit#(5) dmaCompletionBeats;
     method Action clearDmaCompletion;
-
     method Bool notificationPending(Bit#(3) slot, Bit#(2) channel);
     method Bit#(32) notificationPayload(Bit#(3) slot, Bit#(2) channel);
     method Action setNotificationConfig(Bit#(3) slot, Bit#(2) channel, Bool enabled, Bool masked, Bit#(4) classCode);
@@ -67,7 +64,6 @@ interface PLIOHostCoreIfc;
     method Bit#(32) claimPayload;
     method Bit#(4) claimClass;
     method Action claimFirst;
-
     method PLIOHostCoreRole debugRole;
     method Bool debugActiveSlotValid;
     method Bit#(3) debugActiveSlot;
@@ -92,7 +88,7 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     Reg#(HostWorkerRequest) workerReq <- mkReg(HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 });
     Reg#(HostWorkerState) workerState <- mkReg(HostIdle);
     Reg#(Bit#(9)) workerWait <- mkReg(0);
-    Reg#(Bool) workerCompletionPending <- mkReg(False);
+    Vector#(2, Reg#(Bool)) workerCompletionPending <- mkCReg(2, False);
     Reg#(HostWorkerCompletion) workerCompletionReg <- mkReg(HostWorkerCompletion { status:HostSuccess, data:0 });
 
     Reg#(Bit#(2)) notificationChannel <- mkReg(0);
@@ -116,7 +112,7 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     Reg#(Bit#(32)) dmaPendingRead <- mkReg(0);
     Reg#(Bit#(9)) dmaWait <- mkReg(0);
     Reg#(Bool) dmaRevokePending <- mkReg(False);
-    Reg#(Bool) dmaCompletionPending <- mkReg(False);
+    Vector#(2, Reg#(Bool)) dmaCompletionPending <- mkCReg(2, False);
     Reg#(DmaM3Status) dmaCompletionStatusReg <- mkReg(DmaOk);
     Reg#(Bit#(5)) dmaCompletionBeatsReg <- mkReg(0);
     Reg#(Bool) dmaAddressPending <- mkReg(False);
@@ -135,7 +131,7 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
 
     function Action finishDma(DmaM3Status status, Bit#(5) beats);
         action
-            dmaCompletionPending <= True;
+            dmaCompletionPending[0] <= True;
             dmaCompletionStatusReg <= status;
             dmaCompletionBeatsReg <= beats;
             dmaState <= DmaIdle;
@@ -173,14 +169,8 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                 CoreGrant: begin
                     outs[activeSlot].grant = True;
                     PlioOut c = cards[activeSlot];
-                    if (dmaAddressPending) begin
-                        if (dmaAddressValid) outs[activeSlot].ack = True;
-                        else outs[activeSlot].err = True;
-                    end
-                    else if (c.addressStrobe && c.spaceValid && c.space == PlioController) begin
-                        NotificationAddressCheck n=checkNotificationAddress(c);
-                        if (n.valid) outs[activeSlot].ack=True; else outs[activeSlot].err=True;
-                    end
+                    if (dmaAddressPending) begin if (dmaAddressValid) outs[activeSlot].ack = True; else outs[activeSlot].err = True; end
+                    else if (c.addressStrobe && c.spaceValid && c.space == PlioController) begin NotificationAddressCheck n=checkNotificationAddress(c); if (n.valid) outs[activeSlot].ack=True; else outs[activeSlot].err=True; end
                     else if (c.addressStrobe && !(c.spaceValid && c.space == PlioHostDma)) outs[activeSlot].err=True;
                     else if (waitCycles==255) outs[activeSlot].err=True;
                 end
@@ -194,7 +184,7 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                     outs[activeSlot].grant=True;
                     PlioOut c=cards[activeSlot];
                     if (writeAckPending) outs[activeSlot].ack=True;
-                    else if (dmaCompletionPending && dmaCompletionStatusReg != DmaOk) outs[activeSlot].err=True;
+                    else if (dmaCompletionPending[0] && dmaCompletionStatusReg != DmaOk) outs[activeSlot].err=True;
                     else if (dmaState==DmaReadReady && c.dataStrobe) begin
                         outs[activeSlot].ack=True; outs[activeSlot].adValid=True; outs[activeSlot].ad=dmaPendingRead;
                         outs[activeSlot].parValid=True; outs[activeSlot].parity=oddParity32M3(dmaPendingRead);
@@ -213,17 +203,16 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
         Bool reset);
         action
             if (reset) begin
-                if (role==CoreWorker) begin workerCompletionPending<=True; workerCompletionReg<=HostWorkerCompletion{status:HostReset,data:0}; end
+                if (role==CoreWorker) begin workerCompletionPending[0]<=True; workerCompletionReg<=HostWorkerCompletion{status:HostReset,data:0}; end
                 if (role==CoreDma || dmaState!=DmaIdle) finishDma(DmaReset,dmaAcknowledged);
                 role<=CoreIdle; activeSlot<=0; cursor<=0; waitCycles<=0; workerState<=HostIdle; workerWait<=0; queuedWorkerValid<=False;
                 notificationPendingBits<=0; dmaAddressPending<=False; writeAckPending<=False; faultValid<=False;
             end
             else begin
                 if (workerValid && !queuedWorkerValid) begin queuedWorker<=workerRequest; queuedWorkerValid<=True; end
-
                 case (role)
                     CoreIdle: begin
-                        if (queuedWorkerValid && !workerCompletionPending) begin
+                        if (queuedWorkerValid && !workerCompletionPending[0]) begin
                             if (hostRequestValid(queuedWorker)) begin workerReq<=queuedWorker; activeSlot<=queuedWorker.slot; workerState<=HostAddress; workerWait<=0; role<=CoreWorker; end
                             queuedWorkerValid<=False;
                         end
@@ -234,22 +223,22 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                     end
                     CoreWorker: begin
                         PlioOut c=cards[activeSlot];
-                        if (c.err) begin workerCompletionPending<=True;workerCompletionReg<=HostWorkerCompletion{status:HostBusError,data:0};workerState<=HostIdle;role<=CoreIdle;workerWait<=0; end
+                        if (c.err) begin workerCompletionPending[0]<=True;workerCompletionReg<=HostWorkerCompletion{status:HostBusError,data:0};workerState<=HostIdle;role<=CoreIdle;workerWait<=0; end
                         else if (workerState==HostAddress && c.ack) begin workerState<=HostData;workerWait<=0; end
                         else if (workerState==HostData && c.ack) begin
                             if (workerReq.write) workerCompletionReg<=HostWorkerCompletion{status:HostSuccess,data:0};
                             else if(c.adValid&&c.parValid&&hostParityMatches(c.ad,c.parity,hostByteEnable(workerReq))) workerCompletionReg<=HostWorkerCompletion{status:HostSuccess,data:hostExtractReadData(workerReq,c.ad)};
                             else workerCompletionReg<=HostWorkerCompletion{status:HostParityError,data:0};
-                            workerCompletionPending<=True;workerState<=HostIdle;role<=CoreIdle;workerWait<=0;
+                            workerCompletionPending[0]<=True;workerState<=HostIdle;role<=CoreIdle;workerWait<=0;
                         end
-                        else if(workerWait==255) begin workerCompletionPending<=True;workerCompletionReg<=HostWorkerCompletion{status:HostTimeout,data:0};workerState<=HostIdle;role<=CoreIdle;workerWait<=0; end
+                        else if(workerWait==255) begin workerCompletionPending[0]<=True;workerCompletionReg<=HostWorkerCompletion{status:HostTimeout,data:0};workerState<=HostIdle;role<=CoreIdle;workerWait<=0; end
                         else workerWait<=workerWait+1;
                     end
                     CoreGrant: begin
                         PlioOut c=cards[activeSlot];
                         if (dmaAddressPending) begin
                             if(dmaAddressValid) begin role<=CoreDma;waitCycles<=0;dmaAddressPending<=False; end
-                            else begin dmaCompletionPending<=True;dmaCompletionStatusReg<=DmaProtection;dmaCompletionBeatsReg<=0;faultValid<=True;faultReg<=CoreDmaProtection;finishCard(); end
+                            else begin dmaCompletionPending[0]<=True;dmaCompletionStatusReg<=DmaProtection;dmaCompletionBeatsReg<=0;faultValid<=True;faultReg<=CoreDmaProtection;finishCard(); end
                         end
                         else if(!c.request) begin faultValid<=True;faultReg<=CoreRequestDropped;finishCard(); end
                         else if(c.addressStrobe) begin
@@ -286,11 +275,8 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                     CoreDma: begin
                         PlioOut c=cards[activeSlot];
                         if(!c.request) begin finishDma(DmaReset,dmaAcknowledged);faultValid<=True;faultReg<=CoreRequestDropped;finishCard(); end
-                        else if(writeAckPending) begin
-                            if(dmaCompletionPending) finishCard();
-                            else writeAckPending<=False;
-                        end
-                        else if(dmaCompletionPending&&dmaCompletionStatusReg!=DmaOk) begin
+                        else if(writeAckPending) begin if(dmaCompletionPending[0]) finishCard(); else writeAckPending<=False; end
+                        else if(dmaCompletionPending[0]&&dmaCompletionStatusReg!=DmaOk) begin
                             case(dmaCompletionStatusReg) DmaProtection:faultReg<=CoreDmaProtection;DmaMemoryFault:faultReg<=CoreDmaMemory;DmaParity:faultReg<=CoreDmaParity;DmaTimeout:faultReg<=CoreTimeout;DmaReset:faultReg<=CoreDmaReset;DmaRevoked:faultReg<=CoreDmaRevoked;default:faultReg<=CoreNoFault;endcase
                             faultValid<=True;finishCard();
                         end
@@ -315,15 +301,9 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                                         else if(dmaDirectionRead) begin dmaPendingRead<=memoryReadData;dmaWait<=0;dmaState<=DmaReadReady; end
                                         else begin
                                             Bit#(5) nxt=dmaAcknowledged+1;
-                                            if(dmaRevokePending) begin
-                                                dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;writeAckPending<=True;finishDma(DmaRevoked,nxt);
-                                            end
-                                            else if(nxt==dmaTotal) begin
-                                                dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;writeAckPending<=True;finishDma(DmaOk,nxt);
-                                            end
-                                            else begin
-                                                dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;writeAckPending<=True;dmaState<=DmaAwaitWrite;
-                                            end
+                                            if(dmaRevokePending) begin dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;writeAckPending<=True;finishDma(DmaRevoked,nxt); end
+                                            else if(nxt==dmaTotal) begin dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;writeAckPending<=True;finishDma(DmaOk,nxt); end
+                                            else begin dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;writeAckPending<=True;dmaState<=DmaAwaitWrite; end
                                         end
                                     end
                                     else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);
@@ -332,20 +312,14 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                                 DmaReadReady: begin
                                     if(c.dataStrobe) begin
                                         Bit#(5) nxt=dmaAcknowledged+1;
-                                        if(dmaRevokePending) begin
-                                            dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;finishDma(DmaRevoked,nxt);
-                                        end
-                                        else if(nxt==dmaTotal) begin
-                                            dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;finishDma(DmaOk,nxt);finishCard();
-                                        end
-                                        else begin
-                                            dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;dmaState<=DmaMemRequest;
-                                        end
+                                        if(dmaRevokePending) begin dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;finishDma(DmaRevoked,nxt); end
+                                        else if(nxt==dmaTotal) begin dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;finishDma(DmaOk,nxt);finishCard(); end
+                                        else begin dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;dmaState<=DmaMemRequest; end
                                     end
                                     else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);
                                     else dmaWait<=dmaWait+1;
                                 end
-                                DmaIdle: begin if(dmaCompletionPending&&dmaCompletionStatusReg==DmaOk)finishCard(); end
+                                DmaIdle: begin if(dmaCompletionPending[0]&&dmaCompletionStatusReg==DmaOk)finishCard(); end
                             endcase
                         end
                     end
@@ -361,18 +335,18 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
 
     method Action bindDma(Bit#(3) slot,Bit#(4) channel,Bit#(32) base,Bit#(25) length,Bool deviceRead,Bool deviceWrite);
         Bit#(7) idx={slot,channel};Bit#(128) mark=128'h1<<idx;Bool activeSame=role==CoreDma&&slot==activeSlot&&channel==dmaChannel;
-        if(length!=0&&length<=25'h1000000&&base[1:0]==0&&!activeSame&&!dmaCompletionPending)begin Bit#(4) gen=0;if((capEverMask&mark)!=0)gen=caps.sub(idx).generation+1;caps.upd(idx,DmaCapability{base:base,length:length,deviceRead:deviceRead,deviceWrite:deviceWrite,generation:gen});capValidMask<=capValidMask|mark;capEverMask<=capEverMask|mark;end
+        if(length!=0&&length<=25'h1000000&&base[1:0]==0&&!activeSame&&!dmaCompletionPending[0])begin Bit#(4) gen=0;if((capEverMask&mark)!=0)gen=caps.sub(idx).generation+1;caps.upd(idx,DmaCapability{base:base,length:length,deviceRead:deviceRead,deviceWrite:deviceWrite,generation:gen});capValidMask<=capValidMask|mark;capEverMask<=capEverMask|mark;end
     endmethod
     method Action revokeDma(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};Bit#(128)mark=128'h1<<idx;capValidMask<=capValidMask&~mark;if(role==CoreDma&&slot==activeSlot&&channel==dmaChannel)dmaRevokePending<=True;endmethod
     method Bit#(4) dmaGeneration(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};Bit#(128)mark=128'h1<<idx;return((capEverMask&mark)!=0)?caps.sub(idx).generation:0;endmethod
 
-    method Bool workerCompletionValid=workerCompletionPending;
+    method Bool workerCompletionValid=workerCompletionPending[0];
     method HostWorkerCompletion workerCompletion=workerCompletionReg;
-    method Action clearWorkerCompletion;workerCompletionPending<=False;endmethod
-    method Bool dmaCompletionValid=dmaCompletionPending;
+    method Action clearWorkerCompletion;workerCompletionPending[1]<=False;endmethod
+    method Bool dmaCompletionValid=dmaCompletionPending[0];
     method DmaM3Status dmaCompletionStatus=dmaCompletionStatusReg;
     method Bit#(5) dmaCompletionBeats=dmaCompletionBeatsReg;
-    method Action clearDmaCompletion;dmaCompletionPending<=False;endmethod
+    method Action clearDmaCompletion;dmaCompletionPending[1]<=False;endmethod
 
     method Bool notificationPending(Bit#(3) slot,Bit#(2) channel);Bit#(5)idx={slot,channel};return unpack(notificationPendingBits[idx]);endmethod
     method Bit#(32) notificationPayload(Bit#(3) slot,Bit#(2) channel)=notificationPayloadFile.sub({slot,channel});
