@@ -4,12 +4,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build/m4.5-host-card"
 SEARCH="+:$ROOT/qli/bluespec:$ROOT/qli16/bluespec:$ROOT/qic/bluespec:$ROOT/plio-tx/bluespec:$ROOT/testbench/bluespec:$ROOT/naked-card/bluespec:$ROOT/qdx-a/bluespec:$ROOT/qdx-a-card/bluespec:$ROOT/qdx-b/bluespec:$ROOT/qdx-b-card/bluespec:$ROOT/plio-rax-host/bluespec:$ROOT/m4.5/bluespec"
 STACK=(+RTS -K64m -RTS)
-
-# Preserve the independently verified contracts before testing their direct composition.
-bash "$ROOT/scripts/test-plio-host-m4.sh"
-bash "$ROOT/scripts/test-qdx-a-card.sh"
-bash "$ROOT/scripts/test-qdx-b.sh"
-
 rm -rf "$BUILD"; mkdir -p "$BUILD"
 run_tb() {
   local top="$1" src="$2" tag="$3" dir="$BUILD/$tag"
@@ -22,14 +16,16 @@ run_tb() {
 
 echo '== M4.5 NakedCard physical host/card compatibility =='
 run_tb mkTbPLIOHostNakedIntegration "$ROOT/m4.5/bluespec/TbPLIOHostNakedIntegration.bsv" naked
-
 echo '== M4.5 QDX-A physical host/card compatibility =='
 run_tb mkTbPLIOHostQDXAIntegration "$ROOT/m4.5/bluespec/TbPLIOHostQDXAIntegration.bsv" qdxa
-
 echo '== M4.5 QDX-B full host/card transaction =='
 run_tb mkTbPLIOHostQDXBIntegration "$ROOT/m4.5/bluespec/TbPLIOHostQDXBIntegration.bsv" qdxb
 
 grep -q 'event=end_to_end|sq_dma=1|cq_dma=1|notify=1|cq_exact=1' "$BUILD/qdxa/run.log"
 grep -q 'event=end_to_end|sq_dma=1|payload_dma=1|cq_dma=1|notify=1|durable=1|flush=1' "$BUILD/qdxb/run.log"
 
+# Only after direct composition is green, preserve all independently verified contracts.
+bash "$ROOT/scripts/test-plio-host-m4.sh"
+bash "$ROOT/scripts/test-qdx-a-card.sh"
+bash "$ROOT/scripts/test-qdx-b.sh"
 echo 'PASS M4.5 PLIOHostCore physical NakedCard/QDX-A/QDX-B integration gate'
