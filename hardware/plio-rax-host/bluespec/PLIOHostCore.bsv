@@ -274,7 +274,7 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                     CoreDma: begin
                         PlioOut c=cards[activeSlot];
                         if(!c.request) begin finishDma(DmaReset,dmaAcknowledged);faultValid<=True;faultReg<=CoreRequestDropped;finishCard(); end
-                        else if(writeAckPending) begin if(dmaState==DmaIdle || dmaCompletionPending[0]) finishCard(); else writeAckPending<=False; end
+                        else if(writeAckPending) begin if(dmaState==DmaIdle) finishCard(); else writeAckPending<=False; end
                         else if(dmaCompletionPending[0]&&dmaCompletionStatusReg!=DmaOk) begin
                             case(dmaCompletionStatusReg) DmaProtection:faultReg<=CoreDmaProtection;DmaMemoryFault:faultReg<=CoreDmaMemory;DmaParity:faultReg<=CoreDmaParity;DmaTimeout:faultReg<=CoreTimeout;DmaReset:faultReg<=CoreDmaReset;DmaRevoked:faultReg<=CoreDmaRevoked;default:faultReg<=CoreNoFault;endcase
                             faultValid<=True;finishCard();
