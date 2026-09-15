@@ -72,9 +72,10 @@ function Bool isReadyState(QdxAState s);
 endfunction
 
 function Bit#(32) statusValue(QdxAState s);
-    if (s == ADisabled) return 0;
-    if (s == AFault) return 2;
-    return 1;
+    Bit#(32) value = 1;
+    if (s == ADisabled) value = 0;
+    else if (s == AFault) value = 2;
+    return value;
 endfunction
 
 function Bit#(32) errorValue(QdxAError e);
