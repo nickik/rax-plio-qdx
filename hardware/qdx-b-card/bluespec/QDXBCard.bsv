@@ -58,26 +58,6 @@ module mkQDXBCard(QDXBCardIfc);
     Reg#(BackplaneDrive) exposed <- mkReg(backplaneDriveDefault());
     Reg#(Bool) fault <- mkReg(False);
 
-    method Bool ready = phase==CardIdle && phy.ready;
-
-    method Action startCycle(PlioIn image) if (phase==CardIdle && phy.ready);
-        action
-            if (image.reset) begin
-                qic.advance(image,qliInDefault());
-                codec.resetCodec;
-                QliOut qr=qliOutDefault(); qr.reset=True;
-                QdxAEndpointOut eo=qdx.endpointPort(qr);
-                QdxAEndpointIn ei=qdxb.endpointDrive(eo);
-                qdx.advance(qr,ei);
-                qdxb.advance(eo,qdxAProfileDmaOutDefault());
-                phy.step(True);
-                exposed<=backplaneDriveDefault(); fault<=False; phase<=CardExpose;
-            end else begin
-                phy.startReceive(image); phase<=CardRx;
-            end
-        endaction
-    endmethod
-
     rule rxStep (phase==CardRx && !phy.receiveDone); phy.step(False); endrule
     rule rxDone (phase==CardRx && phy.receiveDone); sampledBus<=phy.toQic; phase<=CardLocalLoad; endrule
 
@@ -123,6 +103,26 @@ module mkQDXBCard(QDXBCardIfc);
         if (phy.protocolFault || codec.protocolFault) fault<=True;
         phy.finishCycle; phase<=CardExpose;
     endrule
+
+    method Bool ready = phase==CardIdle && phy.ready;
+
+    method Action startCycle(PlioIn image) if (phase==CardIdle && phy.ready);
+        action
+            if (image.reset) begin
+                qic.advance(image,qliInDefault());
+                codec.resetCodec;
+                QliOut qr=qliOutDefault(); qr.reset=True;
+                QdxAEndpointOut eo=qdx.endpointPort(qr);
+                QdxAEndpointIn ei=qdxb.endpointDrive(eo);
+                qdx.advance(qr,ei);
+                qdxb.advance(eo,qdxAProfileDmaOutDefault());
+                phy.step(True);
+                exposed<=backplaneDriveDefault(); fault<=False; phase<=CardExpose;
+            end else begin
+                phy.startReceive(image); phase<=CardRx;
+            end
+        endaction
+    endmethod
 
     method Bool cycleDone=phase==CardExpose;
     method BackplaneDrive backplane if (phase==CardExpose)=exposed;
