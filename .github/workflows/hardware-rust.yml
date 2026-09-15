@@ -2,6 +2,8 @@ name: Hardware Rust
 
 on:
   push:
+    branches:
+      - main
     paths:
       - 'hardware/**'
       - '.github/workflows/hardware-rust.yml'
@@ -12,12 +14,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: hardware-rust-${{ github.ref }}
+  group: hardware-rust-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
