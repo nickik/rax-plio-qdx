@@ -27,16 +27,12 @@ fn turn_qic_to_tx(tx: &mut PlioTx) {
 }
 
 fn through_tx(tx: &mut PlioTx, card: CardToBus) -> BackplaneDrive {
-    // A direction change is legal only through IDLE. Always provide it; this
-    // is deliberately stricter than relying on whatever the previous helper did.
     turn_qic_to_tx(tx);
 
     let has_control = card.space.is_some() || card.address_strobe || card.data_strobe;
     let has_data = card.ad.is_some() || card.par.is_some();
     let needs_drive = has_control || has_data;
 
-    // PLIO-TX needs a control image even for an AD/PAR-only worker read
-    // response because drive_ad_par is itself a latched subgroup enable.
     if needs_drive {
         let control = ControlImage {
             space: card.space.unwrap_or(Space::Worker) as u8,
@@ -144,7 +140,6 @@ fn worker_cycle(
 ) {
     let bus = physicalize_bus(tx, peer.bus_inputs());
     let device = dev.drive();
-
     let (_, qout) = qic.drive(&bus, &DeviceToQic::default());
     let local = link.cycle(bus.reset, qout, device);
     assert!(!local.protocol_fault);
@@ -170,6 +165,7 @@ fn naked_worker_read_write_and_error_cross_every_boundary() {
         if peer.worker_result().is_some() { break; }
     }
     assert_eq!(peer.worker_result(), Some(WorkerResult::Read(PLIO_ID)));
+    println!("NAKEDTRACE|v1|case=worker_read|ad=504c494f|ack=1|err=0");
 
     peer.start_worker_write(CFG_DEVICE_CONTROL, 0xf, 0x1234_5678);
     for _ in 0..64 {
@@ -177,6 +173,7 @@ fn naked_worker_read_write_and_error_cross_every_boundary() {
         if peer.worker_result().is_some() { break; }
     }
     assert_eq!(peer.worker_result(), Some(WorkerResult::WriteOk));
+    println!("NAKEDTRACE|v1|case=worker_write|ack=1|err=0");
 
     peer.start_worker_read(0x80, 0xf);
     for _ in 0..64 {
@@ -184,6 +181,7 @@ fn naked_worker_read_write_and_error_cross_every_boundary() {
         if peer.worker_result().is_some() { break; }
     }
     assert_eq!(peer.worker_result(), Some(WorkerResult::Error));
+    println!("NAKEDTRACE|v1|case=unsupported|ack=0|err=1");
 }
 
 fn run_dma(direction: DmaDirection, words: BurstWords, error_beat: Option<u8>, bad_parity_beat: Option<u8>) -> (DmaStatus, u8, Vec<u32>) {
@@ -203,7 +201,6 @@ fn run_dma(direction: DmaDirection, words: BurstWords, error_beat: Option<u8>, b
 
     for _cycle in 0..512 {
         let bus = physicalize_bus(&mut tx, peer.bus_inputs());
-
         let mut device = DeviceToQic::default();
         device.dma_completion_ready = true;
         if request_pending { device.dma_request = Some(request); }
@@ -232,7 +229,6 @@ fn run_dma(direction: DmaDirection, words: BurstWords, error_beat: Option<u8>, b
         let physical_card = card_from_backplane(through_tx(&mut tx, card));
         peer.clock(&physical_card);
         qic.clock(&bus, &local.to_qic);
-
         if final_status.is_some() { break; }
     }
 
@@ -246,11 +242,13 @@ fn both_dma_directions_and_all_burst_sizes_cross_qli16_and_plio_tx() {
         let (status, completed, _) = run_dma(DmaDirection::DeviceToHost, words, None, None);
         assert_eq!(status, DmaStatus::Ok);
         assert_eq!(completed, words.words());
+        println!("NAKEDTRACE|v1|case=d2h|words={}|status=0", words.words());
 
         let (status, completed, received) = run_dma(DmaDirection::HostToDevice, words, None, None);
         assert_eq!(status, DmaStatus::Ok);
         assert_eq!(completed, words.words());
         assert_eq!(received.len(), usize::from(words.words()));
+        println!("NAKEDTRACE|v1|case=h2d|words={}|status=0", words.words());
     }
 }
 
@@ -292,12 +290,12 @@ fn notification_request_and_completion_cross_same_physical_qli16_link() {
         let (card, _) = qic.drive(&bus, &local.to_qic);
         peer.clock(&card_from_backplane(through_tx(&mut tx, card)));
         qic.clock(&bus, &local.to_qic);
-
         if completed { break; }
     }
 
     assert!(completed, "QLI-16 Notification completion never returned to device");
     assert_eq!(peer.notifications(), &[2]);
+    println!("NAKEDTRACE|v1|case=notification|channel=2|ready=1");
 }
 
 #[test]
