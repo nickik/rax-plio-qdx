@@ -28,12 +28,12 @@ endfunction
 
 function Bit#(32) workAddress(Work w);
     case (w)
-        WSqBase: return REG_SQ_BASE;
-        WSqSize: return REG_SQ_SIZE;
-        WCqBase: return REG_CQ_BASE;
-        WCqSize: return REG_CQ_SIZE;
-        WControl: return REG_QDX_CONTROL;
-        WSqTail: return REG_SQ_TAIL;
+        WSqBase: return regSqBase;
+        WSqSize: return regSqSize;
+        WCqBase: return regCqBase;
+        WCqSize: return regCqSize;
+        WControl: return regQdxControl;
+        WSqTail: return regSqTail;
         default: return 0;
     endcase
 endfunction
@@ -82,7 +82,7 @@ function PlioIn workerBus(Work w, WorkerPhase p);
         b.adValid = True;
         b.ad = a;
         b.parValid = True;
-        b.par = oddParity32P1(a);
+        b.parity = oddParity32P1(a);
         b.spaceValid = True;
         b.space = PlioWorker;
         b.addressStrobe = True;
@@ -91,7 +91,7 @@ function PlioIn workerBus(Work w, WorkerPhase p);
         b.adValid = True;
         b.ad = d;
         b.parValid = True;
-        b.par = oddParity32P1(d);
+        b.parity = oddParity32P1(d);
         b.dataStrobe = True;
     end
     return b;
@@ -107,7 +107,7 @@ function PlioIn peerBus(PeerState p, Bool dmaRead, Bit#(5) beat);
             if (dmaRead) begin
                 Bit#(32) data = 32'ha000_0000 + zeroExtend(beat)*4;
                 b.adValid=True; b.ad=data;
-                b.parValid=True; b.par=oddParity32P1(data);
+                b.parValid=True; b.parity=oddParity32P1(data);
             end
         end
         PeerNotificationAddress: begin b.grant=True; b.ack=True; end
@@ -250,7 +250,7 @@ module mkTbQDXACard(Empty);
                                 2: expected=32'ha000_0018;
                                 default: expected=32'ha000_001c;
                             endcase
-                            if (!bp.adParValid || bp.ad != expected || bp.par != oddParity32P1(expected)) begin
+                            if (!bp.adParValid || bp.ad != expected || bp.parity != oddParity32P1(expected)) begin
                                 $display("FAIL CQ data beat=%0d expected=%08x got=%08x",peerBeat,expected,bp.ad);
                                 $finish(1);
                             end
