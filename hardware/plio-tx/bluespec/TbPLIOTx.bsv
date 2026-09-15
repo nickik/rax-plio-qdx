@@ -29,6 +29,11 @@ function PtiControlImage dataOnlyControl();
     };
 endfunction
 
+function Bool receiveControlDriveBitsClear(PtiToken token);
+    PtiControlImage image = unpackControl(ptiData(token));
+    return !image.driveAdPar && !image.driveControl;
+endfunction
+
 function QicPtiDrive qicStimulus(Bit#(8) s);
     QicPtiDrive q = qicPtiDriveDefault();
     case (s)
@@ -141,7 +146,8 @@ module mkTbPLIOTx(Empty);
 
         if (s == 8) begin
             if (!obs.rxValid || obs.rxToken.kind != PtiControl || ptiParity(obs.rxToken) != 0
-                || ptiData(obs.rxToken)[12:11] != 0 || !obs.sampleAck || !obs.sampleSelected || !obs.sampleGrant) begin
+                || !receiveControlDriveBitsClear(obs.rxToken)
+                || !obs.sampleAck || !obs.sampleSelected || !obs.sampleGrant) begin
                 $display("FAIL receive control/status");
                 $finish(1);
             end
