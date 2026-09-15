@@ -69,7 +69,7 @@ module mkPLIOQICPhase5(PLIOQICPhase5Ifc);
                         out.dataStrobe = True;
                     end
                 end
-                default: noAction;
+                default: begin end
             endcase
         end
         return out;
@@ -93,7 +93,7 @@ module mkPLIOQICPhase5(PLIOQICPhase5Ifc);
                     out.dmaCompletionValid = True;
                     out.dmaCompletion = completion;
                 end
-                default: noAction;
+                default: begin end
             endcase
         end
         return out;
