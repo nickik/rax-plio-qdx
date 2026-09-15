@@ -9,7 +9,7 @@ function PlioIn busStimulus(Bit#(16) c);
     PlioIn b = plioInDefault();
     if (c == 0 || c == 6 || c == 14 || c == 21 || c == 282 || c == 287)
         b.reset = True;
-    else if (c == 3 || c == 4 || c == 9 || c == 10 || c == 11
+    else if (c == 3 || c == 4 || c == 5 || c == 9 || c == 10 || c == 11
           || c == 17 || c == 18 || (c >= 24 && c <= 280)
           || (c >= 283 && c <= 286))
         b.grant = True;
