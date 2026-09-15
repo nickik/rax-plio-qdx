@@ -20,7 +20,7 @@ If the QIC itself sees every PLIO logical wire directly, the PLIO-facing signal 
 
 That leaves no credible local-device interface in a 64-pin package.
 
-Therefore PLIO-TX is more than an analog line driver but remains protocol-dumb: it contains the wide electrical transceivers, AD/parity latches, and the narrow multiplexing needed to connect the QIC to the backplane.
+Therefore PLIO-TX is more than an analog line driver but remains protocol-dumb: it contains the wide electrical transceivers, AD/parity latches, control latches, and narrow multiplexing needed to connect the QIC to the backplane.
 
 ## 64-pin QIC working budget
 
@@ -30,17 +30,24 @@ PTI v0.1 uses an 18-bit narrow datapath so one 32-bit data beat plus four parity
 
 | Function | Pins |
 |---|---:|
-| `PTD[17:0]` multiplexed data/parity path | 18 |
-| PTI kind/bank select | 2 |
-| PTI strobe/slot control | 1 |
-| PTI direction | 1 |
-| PTI ready/phase-complete | 1 |
-| manager-drive enable | 1 |
-| worker-response-drive enable | 1 |
+| `PTD[17:0]` bidirectional multiplexed data/parity path | 18 |
+| `PT_KIND[1:0]` token / receive-bank select | 2 |
+| `PT_STB` slot event | 1 |
+| `PT_DIR` PTD direction | 1 |
+| `TX_DRIVE` manager/shared-bus enable | 1 |
+| `RESP_DRIVE` worker-response/status direction | 1 |
+| bidirectional `PT_ACK`, `PT_ERR` | 2 |
 | direct/auxiliary `CLK`, `RESET`, `SEL`, `BG`, `BR` | 5 |
-| **PTI subtotal** | **30** |
+| **PTI subtotal** | **31** |
 
-The important change from the earlier 16-bit sketch is that parity travels with each halfword:
+There is deliberately no PTI READY pin. PLIO-TX is fixed-cadence at PLIO-5 and cannot backpressure QIC slot transfers.
+
+The two response/status pins close the earlier ambiguity between the PTI prose and package budget:
+
+- with `RESP_DRIVE=0`, PLIO-TX passes sampled backplane ACK/ERR toward QIC;
+- with `RESP_DRIVE=1`, QIC drives ACK/ERR through PLIO-TX toward the backplane.
+
+The important datapath choice remains that parity travels with each halfword:
 
 ```text
 slot A = AD[15:0]  + PAR[1:0]
@@ -73,15 +80,15 @@ Reset may use the board/card reset distribution and does not need to consume ano
 Working total:
 
 ```text
-PTI       30
+PTI       31
 QLI-16    22
 P/G/test  10
 ----------------
-TOTAL     62
-SPARE      2
+TOTAL     63
+SPARE      1
 ```
 
-This is tight but still fits the 64-pin target. The two spare pins are deliberately retained as engineering margin.
+This remains inside the 64-pin target without requiring an architectural READY/backpressure pin.
 
 ## PLIO-5 bandwidth
 
@@ -129,8 +136,10 @@ Thus neither narrow boundary throttles ideal PLIO-5 steady-state payload.
 ## Implementation consequences
 
 1. QLI remains a 32-bit semantic interface; QLI-16 is only an encoding.
-2. PTI is 18 bits because PLIO parity must cross the boundary without an extra slot.
-3. The QIC should contain one-word buffering at each narrow/wide boundary.
-4. Command/header state must be loaded before the payload-critical slots of an active burst.
-5. The first Bluespec QIC should be written against abstract PLIO/QLI interfaces; PTI and QLI-16 remain boundary adapters.
-6. The iCE40 implementation may run internally faster than 5 MHz, but the external PLIO protocol remains strictly PLIO-5.
+2. PTI is 18 bits because PLIO parity must cross the boundary without an extra data slot.
+3. `PT_KIND` doubles as a receive-bank select; `PT_DIR` determines who drives PTD.
+4. The QIC should contain one-word buffering at each narrow/wide boundary.
+5. Command/header/control state must be loaded before payload-critical slots of an active burst.
+6. ACK/ERR and SEL/BG remain observable without stealing either payload slot.
+7. The first Bluespec QIC remains written against abstract PLIO/QLI interfaces; PTI and QLI-16 stay boundary adapters.
+8. The iCE40 implementation may run internally faster than 5 MHz, but the external PLIO protocol remains strictly PLIO-5.
