@@ -87,7 +87,6 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     Reg#(Bool) faultValid <- mkReg(False);
     Reg#(PLIOHostCoreFault) faultReg <- mkReg(CoreNoFault);
 
-    // One-deep host-worker queue + the verified M1 phase semantics.
     Reg#(Bool) queuedWorkerValid <- mkReg(False);
     Reg#(HostWorkerRequest) queuedWorker <- mkReg(HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 });
     Reg#(HostWorkerRequest) workerReq <- mkReg(HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 });
@@ -96,7 +95,6 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     Reg#(Bool) workerCompletionPending <- mkReg(False);
     Reg#(HostWorkerCompletion) workerCompletionReg <- mkReg(HostWorkerCompletion { status:HostSuccess, data:0 });
 
-    // Notification state uses M2's validated address/data helpers.
     Reg#(Bit#(2)) notificationChannel <- mkReg(0);
     Reg#(Bit#(32)) notificationPendingBits <- mkReg(0);
     RegFile#(Bit#(5), Bit#(32)) notificationPayloadFile <- mkRegFileFull;
@@ -104,7 +102,6 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     Reg#(Bit#(32)) notificationMaskedBits <- mkReg(0);
     RegFile#(Bit#(5), Bit#(4)) notificationClassFile <- mkRegFileFull;
 
-    // Integrated M3 capability table and DMA machine.
     RegFile#(Bit#(7), DmaCapability) caps <- mkRegFileFull;
     Reg#(Bit#(128)) capValidMask <- mkReg(0);
     Reg#(Bit#(128)) capEverMask <- mkReg(0);
@@ -289,7 +286,10 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                     CoreDma: begin
                         PlioOut c=cards[activeSlot];
                         if(!c.request) begin finishDma(DmaReset,dmaAcknowledged);faultValid<=True;faultReg<=CoreRequestDropped;finishCard(); end
-                        else if(writeAckPending) begin writeAckPending<=False;if(dmaCompletionPending) finishCard(); end
+                        else if(writeAckPending) begin
+                            if(dmaCompletionPending) finishCard();
+                            else writeAckPending<=False;
+                        end
                         else if(dmaCompletionPending&&dmaCompletionStatusReg!=DmaOk) begin
                             case(dmaCompletionStatusReg) DmaProtection:faultReg<=CoreDmaProtection;DmaMemoryFault:faultReg<=CoreDmaMemory;DmaParity:faultReg<=CoreDmaParity;DmaTimeout:faultReg<=CoreTimeout;DmaReset:faultReg<=CoreDmaReset;DmaRevoked:faultReg<=CoreDmaRevoked;default:faultReg<=CoreNoFault;endcase
                             faultValid<=True;finishCard();
@@ -304,18 +304,46 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                                     end
                                     else if(dmaWait==255) finishDma(DmaTimeout,dmaAcknowledged); else dmaWait<=dmaWait+1;
                                 end
-                                DmaMemRequest: begin if(memoryRequestReady) begin dmaWait<=0;dmaState<=DmaMemResponse;end else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);else dmaWait<=dmaWait+1; end
+                                DmaMemRequest: begin
+                                    if(memoryRequestReady) begin dmaWait<=0;dmaState<=DmaMemResponse;end
+                                    else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);
+                                    else dmaWait<=dmaWait+1;
+                                end
                                 DmaMemResponse: begin
                                     if(memoryResponseValid) begin
                                         if(memoryFault || (dmaDirectionRead&&!memoryReadDataValid)) finishDma(DmaMemoryFault,dmaAcknowledged);
                                         else if(dmaDirectionRead) begin dmaPendingRead<=memoryReadData;dmaWait<=0;dmaState<=DmaReadReady; end
-                                        else begin Bit#(5) nxt=dmaAcknowledged+1;dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;writeAckPending<=True;if(dmaRevokePending)finishDma(DmaRevoked,nxt);else if(nxt==dmaTotal)finishDma(DmaOk,nxt);else dmaState<=DmaAwaitWrite; end
+                                        else begin
+                                            Bit#(5) nxt=dmaAcknowledged+1;
+                                            if(dmaRevokePending) begin
+                                                dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;writeAckPending<=True;finishDma(DmaRevoked,nxt);
+                                            end
+                                            else if(nxt==dmaTotal) begin
+                                                dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;writeAckPending<=True;finishDma(DmaOk,nxt);
+                                            end
+                                            else begin
+                                                dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;writeAckPending<=True;dmaState<=DmaAwaitWrite;
+                                            end
+                                        end
                                     end
-                                    else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);else dmaWait<=dmaWait+1;
+                                    else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);
+                                    else dmaWait<=dmaWait+1;
                                 end
                                 DmaReadReady: begin
-                                    if(c.dataStrobe) begin Bit#(5) nxt=dmaAcknowledged+1;dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;if(dmaRevokePending)finishDma(DmaRevoked,nxt);else if(nxt==dmaTotal)begin finishDma(DmaOk,nxt);finishCard();end else dmaState<=DmaMemRequest; end
-                                    else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);else dmaWait<=dmaWait+1;
+                                    if(c.dataStrobe) begin
+                                        Bit#(5) nxt=dmaAcknowledged+1;
+                                        if(dmaRevokePending) begin
+                                            dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;finishDma(DmaRevoked,nxt);
+                                        end
+                                        else if(nxt==dmaTotal) begin
+                                            dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;finishDma(DmaOk,nxt);finishCard();
+                                        end
+                                        else begin
+                                            dmaAcknowledged<=nxt;dmaPhysicalAddress<=dmaPhysicalAddress+4;dmaWait<=0;dmaState<=DmaMemRequest;
+                                        end
+                                    end
+                                    else if(dmaWait==255)finishDma(DmaTimeout,dmaAcknowledged);
+                                    else dmaWait<=dmaWait+1;
                                 end
                                 DmaIdle: begin if(dmaCompletionPending&&dmaCompletionStatusReg==DmaOk)finishCard(); end
                             endcase
