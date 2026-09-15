@@ -80,7 +80,7 @@ module mkPLIOQICPhase3(PLIOQICPhase3Ifc);
                         out.burst = BurstOne;
                     end
                 end
-                default: noAction;
+                default: begin end
             endcase
         end
         return out;
@@ -99,7 +99,7 @@ module mkPLIOQICPhase3(PLIOQICPhase3Ifc);
                     out.dmaCompletionValid = True;
                     out.dmaCompletion = heldCompletion;
                 end
-                default: noAction;
+                default: begin end
             endcase
         end
         return out;

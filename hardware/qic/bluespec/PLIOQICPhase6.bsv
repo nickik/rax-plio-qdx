@@ -70,7 +70,7 @@ module mkPLIOQICPhase6(PLIOQICPhase6Ifc);
                     end
                 end
                 QicRequestBusDmaPlaceholder: out.request = True;
-                default: noAction;
+                default: begin end
             endcase
         end
         return out;
@@ -90,7 +90,7 @@ module mkPLIOQICPhase6(PLIOQICPhase6Ifc);
                         && qli.notificationValid && qli.notification == request)
                         out.notificationReady = True;
                 end
-                default: noAction;
+                default: begin end
             endcase
         end
         return out;
