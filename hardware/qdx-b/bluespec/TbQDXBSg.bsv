@@ -62,8 +62,8 @@ module mkTbQDXBSg(Empty);
 
     rule step;
         QdxAEndpointOut q=qdxAEndpointOutDefault();
-        if (ts==SWrite) begin q.commandValid=True; q.command=mkSgCmd(OP_WRITE,32'h21,32'h8000); end
-        if (ts==SRead) begin q.commandValid=True; q.command=mkSgCmd(OP_READ,32'h22,32'h8100); end
+        if (ts==SWrite) begin q.commandValid=True; q.command=mkSgCmd(8'h11,32'h21,32'h8000); end
+        if (ts==SRead) begin q.commandValid=True; q.command=mkSgCmd(8'h10,32'h22,32'h8100); end
         if (ts==SWriteAck || ts==SReadAck) q.completionReady=True;
 
         QdxAEndpointIn e=ep.endpointDrive(q);
@@ -94,13 +94,13 @@ module mkTbQDXBSg(Empty);
         case (ts)
             SWrite:if (e.commandReady) ts<=SWriteRun;
             SWriteRun:if (e.completionValid) begin
-                if (e.completion[1][15:0]!=ST_SUCCESS || e.completion[2]!=1) begin $display("FAIL SG WRITE completion"); $finish(1); end
+                if (e.completion[1][15:0]!=stSuccess || e.completion[2]!=1) begin $display("FAIL SG WRITE completion"); $finish(1); end
                 ts<=SWriteAck;
             end
             SWriteAck:ts<=SRead;
             SRead:if (e.commandReady) begin readWords<=0; ts<=SReadRun; end
             SReadRun:if (e.completionValid) begin
-                if (e.completion[1][15:0]!=ST_SUCCESS || e.completion[2]!=1 || readWords!=128) begin $display("FAIL SG READ completion/word count"); $finish(1); end
+                if (e.completion[1][15:0]!=stSuccess || e.completion[2]!=1 || readWords!=128) begin $display("FAIL SG READ completion/word count"); $finish(1); end
                 ts<=SReadAck;
             end
             SReadAck:ts<=SDone;
