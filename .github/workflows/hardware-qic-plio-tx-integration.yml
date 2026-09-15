@@ -1,0 +1,28 @@
+name: Hardware QIC PLIO-TX Integration
+on:
+  push:
+    branches: [qic-plio-tx-integration]
+  pull_request:
+    paths:
+      - 'hardware/qic/**'
+      - 'hardware/pti/**'
+      - 'hardware/plio-tx/**'
+      - 'hardware/testbench/**'
+      - 'hardware/scripts/test-qic-plio-tx-integration.sh'
+      - '.github/workflows/hardware-qic-plio-tx-integration.yml'
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bluespec compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+          curl -L -o /tmp/bsc.tar.gz https://github.com/B-Lang-org/bsc/releases/download/2025.07/bsc-2025.07-linux-x86_64.tar.gz
+          mkdir -p /tmp/bsc
+          tar -xzf /tmp/bsc.tar.gz -C /tmp/bsc --strip-components=1
+          echo "/tmp/bsc/bin" >> "$GITHUB_PATH"
+      - name: Run complete QIC PTI PLIO-TX differential integration
+        run: bash hardware/scripts/test-qic-plio-tx-integration.sh
