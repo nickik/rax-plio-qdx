@@ -39,6 +39,7 @@ enum State {
 pub struct Qic {
     state: State,
     suspended: Option<ManagerWork>,
+    suspended_completion: Option<DmaCompletion>,
 }
 
 impl Default for Qic {
@@ -47,10 +48,12 @@ impl Default for Qic {
 
 impl Qic {
     pub const fn new() -> Self {
-        Self { state: State::Idle, suspended: None }
+        Self { state: State::Idle, suspended: None, suspended_completion: None }
     }
 
-    pub fn is_idle(&self) -> bool { self.state == State::Idle && self.suspended.is_none() }
+    pub fn is_idle(&self) -> bool {
+        self.state == State::Idle && self.suspended.is_none() && self.suspended_completion.is_none()
+    }
 
     pub fn drive(&self, bus: &BusToCard, device: &DeviceToQic) -> (CardToBus, QicToDevice) {
         let mut card = CardToBus::default();
@@ -166,7 +169,15 @@ impl Qic {
                     }
                 }
             }
-            State::DmaComplete { completion } => qli.dma_completion = Some(completion),
+            State::DmaComplete { completion } => {
+                qli.dma_completion = Some(completion);
+                // DMA completion is a local QLI handshake, not PLIO bus
+                // ownership.  The host may therefore select this card as a
+                // worker while the endpoint has not yet consumed completion.
+                if worker_address_cycle(bus) {
+                    if worker_address_valid(bus) { card.ack = true; } else { card.err = true; }
+                }
+            }
             State::NotificationAddress { request, wait } => {
                 card.request = true;
                 if bus.grant && !timed_out(wait) {
@@ -200,6 +211,7 @@ impl Qic {
         if bus.reset {
             self.state = State::Idle;
             self.suspended = None;
+            self.suspended_completion = None;
             return;
         }
 
@@ -218,6 +230,26 @@ impl Qic {
                         State::WorkerWriteData { address, byte_enable: bus.byte_enable, wait: 0 }
                     };
                 }
+                return;
+            }
+        }
+
+        // The PLIO manager transfer is already over in DmaComplete.  If the
+        // endpoint has not consumed its local completion yet, temporarily
+        // suspend that completion so a CPU worker access can use the physical
+        // bus and QLI link.  If completion is accepted in this same cycle,
+        // there is nothing to resume after the worker transaction.
+        if let State::DmaComplete { completion } = self.state {
+            if worker_address_cycle(bus) && worker_address_valid(bus) {
+                let address = bus.ad.unwrap_or(0);
+                if !device.dma_completion_ready {
+                    self.suspended_completion = Some(completion);
+                }
+                self.state = if bus.read {
+                    State::WorkerReadData { address, byte_enable: bus.byte_enable, wait: 0 }
+                } else {
+                    State::WorkerWriteData { address, byte_enable: bus.byte_enable, wait: 0 }
+                };
                 return;
             }
         }
@@ -465,7 +497,9 @@ impl Qic {
         };
 
         if self.state == State::Idle {
-            if let Some(work) = self.suspended.take() {
+            if let Some(completion) = self.suspended_completion.take() {
+                self.state = State::DmaComplete { completion };
+            } else if let Some(work) = self.suspended.take() {
                 self.state = State::RequestBus(work);
             }
         }
@@ -748,6 +782,30 @@ mod tests {
         assert_eq!(address.ad, Some(request.address));
         assert!(address.read);
         assert_eq!(address.burst, request.words);
+    }
+
+    #[test]
+    fn worker_read_does_not_drop_pending_dma_completion() {
+        let mut qic = Qic::new();
+        let completion = DmaCompletion { status: DmaStatus::Ok, words_completed: 4 };
+        qic.state = State::DmaComplete { completion };
+
+        let address_cycle = worker_read_address(0x13c);
+        let (card, local) = qic.drive(&address_cycle, &DeviceToQic::default());
+        assert!(card.ack);
+        assert_eq!(local.dma_completion, Some(completion));
+
+        qic.clock(&address_cycle, &DeviceToQic::default());
+        complete_worker_read(&mut qic, 0x13c, 0xcafe_babe);
+
+        let (_, local) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
+        assert_eq!(local.dma_completion, Some(completion));
+
+        qic.clock(
+            &BusToCard::default(),
+            &DeviceToQic { dma_completion_ready: true, ..DeviceToQic::default() },
+        );
+        assert!(qic.is_idle());
     }
 
     #[test]
