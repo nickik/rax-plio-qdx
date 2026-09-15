@@ -14,6 +14,7 @@ typedef enum {
     CardIdle,
     CardRx,
     CardLocalLoad,
+    CardLocalPreview,
     CardLocal0,
     CardLocal1,
     CardApply,
@@ -47,6 +48,7 @@ module mkQDXACard(QDXACardIfc);
 
     Reg#(QdxACardPhase) phase <- mkReg(CardIdle);
     Reg#(PlioIn) sampledBus <- mkReg(plioInDefault());
+    Reg#(QliOut) heldQicSemantic <- mkReg(qliOutDefault());
     Reg#(QliIn) heldQli <- mkReg(qliInDefault());
     Reg#(BackplaneDrive) exposed <- mkReg(backplaneDriveDefault());
     Reg#(Bool) fault <- mkReg(False);
@@ -63,16 +65,22 @@ module mkQDXACard(QDXACardIfc);
     rule loadLocal (phase == CardLocalLoad);
         PlioIn b = sampledBus;
 
-        // The QIC needs a combinational preview of device request validity in
-        // UIdle to generate QLI ready. This preview is NOT an accepted transfer
-        // and carries no payload around QLI-16. Actual handshakes below still
-        // occur only after the physical codec has serialized the message.
+        // QIC needs only a request-valid/ready preview while idle. Keep this
+        // preview in its own phase so the same combinational QDX-A method is
+        // not called both to produce the preview and consume its result.
+        // No transfer is accepted here and no payload bypasses QLI-16.
         QliOut emptyQic = qliOutDefault();
         emptyQic.reset = b.reset;
         QliIn devicePreview = qdx.qicPort(emptyQic);
         QliOut qicSemantic = qic.driveQli(b, devicePreview);
-        QliIn qdxSemantic = qdx.qicPort(qicSemantic);
 
+        heldQicSemantic <= qicSemantic;
+        phase <= CardLocalPreview;
+    endrule
+
+    rule loadPhysicalLocal (phase == CardLocalPreview);
+        QliOut qicSemantic = heldQicSemantic;
+        QliIn qdxSemantic = qdx.qicPort(qicSemantic);
         qliCodec.load(qicSemantic, qdxSemantic);
         phase <= CardLocal0;
     endrule
