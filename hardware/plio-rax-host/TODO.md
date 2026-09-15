@@ -9,73 +9,166 @@ Goal: build a production-quality PLIO host adapter in Rust and Bluespec, startin
 - Define a host-independent `PLIOHostCore` contract for one PLIO segment with up to eight slots.
 - Define explicit CPU/host worker request and completion types for naturally aligned 8/16/32-bit MMIO.
 - Define cycle-level PLIO bus input/output images using the canonical `plio-logical` types.
-- Define a narrow asynchronous host-memory request/response interface suitable for later DMA:
-  - aligned 32-bit physical reads/writes;
-  - ready/valid backpressure;
-  - explicit completion/fault;
-  - no knowledge of cache line width or memory technology.
-- Preserve `TestPeer` as the behavioral oracle for worker address/data sequencing, waits, parity, ACK/ERR handling, arbitration transaction boundaries, DMA phase sequencing, and notifications.
-- Add deterministic `PLIOHOSTTRACE|v1` debug records covering every externally visible state transition.
-- Document invariants:
-  - worker address/control image remains stable through wait states;
-  - worker write data remains stable through wait states;
-  - worker read data is accepted only with valid parity;
-  - one host worker transaction at a time in the first implementation;
-  - manager grants are exactly one transaction;
-  - reset cancels all in-flight host work and tri-states outputs;
-  - no RAX physical address appears on the PLIO backplane.
-- Add oracle tests that exercise worker read/write success, waits, ERR, bad read parity, reset during address/data, and all transfer widths.
+- Define a narrow asynchronous host-memory request/response interface suitable for later DMA.
+- Preserve `TestPeer` as the behavioral oracle.
+- Add deterministic `PLIOHOSTTRACE|v1` debug records.
 
 ## M1 — Rust worker-MMIO host engine
 
 **Status: complete and verified with exact Rust↔Bluesim differential.**
 
-- Implement production Rust `WorkerMmioEngine` from the frozen M0 contract.
-- Support host-issued 8-, 16-, and 32-bit naturally aligned worker reads and writes.
-- Translate `(slot, slot_offset)` to PLIO `SPACE=WORKER`, slot select, address, parity, byte-enable, `BLEN=1` bus cycles.
-- Implement explicit states for idle, worker address, worker data, completion, and abort/reset.
-- Hold address/control and write data exactly stable while the card inserts wait states.
-- Validate read-data parity only on selected byte lanes.
-- Convert card `ERR` or read parity failure into typed host errors.
-- Bound address/data wait states with the PLIO 256-clock timeout.
-- Add detailed debug snapshots plus `PLIOHOSTTRACE|v1` records for request, address wait/ack, data wait/ack, read data, error, timeout, reset, and completion.
-- Keep the engine host-profile-independent: requests carry slot + slot-relative offset, not RAX CPU physical addresses.
-- Add a minimal Bluespec worker-MMIO engine/harness with the same state semantics so M1 can already exact-diff Rust vs Bluesim for worker transactions; full `PLIOHostCore` composition remains M4.
-- Differential scenarios must include read/write success, address wait, data wait, ERR in either phase, bad read parity, timeout, and reset cancellation.
+- Worker reads/writes for 8/16/32-bit accesses.
+- Address/data wait-state handling, parity, ACK/ERR, timeout, reset.
+- Stable bus output while stalled.
+- Deterministic exact Rust↔Bluesim trace verification.
 
 ## M2 — Arbitration + notifications
 
 **Status: complete and verified with exact Rust↔Bluesim differential.**
 
-- Implement rotating round-robin bus-manager arbitration across eight request lines.
-- Grant exactly one transaction at a time and withdraw grant at transaction completion/fault/timeout.
-- Implement controller-local PLIO Notification address/data handling for four channels per slot.
-- Record pending notification state, payload/data if required by the host profile, enable/mask/class metadata, and deterministic claim order.
-- Add fairness, repeated-request, backpressure, notification error, reset, and multi-slot tests.
-- Keep one-hot grant state, rotating cursor, wait counter, typed fault state, per-slot grant counters, notification pending/payload/config state, and claim state observable through debug/test interfaces.
-- Exact differential scenarios cover round-robin order, repeated requests, data backpressure, address/data parity faults, 256-cycle timeout, reset cancellation, and deterministic claim ordering.
+- Rotating round-robin arbitration across eight slots.
+- One grant / one transaction semantics.
+- Four notification channels per slot.
+- Pending/payload/enable/mask/class handling.
+- Backpressure, parity/error, timeout, reset and deterministic claim order.
 
 ## M3 — DMA capability table + asynchronous memory port
 
-- Implement 8 slots × 16 DMA capability channels.
-- Capability fields: host physical base, length, device-read/device-write permissions, generation, valid.
-- Implement privileged bind/revoke semantics and active-burst interlock.
-- Validate complete DMA burst extent before address ACK.
-- Translate PLIO DMA handle `(channel,generation,offset)` to host physical address only inside the host core.
-- Implement one 32-bit asynchronous memory request per acknowledged PLIO beat.
-- Memory stalls become PLIO wait states.
-- For device→host DMA, ACK a beat only after the memory write is accepted/completed according to the frozen memory-port contract.
-- For host→device DMA, obtain memory data before presenting PLIO read data/parity/ACK.
-- Preserve exact partial progress on memory fault, bus error, parity fault, timeout, reset, and revoke.
-- Test all burst sizes 1/4/8/16 and both directions.
+**Status: complete and verified with exact Rust↔Bluesim differential.**
 
-## M4 — Bluespec `PLIOHostCore`, exact Rust↔Bluesim differential
+- 8 slots × 16 DMA capability channels.
+- Capability base, length, permissions, generation and validity.
+- Complete-burst validation before transfer.
+- PLIO `(channel,generation,offset)` handle translation.
+- Asynchronous 32-bit host-memory request/response port.
+- Both DMA directions and burst sizes 1/4/8/16.
+- Memory backpressure and faults.
+- Parity, timeout, reset, revoke and partial-progress semantics.
+- Standalone synthesizable `mkPLIOHostDmaM3` RTL generation.
 
-- Implement the complete host-independent core in Bluespec using the same frozen interfaces and states as Rust.
-- Cover worker engine, arbitration, notifications, DMA table, memory port, timeout/fault accounting, and reset.
-- Generate exact ordered `PLIOHOSTTRACE|v1` traces from Rust and Bluesim.
-- Differential-test deterministic and seeded randomized sequences.
-- Generate standalone synthesizable Verilog.
+## M4 — Integrated `PLIOHostCore`
+
+**Status: planned on branch `plio-host-adapter-m4`; not yet implemented.**
+
+M4 combines the independently verified M1/M2/M3 engines into the actual host-independent PLIO bus controller. There must be exactly one owner of the physical PLIO output image each cycle and one explicit scheduler deciding whether the host is acting as worker, bus manager for a card transaction, DMA target/source, or idle.
+
+### M4a — Freeze the integrated scheduling contract
+
+- Define the Rust `PLIOHostCore` top-level API before composing implementations.
+- Inputs must include:
+  - current physical PLIO card/backplane input image;
+  - eight card request lines;
+  - optional host worker request;
+  - host-memory request readiness / response;
+  - reset.
+- Outputs must include:
+  - one canonical PLIO host/backplane drive image;
+  - optional worker completion;
+  - optional host-memory request;
+  - notification-pending summary / claim information;
+  - typed host fault/completion state;
+  - detailed debug snapshot.
+- Define scheduler priority explicitly and identically in Rust and Bluespec.
+- Proposed initial priority:
+  1. reset / abort cleanup;
+  2. finish an already-active physical PLIO transaction;
+  3. service an already-active DMA memory beat;
+  4. accept/advance a host worker operation;
+  5. arbitrate a requesting card;
+  6. idle.
+- A started transaction cannot be preempted by a new worker request or another card request.
+- Remove the remaining M3 public-method scheduler ambiguity by placing M3 behind the integrated core scheduler instead of allowing unrelated action methods to fire concurrently.
+- Freeze debug ownership fields: active role, active slot, PLIO phase, DMA phase, memory-port phase, arbitration cursor, wait counter, completion/fault.
+
+### M4b — Rust `PLIOHostCore` composition
+
+- Compose the existing M1 worker, M2 manager/notification and M3 DMA capability/memory semantics behind one Rust core.
+- Reuse M1/M2/M3 logic rather than creating a second independent implementation.
+- Implement one `step()`/cycle transition that computes the only physical PLIO output image.
+- Card-request arbitration must feed either notification handling or DMA transaction handling according to the actual controller-space address phase received from the card.
+- Host worker operations must coexist correctly with card-originated manager transactions.
+- DMA capability lookup must happen before acknowledging the device DMA address phase.
+- Memory stalls must stall only the active DMA transaction, not corrupt worker or arbitration state.
+- Preserve exact M1/M2/M3 timeout and partial-progress rules.
+- Add integrated invariants:
+  - never more than one PLIO driver owner;
+  - never grant two slots simultaneously;
+  - no DMA ACK before capability validation;
+  - no device→host DMA beat ACK before corresponding memory write completion;
+  - no host→device data beat before memory read completion;
+  - worker bus image remains stable while stalled;
+  - reset leaves bus tri-stated and no stale completion appears.
+
+### M4c — Bluespec `mkPLIOHostCore`
+
+- Build the synthesizable Bluespec top from the verified M1/M2/M3 blocks or shared extracted logic.
+- Introduce one explicit top-level scheduler/arbiter for all host-side bus ownership.
+- Do not rely on rule-order shadowing to resolve ownership.
+- Eliminate/scope the M3 same-cycle action warnings through structural composition rather than warning suppression.
+- Expose the same logical top-level interfaces and debug state as Rust.
+- Ensure all host outputs are deterministic and tri-stated when idle/reset.
+- Generate standalone `mkPLIOHostCore.v`.
+
+### M4d — Integrated deterministic differential tests
+
+Create `PLIOHOSTCORETRACE|v1` and exact-diff Rust vs Bluesim.
+
+Mandatory scenarios:
+
+1. host worker read while no card requests;
+2. host worker write with address/data waits;
+3. card request arriving during an active worker operation waits until worker completion;
+4. two card requests demonstrate rotating round-robin grant order;
+5. notification transaction end-to-end through the integrated manager;
+6. device→host DMA burst through capability validation and asynchronous memory writes;
+7. host→device DMA burst through asynchronous memory reads;
+8. memory backpressure during DMA;
+9. notification immediately followed by DMA from the same slot;
+10. worker request queued while DMA is active;
+11. invalid/stale DMA generation rejected before transfer;
+12. permission/range failure;
+13. PLIO parity error during DMA;
+14. host-memory fault after partial DMA progress;
+15. exact 256-cycle timeout in each applicable integrated phase;
+16. reset during worker address/data;
+17. reset during grant/address phase;
+18. reset during DMA memory wait;
+19. revoke during active DMA;
+20. mixed multi-slot sequence proving no stale grant/completion/state leakage.
+
+For every scenario compare at least:
+- physical bus drive/phase ordering where deterministic;
+- selected/granted slot;
+- worker result;
+- DMA completion status and acknowledged beat count;
+- host-memory addresses/data/direction;
+- notification pending/payload;
+- arbitration cursor;
+- final idle/debug state.
+
+### M4e — Seeded stress/conformance
+
+- Add deterministic seeded mixed worker/card/DMA/notification sequences.
+- Use bounded random wait states on both PLIO and memory sides.
+- Randomly insert legal card requests, notifications, DMA bursts and worker accesses.
+- Compare Rust and Bluesim after every semantic event and at final state.
+- Keep failures reproducible by printing seed, cycle, active role, slot, PLIO phase and memory phase.
+- Include assertions for one-hot grant, single bus owner, capability bounds and no ACK-before-memory-completion.
+
+### M4f — M4 acceptance gate
+
+M4 is complete only when all of the following pass on the same commit:
+
+- existing M1 Rust↔Bluesim exact differential;
+- existing M2 Rust↔Bluesim exact differential;
+- existing M3 Rust↔Bluesim exact differential;
+- integrated deterministic `PLIOHOSTCORETRACE|v1` exact differential;
+- seeded integrated stress differential;
+- standalone `mkPLIOWorkerHost.v` generation;
+- standalone `mkPLIOHostManagerM2.v` generation;
+- standalone `mkPLIOHostDmaM3.v` generation;
+- standalone integrated `mkPLIOHostCore.v` generation;
+- no unresolved Bluespec scheduling/ownership warnings in `mkPLIOHostCore` that can change externally visible behavior.
 
 ## M5 — RAX CPU/MMIO/CSR attachment
 
@@ -110,6 +203,6 @@ Goal: build a production-quality PLIO host adapter in Rust and Bluespec, startin
 - Run identical CPU-visible scenarios against both and compare MMIO results, host memory, DMA progress, notifications, errors, and device-visible state at semantic boundaries.
 - Once hardware mode has sufficient coverage and performance, retire the old simplified LightingSimulation PLIO path.
 
-## Scope rule for the current implementation branch
+## Scope rule for `plio-host-adapter-m4`
 
-M0, M1, and M2 are implemented and verified on this branch. **Do not start M3 or later milestones until explicitly requested.** The full integrated `PLIOHostCore` remains an M4 deliverable; the pre-M4 Bluespec modules are deliberately isolated worker-MMIO and manager/arbitration/notification blocks used for exact Rust↔Bluesim verification.
+Implement M4 only. Do not start the RAX CPU/CSR attachment (M5), concrete RAX memory-controller bridge (M6), or full QDX integration (M7) until M4's integrated Rust↔Bluesim gate is fully green.
