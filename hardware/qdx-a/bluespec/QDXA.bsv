@@ -201,7 +201,7 @@ module mkQDXA(QDXAIfc);
                         case (req.address)
                             regQdxCap: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(qdxCapValue); end
                             regQdxStatus: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(statusValue(state)); end
-                            regQdxControl: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk({29'b0,notifyEnable,1'b0,enabled}); end
+                            regQdxControl: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk({29'b0,pack(notifyEnable),1'b0,pack(enabled)}); end
                             regSqBase: begin legal=req.byteEnable==4'hf; if (legal) resp=mmioReadOk(sqBase); end
                             regSqSize: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(sqSize)); end
                             regSqTail: begin legal=req.byteEnable==4'h3; if (legal) resp=mmioReadOk(zeroExtend(sqTail)); end
