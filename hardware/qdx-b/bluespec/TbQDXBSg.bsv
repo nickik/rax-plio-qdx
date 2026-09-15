@@ -98,7 +98,7 @@ module mkTbQDXBSg(Empty);
                 ts<=SWriteAck;
             end
             SWriteAck:ts<=SRead;
-            SRead:if (e.commandReady) begin readWords<=0; ts<=SReadRun; end
+            SRead:if (e.commandReady) ts<=SReadRun;
             SReadRun:if (e.completionValid) begin
                 if (e.completion[1][15:0]!=stSuccess || e.completion[2]!=1 || readWords!=128) begin $display("FAIL SG READ completion/word count"); $finish(1); end
                 ts<=SReadAck;
