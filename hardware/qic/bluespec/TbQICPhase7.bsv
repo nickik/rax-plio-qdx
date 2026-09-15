@@ -29,7 +29,7 @@ endfunction
 
 function PlioIn pi(Bit#(16) c);
  PlioIn x=plioInDefault();
- if(c==0 || c==5 || c==8 || c==20 || c==26 || c==285 || c==289 || c==292) x=rst();
+ if(c==0 || c==5 || c==8 || c==20 || c==26 || c==289 || c==292) x=rst();
  else if(c==1) x=workerAddr(32'h0000_0100,True,4'hf);
  else if(c==2 || c==4) x=dataNoPayload();
  else if(c==6) x=workerAddr(32'h0000_0104,False,4'hf);
@@ -54,7 +54,6 @@ function QliIn qi(Bit#(16) c);
  else if(c==19) begin q=notif(1); q.dmaCompletionReady=True; end
  else if(c>=21 && c<=25) begin q=dmaH2D(BurstFour); if(c==25) q.dmaCompletionReady=True; end
  else if(c>=27 && c<=286) begin q=dmaD2H(BurstOne); if(c==286) q.dmaCompletionReady=True; end
- else if(c==286) q.dmaCompletionReady=True;
  else if(c==287 || c==288) q=notif(0);
  return q;
 endfunction
@@ -105,17 +104,20 @@ module mkTbQICPhase7(Empty);
   if((c==17 || c==18) && notificationState(s)) begin $display("FAIL invariant notification_preempted_dma c=%0d",c); $finish(1); end
   // Bad H2D parity must produce a parity-error completion with zero acknowledged words.
   if(c==25 && (!z.dmaCompletionValid || z.dmaCompletion.status!=DmaParityError || z.dmaCompletion.wordsCompleted!=0)) begin
-    $display("FAIL fault_sweep parity_completion"); $finish(1);
+    $display("FAIL fault_sweep parity_completion state=%0d valid=%0d status=%0d words=%0d",pack(s),pack(z.dmaCompletionValid),pack(z.dmaCompletion.status),z.dmaCompletion.wordsCompleted); $finish(1);
   end
   // A stalled D2H producer must timeout instead of retaining BG forever.
   if(c==286 && (!z.dmaCompletionValid || z.dmaCompletion.status!=DmaTimeout || z.dmaCompletion.wordsCompleted!=0)) begin
-    $display("FAIL fault_sweep producer_timeout"); $finish(1);
+    $display("FAIL fault_sweep producer_timeout state=%0d valid=%0d status=%0d words=%0d",pack(s),pack(z.dmaCompletionValid),pack(z.dmaCompletion.status),z.dmaCompletion.wordsCompleted); $finish(1);
   end
-  // Reset while manager/worker work is active must win immediately on the following cycle.
-  if((c==289 || c==292) && s!=UIdle) begin $display("FAIL fault_sweep reset_priority c=%0d state=%0d",c,pack(s)); $finish(1); end
+  // Inject reset while a manager request and worker transaction are active.
+  if(c==289 && s!=URequestNotification) begin $display("FAIL fault_sweep manager_reset_not_active state=%0d",pack(s)); $finish(1); end
+  if(c==290 && s!=UIdle) begin $display("FAIL fault_sweep manager_reset_priority state=%0d",pack(s)); $finish(1); end
+  if(c==292 && s!=UWorkerReadData) begin $display("FAIL fault_sweep worker_reset_not_active state=%0d",pack(s)); $finish(1); end
+  if(c==293 && s!=UIdle) begin $display("FAIL fault_sweep worker_reset_priority state=%0d",pack(s)); $finish(1); end
 
   dut.advance(i,q);
-  if(c==292) begin $display("PASS QIC Phase7 global safety and fault sweep"); $finish(0); end
+  if(c==293) begin $display("PASS QIC Phase7 global safety and fault sweep"); $finish(0); end
   else c<=c+1;
  endrule
 endmodule
