@@ -31,8 +31,8 @@ function Bool validNs(Bit#(16) ns); return ns==1 || ns==2; endfunction
 function Bit#(16) blockWords(Bit#(16) ns); return (ns==1) ? 128 : ((ns==2) ? 256 : 0); endfunction
 function Bool handleRangeOk(Bit#(32) h, Bit#(32) bytes); Bit#(32) off=zeroExtend(h[23:0]); return h[1:0]==0 && bytes!=0 && bytes<=32'h0100_0000 && off<=32'h0100_0000-bytes; endfunction
 function Bit#(32) handleAdd(Bit#(32) h, Bit#(32) delta); Bit#(24) off=h[23:0]+truncate(delta); return {h[31:24],off}; endfunction
-function Bool bufferHeaderValid(QdxBCommand c, Bit#(32) bytes); if (c.sgCount==0) return handleRangeOk(c.dataAddr,bytes); Bit#(32) listBytes=zeroExtend(c.sgCount)<<3; return c.sgCount<=16 && handleRangeOk(c.sgAddr,listBytes); endfunction
-function BurstWords chooseBurst(Bit#(16) words); if (words>=16) return BurstSixteen; if (words>=8) return BurstEight; if (words>=4) return BurstFour; return BurstOne; endfunction
+function Bool bufferHeaderValid(QdxBCommand c, Bit#(32) bytes); Bool ok=False; if (c.sgCount==0) ok=handleRangeOk(c.dataAddr,bytes); else begin Bit#(32) listBytes=zeroExtend(c.sgCount)<<3; ok=c.sgCount<=16 && handleRangeOk(c.sgAddr,listBytes); end return ok; endfunction
+function BurstWords chooseBurst(Bit#(16) words); BurstWords b=BurstOne; if (words>=16) b=BurstSixteen; else if (words>=8) b=BurstEight; else if (words>=4) b=BurstFour; return b; endfunction
 function Bit#(5) burstCount(BurstWords b); case (b) BurstOne:return 1; BurstFour:return 4; BurstEight:return 8; default:return 16; endcase endfunction
 function QdxACompletion makeCompletion(QdxBCommand c, Bit#(16) status, Bit#(16) flags, Bit#(32) blocksDone); QdxACompletion x=replicate(0); x[0]=c.tag; x[1]={flags,status}; x[2]=blocksDone; x[3]=0; return x; endfunction
 function Bit#(32) identifyControllerWord(Bit#(8) i); case (i) 0:return 32'h0002_0005; 1:return 32'h0000_0010; 2:return 1; 3:return 0; 4:return 32'h20434544; 5:return 32'h2d584451; 6:return 32'h41422042; 7:return 32'h20204553; 8:return 32'h304d4953; 9:return 32'h30303030; 10:return 32'h30303030; 11:return 32'h31303030; default:return 0; endcase endfunction
