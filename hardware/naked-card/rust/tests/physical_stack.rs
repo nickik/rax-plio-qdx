@@ -33,7 +33,11 @@ fn through_tx(tx: &mut PlioTx, card: CardToBus) -> BackplaneDrive {
 
     let has_control = card.space.is_some() || card.address_strobe || card.data_strobe;
     let has_data = card.ad.is_some() || card.par.is_some();
-    if has_control {
+    let needs_drive = has_control || has_data;
+
+    // PLIO-TX needs a control image even for an AD/PAR-only worker read
+    // response because drive_ad_par is itself a latched subgroup enable.
+    if needs_drive {
         let control = ControlImage {
             space: card.space.unwrap_or(Space::Worker) as u8,
             address_strobe: card.address_strobe,
@@ -42,7 +46,7 @@ fn through_tx(tx: &mut PlioTx, card: CardToBus) -> BackplaneDrive {
             burst_len: card.burst.blen(),
             data_strobe: card.data_strobe,
             drive_ad_par: has_data,
-            drive_control: true,
+            drive_control: has_control,
         };
         clock_slot(tx, qdrive(encode_control(control).unwrap()), BackplaneSample::default());
     }
@@ -55,7 +59,7 @@ fn through_tx(tx: &mut PlioTx, card: CardToBus) -> BackplaneDrive {
 
     let q = QicPtiDrive {
         token: idle(),
-        drive_enable: has_control,
+        drive_enable: needs_drive,
         response_enable: card.ack || card.err,
         response_ack: card.ack,
         response_err: card.err,
@@ -69,14 +73,14 @@ fn through_tx(tx: &mut PlioTx, card: CardToBus) -> BackplaneDrive {
 }
 
 fn sample_ad(tx: &mut PlioTx, ad: u32, par: u8) -> (u32, u8) {
-    let bus = BackplaneSample { ad, par, ..Default::default() };
-    let turn = QicPtiDrive { direction: PtiDirection::TxToQic, token: idle(), ..Default::default() };
+    let bus = BackplaneSample { ad, par, ..BackplaneSample::default() };
+    let turn = QicPtiDrive { direction: PtiDirection::TxToQic, token: idle(), ..QicPtiDrive::default() };
     clock_slot(tx, turn, bus);
 
     let loq = QicPtiDrive {
         direction: PtiDirection::TxToQic,
         token: Token::new(TokenKind::DataLo, 0, 0).unwrap(),
-        ..Default::default()
+        ..QicPtiDrive::default()
     };
     let (_, lo) = tx.drive(false, loq, bus);
     tx.clock(false, loq, bus);
@@ -85,7 +89,7 @@ fn sample_ad(tx: &mut PlioTx, ad: u32, par: u8) -> (u32, u8) {
     let hiq = QicPtiDrive {
         direction: PtiDirection::TxToQic,
         token: Token::new(TokenKind::DataHi, 0, 0).unwrap(),
-        ..Default::default()
+        ..QicPtiDrive::default()
     };
     let (_, hi) = tx.drive(false, hiq, bus);
     tx.clock(false, hiq, bus);
@@ -106,7 +110,7 @@ fn physicalize_bus(tx: &mut PlioTx, mut bus: BusToCard) -> BusToCard {
 }
 
 fn card_from_backplane(bp: BackplaneDrive) -> CardToBus {
-    let mut card = CardToBus { request: bp.request, ..Default::default() };
+    let mut card = CardToBus { request: bp.request, ..CardToBus::default() };
     if let Some((ad, par)) = bp.ad_par {
         card.ad = Some(ad);
         card.par = Some(par);
@@ -141,8 +145,6 @@ fn worker_cycle(
     let bus = physicalize_bus(tx, peer.bus_inputs());
     let device = dev.drive();
 
-    // QIC semantic outputs do not depend on the final QLI handshake for the
-    // worker path, so the empty preview is sufficient here.
     let (_, qout) = qic.drive(&bus, &DeviceToQic::default());
     let local = link.cycle(bus.reset, qout, device);
     assert!(!local.protocol_fault);
@@ -210,9 +212,6 @@ fn run_dma(direction: DmaDirection, words: BurstWords, error_beat: Option<u8>, b
         }
         if direction == DmaDirection::HostToDevice { device.dma_read_ready = true; }
 
-        // Physical DMA request decoding can present the complete candidate to
-        // the semantic QIC combinationally while the final DMA_HEADER waits for
-        // LACK. Clocking still uses only the accepted physical result below.
         let preview = if request_pending {
             DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() }
         } else {
@@ -279,9 +278,9 @@ fn notification_request_and_completion_cross_same_physical_qli16_link() {
 
     for _ in 0..128 {
         let bus = physicalize_bus(&mut tx, peer.bus_inputs());
-        let device = DeviceToQic { notification_request: Some(request), ..Default::default() };
+        let device = DeviceToQic { notification_request: Some(request), ..DeviceToQic::default() };
         let preview = if transported {
-            DeviceToQic { notification_request: Some(request), ..Default::default() }
+            DeviceToQic { notification_request: Some(request), ..DeviceToQic::default() }
         } else {
             DeviceToQic::default()
         };
@@ -314,8 +313,8 @@ fn reset_and_malformed_qli16_are_local_and_safe() {
     assert!(!reset.protocol_fault);
     assert!(reset.to_device.reset);
 
-    let mut tx = PlioTx::new();
-    let q = QicPtiDrive { token: idle(), drive_enable: true, bus_request: true, ..Default::default() };
+    let tx = PlioTx::new();
+    let q = QicPtiDrive { token: idle(), drive_enable: true, bus_request: true, ..QicPtiDrive::default() };
     let (bp, _) = tx.drive(true, q, BackplaneSample::default());
     assert_eq!(bp, BackplaneDrive::default(), "reset must tri-state PLIO-TX");
 }
