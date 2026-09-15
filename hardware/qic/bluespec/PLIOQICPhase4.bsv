@@ -54,7 +54,7 @@ module mkPLIOQICPhase4(PLIOQICPhase4Ifc);
                         out.adValid = True;
                         out.ad = request.address;
                         out.parValid = True;
-                        out.par = oddParity32P1(request.address);
+                        out.parity = oddParity32P1(request.address);
                         out.spaceValid = True;
                         out.space = PlioHostDma;
                         out.addressStrobe = True;
@@ -183,7 +183,7 @@ module mkPLIOQICPhase4(PLIOQICPhase4Ifc);
                             waitCount <= 0;
                         end
                         else if (bus.ack) begin
-                            if (bus.adValid && bus.parValid && oddParity32P1(bus.ad) == bus.par) begin
+                            if (bus.adValid && bus.parValid && oddParity32P1(bus.ad) == bus.parity) begin
                                 bufferData <= bus.ad;
                                 bufferValid <= True;
                                 completed <= completed + 1;
