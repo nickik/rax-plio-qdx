@@ -10,6 +10,7 @@ members = [
     "testbench/rust",
     "naked-card/rust",
     "qdx-a/rust",
+    "qdx-a-card/rust",
     "trace/rust",
 ]
 
