@@ -197,7 +197,13 @@ module mkQLI16Codec(QLI16CodecIfc);
                     dKind <= (device.mmioResponse.status==MmioReadOk) ? DTxMmioReadResponse : DTxMmioSimpleResponse; dIndex<=0;
                 end
                 else if (device.dmaRequestValid) begin dRequest<=device.dmaRequest; dKind<=DTxDmaRequest; dIndex<=0; end
-                else if (device.dmaWriteValid) begin dWord<=device.dmaWrite; dKind<=DTxDmaWrite; dIndex<=0; end
+                else if (device.dmaWriteValid) begin
+                    // The link is half duplex. Preserve DMA-data priority while
+                    // valid, but do not start the message until QIC can accept
+                    // its final token; otherwise reverse-direction worker MMIO
+                    // can be starved behind an undeliverable DMA_DATA word.
+                    if (qic.dmaWriteReady) begin dWord<=device.dmaWrite; dKind<=DTxDmaWrite; dIndex<=0; end
+                end
                 else if (device.notificationValid && !notificationHeldValid && !notificationCompletionPending) begin dNotification<=device.notification; dKind<=DTxNotificationRequest; dIndex<=0; end
             end
             toQicReg<=qi; toDevReg<=qo; slotsLeft<=2; loaded<=True;
