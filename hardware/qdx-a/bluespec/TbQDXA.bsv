@@ -55,7 +55,7 @@ module mkTbQDXA(Empty);
             $display("FAIL reset state"); $finish(1);
         end
         $display("QDXATRACE|v1|step=00|event=reset|state=disabled|sqh=0|sqt=0|cqh=0|cqt=0|err=0");
-        QliOut q = mmioWrite(REG_SQ_BASE, 4'hf, 32'h1200_1000);
+        QliOut q = mmioWrite(regSqBase, 4'hf, 32'h1200_1000);
         QliIn d = dut.qicPort(q);
         if (!d.mmioReady) begin $display("FAIL SQ_BASE not ready"); $finish(1); end
         dut.advance(q, qdxAEndpointInDefault());
@@ -71,7 +71,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r3 (phase == 3);
-        QliOut q = mmioWrite(REG_SQ_SIZE, 4'h3, 4);
+        QliOut q = mmioWrite(regSqSize, 4'h3, 4);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 4;
     endrule
@@ -85,7 +85,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r5 (phase == 5);
-        QliOut q = mmioWrite(REG_CQ_BASE, 4'hf, 32'h2300_2000);
+        QliOut q = mmioWrite(regCqBase, 4'hf, 32'h2300_2000);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 6;
     endrule
@@ -99,7 +99,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r7 (phase == 7);
-        QliOut q = mmioWrite(REG_CQ_SIZE, 4'h3, 4);
+        QliOut q = mmioWrite(regCqSize, 4'h3, 4);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 8;
     endrule
@@ -113,7 +113,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r9 (phase == 9);
-        QliOut q = mmioWrite(REG_QDX_CONTROL, 4'hf, 32'h0000_0005);
+        QliOut q = mmioWrite(regQdxControl, 4'hf, 32'h0000_0005);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 10;
     endrule
@@ -131,7 +131,7 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r11 (phase == 11);
-        QliOut q = mmioWrite(REG_SQ_TAIL, 4'h3, 1);
+        QliOut q = mmioWrite(regSqTail, 4'h3, 1);
         dut.advance(q, qdxAEndpointInDefault());
         phase <= 12;
     endrule
@@ -145,20 +145,28 @@ module mkTbQDXA(Empty);
     endrule
 
     rule r13 (phase == 13);
-        if (dut.debugState != ASqRequest || dut.debugSqTail != 1) begin
-            $display("FAIL SQ request state"); $finish(1);
-        end
-        $display("QDXATRACE|v1|step=02|event=sq_request|state=sq_req|sqh=0|sqt=1|cqh=0|cqt=0|err=0");
         QliOut q = qliOutDefault();
         QliIn d = dut.qicPort(q);
-        if (!d.dmaRequestValid || d.dmaRequest.direction != HostToDevice
-            || d.dmaRequest.address != 32'h1200_1000 || d.dmaRequest.words != BurstEight) begin
-            $display("FAIL SQ DMA request"); $finish(1);
+        if (!d.dmaRequestValid) begin
+            if (dut.debugState != AReadyIdle || dut.debugSqTail != 1) begin
+                $display("FAIL MMIO priority state"); $finish(1);
+            end
+            dut.advance(q, qdxAEndpointInDefault());
         end
-        q.dmaRequestReady = True;
-        dut.advance(q, qdxAEndpointInDefault());
-        dmaWord <= 0;
-        phase <= 14;
+        else begin
+            if (dut.debugState != ASqRequest || dut.debugSqTail != 1) begin
+                $display("FAIL SQ request state"); $finish(1);
+            end
+            $display("QDXATRACE|v1|step=02|event=sq_request|state=sq_req|sqh=0|sqt=1|cqh=0|cqt=0|err=0");
+            if (d.dmaRequest.direction != HostToDevice
+                || d.dmaRequest.address != 32'h1200_1000 || d.dmaRequest.words != BurstEight) begin
+                $display("FAIL SQ DMA request"); $finish(1);
+            end
+            q.dmaRequestReady = True;
+            dut.advance(q, qdxAEndpointInDefault());
+            dmaWord <= 0;
+            phase <= 14;
+        end
     endrule
 
     rule receiveSq (phase == 14 && dmaWord < 8);
