@@ -137,7 +137,7 @@ module mkPLIOWorkerHost(PLIOWorkerHostIfc);
     method Bool selectedSlotValid = state != HostIdle;
     method Bit#(3) selectedSlot = request.slot;
 
-    method Action advance(PlioOut card, Bool reset);
+    method Action advance(PlioOut card, Bool reset) if (!completionPending);
         action
             if (reset) begin
                 if (state != HostIdle) begin
