@@ -4,6 +4,8 @@ Goal: build a production-quality PLIO host adapter in Rust and Bluespec, startin
 
 ## M0 — Freeze interfaces and turn `TestPeer` into the Rust oracle
 
+**Status: complete and verified.**
+
 - Define a host-independent `PLIOHostCore` contract for one PLIO segment with up to eight slots.
 - Define explicit CPU/host worker request and completion types for naturally aligned 8/16/32-bit MMIO.
 - Define cycle-level PLIO bus input/output images using the canonical `plio-logical` types.
@@ -26,6 +28,8 @@ Goal: build a production-quality PLIO host adapter in Rust and Bluespec, startin
 
 ## M1 — Rust worker-MMIO host engine
 
+**Status: complete and verified with exact Rust↔Bluesim differential.**
+
 - Implement production Rust `WorkerMmioEngine` from the frozen M0 contract.
 - Support host-issued 8-, 16-, and 32-bit naturally aligned worker reads and writes.
 - Translate `(slot, slot_offset)` to PLIO `SPACE=WORKER`, slot select, address, parity, byte-enable, `BLEN=1` bus cycles.
@@ -41,11 +45,15 @@ Goal: build a production-quality PLIO host adapter in Rust and Bluespec, startin
 
 ## M2 — Arbitration + notifications
 
+**Status: complete and verified with exact Rust↔Bluesim differential.**
+
 - Implement rotating round-robin bus-manager arbitration across eight request lines.
 - Grant exactly one transaction at a time and withdraw grant at transaction completion/fault/timeout.
 - Implement controller-local PLIO Notification address/data handling for four channels per slot.
 - Record pending notification state, payload/data if required by the host profile, enable/mask/class metadata, and deterministic claim order.
 - Add fairness, repeated-request, backpressure, notification error, reset, and multi-slot tests.
+- Keep one-hot grant state, rotating cursor, wait counter, typed fault state, per-slot grant counters, notification pending/payload/config state, and claim state observable through debug/test interfaces.
+- Exact differential scenarios cover round-robin order, repeated requests, data backpressure, address/data parity faults, 256-cycle timeout, reset cancellation, and deterministic claim ordering.
 
 ## M3 — DMA capability table + asynchronous memory port
 
@@ -102,6 +110,6 @@ Goal: build a production-quality PLIO host adapter in Rust and Bluespec, startin
 - Run identical CPU-visible scenarios against both and compare MMIO results, host memory, DMA progress, notifications, errors, and device-visible state at semantic boundaries.
 - Once hardware mode has sufficient coverage and performance, retire the old simplified LightingSimulation PLIO path.
 
-## Scope rule for the first implementation branch
+## Scope rule for the current implementation branch
 
-Implement **M0 and M1 only**. Do not start arbitration, notifications, DMA capability state, RAX CSR attachment, or memory-controller integration on this branch. The only Bluespec permitted before M4 is the minimal worker-MMIO engine/harness needed to prove M1 Rust↔Bluesim behavioral equivalence.
+M0, M1, and M2 are implemented and verified on this branch. **Do not start M3 or later milestones until explicitly requested.** The full integrated `PLIOHostCore` remains an M4 deliverable; the pre-M4 Bluespec modules are deliberately isolated worker-MMIO and manager/arbitration/notification blocks used for exact Rust↔Bluesim verification.
