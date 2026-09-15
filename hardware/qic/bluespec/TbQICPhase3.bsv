@@ -69,7 +69,7 @@ function String eventName(Bit#(16) c);
     String result = "idle";
     if (c == 0 || c == 6 || c == 14 || c == 21 || c == 282 || c == 287)
         result = "reset";
-    else if (c == 11 || c == 19 || c == 280)
+    else if (c == 11 || c == 19)
         result = "fault";
     else if (c == 12 || c == 13 || c == 20 || c == 281)
         result = "dma_complete";
