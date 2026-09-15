@@ -11,4 +11,9 @@ command -v bsc >/dev/null
 
 bsc -u -sim -p "$SEARCH" -bdir "$BUILD" -simdir "$BUILD" -info-dir "$BUILD" -g mkTbQICPhase7 "$ROOT/qic/bluespec/TbQICPhase7.bsv"
 bsc -sim -p "$SEARCH" -bdir "$BUILD" -simdir "$BUILD" -e mkTbQICPhase7 -o "$BUILD/tb-qic-phase7"
-"$BUILD/tb-qic-phase7"
+"$BUILD/tb-qic-phase7" | tee "$BUILD/phase7.log"
+if grep -q '^FAIL ' "$BUILD/phase7.log"; then
+    echo "QIC Phase7 fixture reported a failure" >&2
+    exit 1
+fi
+grep -q '^PASS QIC Phase7 global safety and fault sweep$' "$BUILD/phase7.log"
