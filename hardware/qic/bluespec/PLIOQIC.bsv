@@ -11,9 +11,10 @@ UWorkerReadData: if(timedOut()) out.err=True;
 UWorkerWriteData: begin if(timedOut()) out.err=True; else if(bus.dataStrobe&&(!bus.adValid||!bus.parValid||((oddParity32P2(bus.ad)&heldBe)!=(bus.parity&heldBe)))) out.err=True; end
 UWorkerOffer: if(timedOut()) out.err=True;
 UWorkerResponse: begin if(timedOut()) out.err=True; else if(bus.dataStrobe&&qli.mmioResponseValid) begin case(qli.mmioResponse.status) MmioReadOk: if(!heldWrite) begin out.adValid=True;out.ad=qli.mmioResponse.data;out.parValid=True;out.parity=oddParity32P2(qli.mmioResponse.data);out.ack=True;end else out.err=True; MmioWriteOk: if(heldWrite) out.ack=True; else out.err=True; MmioError: out.err=True; endcase end end
-URequestDma,URequestNotification,UDmaComplete: out.request=True;
+URequestDma,URequestNotification: out.request=True;
 UDmaAddress: begin out.request=True;if(bus.grant&&!timedOut()) begin out.adValid=True;out.ad=dmaReq.address;out.parValid=True;out.parity=oddParity32P1(dmaReq.address);out.spaceValid=True;out.space=PlioHostDma;out.addressStrobe=True;out.read=(dmaReq.direction==HostToDevice);out.byteEnable=4'hf;out.burst=dmaReq.words;end end
 UDmaData: begin Bool finalBuf=finalReadBuffer();out.request=True;if(!timedOut()&&(finalBuf||bus.grant)) begin if(dmaReq.direction==HostToDevice) begin if(!bufferValid&&completed<burstWordCount(dmaReq.words)) out.dataStrobe=True;end else if(bufferValid) begin out.adValid=True;out.ad=bufferData;out.parValid=True;out.parity=oddParity32P1(bufferData);out.dataStrobe=True;end end end
+UDmaComplete: out.request=bus.grant;
 UNotificationAddress: begin out.request=True;if(bus.grant&&!timedOut()) begin out.adValid=True;out.ad=zeroExtend(notification.channel)<<2;out.parValid=True;out.parity=oddParity32P1(zeroExtend(notification.channel)<<2);out.spaceValid=True;out.space=PlioController;out.addressStrobe=True;out.read=False;out.byteEnable=4'hf;out.burst=BurstOne;end end
 UNotificationData: begin out.request=True;if(bus.grant&&!timedOut()) begin out.adValid=True;out.ad=0;out.parValid=True;out.parity=oddParity32P1(0);out.dataStrobe=True;end end
 default:begin end endcase end return out; endmethod
