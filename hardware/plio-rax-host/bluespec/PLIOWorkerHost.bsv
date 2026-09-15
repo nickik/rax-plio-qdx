@@ -35,11 +35,13 @@ function Bit#(4) hostByteEnable(HostWorkerRequest r);
 endfunction
 
 function Bit#(32) hostValueMask(HostWorkerWidth w);
+    Bit#(32) value = 32'hffff_ffff;
     case (w)
-        HostW8: return 32'h0000_00ff;
-        HostW16: return 32'h0000_ffff;
-        default: return 32'hffff_ffff;
+        HostW8: value = 32'h0000_00ff;
+        HostW16: value = 32'h0000_ffff;
+        default: value = 32'hffff_ffff;
     endcase
+    return value;
 endfunction
 
 function Bit#(32) hostBusWriteData(HostWorkerRequest r);
@@ -91,11 +93,13 @@ module mkPLIOWorkerHost(PLIOWorkerHostIfc);
 
     method Bool ready = state == HostIdle && !completionPending;
 
-    method Action start(HostWorkerRequest r) if (state == HostIdle && !completionPending && hostRequestValid(r));
+    method Action start(HostWorkerRequest r) if (state == HostIdle && !completionPending);
         action
-            request <= r;
-            waitCycles <= 0;
-            state <= HostAddress;
+            if (hostRequestValid(r)) begin
+                request <= r;
+                waitCycles <= 0;
+                state <= HostAddress;
+            end
         endaction
     endmethod
 
@@ -200,7 +204,9 @@ module mkPLIOWorkerHost(PLIOWorkerHostIfc);
     endmethod
 
     method Bool completionValid = completionPending;
-    method HostWorkerCompletion completion if (completionPending) = completionReg;
+    method HostWorkerCompletion completion if (completionPending);
+        return completionReg;
+    endmethod
     method Action clearCompletion if (completionPending);
         completionPending <= False;
     endmethod
