@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build/m4.5-host-card"
-SEARCH="+:$ROOT/qli/bluespec:$ROOT/qli16/bluespec:$ROOT/qic/bluespec:$ROOT/plio-tx/bluespec:$ROOT/testbench/bluespec:$ROOT/naked-card/bluespec:$ROOT/qdx-a/bluespec:$ROOT/qdx-a-card/bluespec:$ROOT/qdx-b/bluespec:$ROOT/qdx-b-card/bluespec:$ROOT/plio-rax-host/bluespec:$ROOT/m4.5/bluespec"
+SEARCH="+:$ROOT/qli/bluespec:$ROOT/qli16/bluespec:$ROOT/qic/bluespec:$ROOT/pti/bluespec:$ROOT/plio-tx/bluespec:$ROOT/testbench/bluespec:$ROOT/naked-card/bluespec:$ROOT/qdx-a/bluespec:$ROOT/qdx-a-card/bluespec:$ROOT/qdx-b/bluespec:$ROOT/qdx-b-card/bluespec:$ROOT/plio-rax-host/bluespec:$ROOT/m4.5/bluespec"
 STACK=(+RTS -K64m -RTS)
 rm -rf "$BUILD"; mkdir -p "$BUILD"
 run_tb() {
@@ -24,7 +24,6 @@ run_tb mkTbPLIOHostQDXBIntegration "$ROOT/m4.5/bluespec/TbPLIOHostQDXBIntegratio
 
 grep -q 'event=end_to_end|sq_dma=1|cq_dma=1|notify=1|cq_exact=1' "$BUILD/qdxa/run.log"
 grep -q 'event=end_to_end|sq_dma=1|payload_dma=1|cq_dma=1|notify=1|durable=1|flush=1' "$BUILD/qdxb/run.log"
-
 bash "$ROOT/scripts/test-plio-host-m4.sh"
 bash "$ROOT/scripts/test-qdx-a-card.sh"
 bash "$ROOT/scripts/test-qdx-b.sh"
