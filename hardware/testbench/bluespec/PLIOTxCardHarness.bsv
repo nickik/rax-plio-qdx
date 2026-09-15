@@ -53,6 +53,7 @@ module mkPLIOTxCardHarness(PLIOTxCardHarnessIfc);
         return x.spaceValid || x.addressStrobe || x.dataStrobe;
     endfunction
     function Bool outHasData(PlioOut x); return x.adValid && x.parValid; endfunction
+    function Bool needsOutDrive(PlioOut x); return outHasControl(x) || outHasData(x); endfunction
 
     function QicPtiDrive rxSelect(PtiTokenKind kind);
         QicPtiDrive q=qicPtiDriveDefault();
@@ -161,8 +162,7 @@ module mkPLIOTxCardHarness(PLIOTxCardHarnessIfc);
 
                 CTxTurn: begin
                     q=txToken(ptiToken(PtiIdle,0,0)); tx.advance(False,q,b);
-                    if (outHasControl(heldOut)) state<=CTxControl;
-                    else if (outHasData(heldOut)) state<=CTxDataLo;
+                    if (needsOutDrive(heldOut)) state<=CTxControl;
                     else state<=CTxExpose;
                 end
                 CTxControl: begin
@@ -173,7 +173,7 @@ module mkPLIOTxCardHarness(PLIOTxCardHarnessIfc);
                 CTxDataHi: begin q=txToken(dataHi(heldOut.ad,heldOut.par)); tx.advance(False,q,b); state<=CTxExpose; end
                 CTxExpose: begin
                     q=txToken(ptiToken(PtiIdle,0,0));
-                    q.driveEnable=outHasControl(heldOut);
+                    q.driveEnable=needsOutDrive(heldOut);
                     q.responseEnable=heldOut.ack||heldOut.err; q.responseAck=heldOut.ack; q.responseErr=heldOut.err;
                     q.busRequest=heldOut.request;
                     exposed<=tx.driveBackplane(False,q,b);
