@@ -13,12 +13,45 @@ function QliIn notifDma(Bit#(8) ch); QliIn q=notif(ch); q.dmaRequestValid=True; 
 function QliIn dmaOnly(); QliIn q=qliInDefault(); q.dmaRequestValid=True; q.dmaRequest=DmaRequest{direction:HostToDevice,address:32'h4400_0000,words:BurstFour}; return q; endfunction
 
 function PlioIn pi(Bit#(16) c);
-    if (c==0 || c==10 || c==15 || c==20 || c==25 || c==286) return busReset();
-    if (c==3 || c==4 || c==5 || c==6 || c==7 || c==8 || c==12 || c==13 || c==17 || c==18 || c==22 || c==27 || c==28 || (c>=29 && c<=284) || c==288 || c==289) begin
-        if (c==5 || c==8 || c==17 || c==22 || c==28 || c==288 || c==289) return bgAck();
-        if (c==13 || c==18) return bgErr();
+    if (c==0 || c==10 || c==15 || c==21 || c==27 || c==288) return busReset();
+
+    // Successful channel-2 transaction: grant, address waits/ACK, data wait/ACK.
+    if (c==3 || c==4 || c==5 || c==6 || c==7 || c==8) begin
+        if (c==6 || c==8) return bgAck();
         return bg();
     end
+
+    // Address error on channel 1.
+    if (c==12 || c==13) begin
+        if (c==13) return bgErr();
+        return bg();
+    end
+
+    // Data error on channel 3.
+    if (c==17 || c==18 || c==19) begin
+        if (c==18) return bgAck();
+        if (c==19) return bgErr();
+        return bg();
+    end
+
+    // BG loss during channel-0 data: address succeeds at c24, grant absent at c25.
+    if (c==23 || c==24) begin
+        if (c==24) return bgAck();
+        return bg();
+    end
+
+    // Channel-2 data timeout: address succeeds at c30, then 256 granted waits.
+    if (c==29 || c==30 || (c>=31 && c<=286)) begin
+        if (c==30) return bgAck();
+        return bg();
+    end
+
+    // Wrong producer channel at the ACKed data beat.
+    if (c==290 || c==291 || c==292) begin
+        if (c==291 || c==292) return bgAck();
+        return bg();
+    end
+
     return plioInDefault();
 endfunction
 
@@ -26,19 +59,19 @@ function QliIn qi(Bit#(16) c);
     if (c>=1 && c<=8) return notifDma(2);
     if (c==9) return dmaOnly();
     if (c>=11 && c<=14) return notif(1);
-    if (c>=16 && c<=19) return notif(3);
-    if (c>=21 && c<=24) return notif(0);
-    if (c>=26 && c<=285) return notif(2);
-    if (c>=287 && c<=288) return notif(1);
-    if (c==289) return notif(2);
+    if (c>=16 && c<=20) return notif(3);
+    if (c>=22 && c<=26) return notif(0);
+    if (c>=28 && c<=287) return notif(2);
+    if (c>=289 && c<=291) return notif(1);
+    if (c==292) return notif(2);
     return qliInDefault();
 endfunction
 
 function String ev(Bit#(16) c);
-    if (c==0 || c==10 || c==15 || c==20 || c==25 || c==286) return "reset";
-    if (c==13 || c==18 || c==23) return "fault";
-    if (c==5 || c==17 || c==22 || c==28 || c==288) return "manager_address";
-    if (c==6 || c==7 || c==8 || c==18 || c==23 || (c>=29 && c<=284) || c==289) return "notification_data";
+    if (c==0 || c==10 || c==15 || c==21 || c==27 || c==288) return "reset";
+    if (c==13 || c==19 || c==25) return "fault";
+    if (c==4 || c==5 || c==6 || c==13 || c==18 || c==24 || c==30 || c==291) return "manager_address";
+    if (c==7 || c==8 || c==19 || c==25 || (c>=31 && c<=286) || c==292) return "notification_data";
     if (c==9) return "idle";
     return "manager_request";
 endfunction
@@ -66,22 +99,18 @@ module mkTbQICPhase6(Empty);
  rule run;
   PlioIn i=pi(c); QliIn q=qi(c); PlioOut o=dut.drivePlio(i,q); QliOut z=dut.driveQli(i,q);
 
-  // Notification has priority at idle; simultaneous DMA is not accepted.
   if (c==1 && (z.dmaRequestReady || dut.debugState != QicIdle)) begin $display("FAIL priority"); $finish(1); end
-  // Address image for channel 2.
   if (c==4 && (!o.addressStrobe || !o.spaceValid || o.space!=PlioController || o.ad!=32'h8 || o.read || o.byteEnable!=4'hf || o.burst!=BurstOne)) begin $display("FAIL address"); $finish(1); end
-  // Data is zero advisory payload with valid parity, and ready occurs only on ACK.
   if (c==7 && (!o.dataStrobe || !o.adValid || o.ad!=0 || !o.parValid || z.notificationReady)) begin $display("FAIL data wait"); $finish(1); end
   if (c==8 && !z.notificationReady) begin $display("FAIL completion ready"); $finish(1); end
-  if ((c==13 || c==18 || c==23 || c==284) && z.notificationReady) begin $display("FAIL false ready"); $finish(1); end
-  // Wrong channel still held by producer: bus ACK completes but no local ready.
-  if (c==289 && z.notificationReady) begin $display("FAIL wrong-channel ready"); $finish(1); end
+  if ((c==13 || c==19 || c==25 || c==286) && z.notificationReady) begin $display("FAIL false ready"); $finish(1); end
+  if (c==292 && z.notificationReady) begin $display("FAIL wrong-channel ready"); $finish(1); end
   if (o.addressStrobe && (!o.spaceValid || o.space!=PlioController || o.read || o.byteEnable!=4'hf || o.burst!=BurstOne)) begin $display("FAIL notification address invariant"); $finish(1); end
   if (o.dataStrobe && (!o.adValid || o.ad!=0 || !o.parValid)) begin $display("FAIL notification data invariant"); $finish(1); end
 
   trace(c,i,q,o,z);
   dut.advance(i,q);
-  if (c==289) begin $display("PASS QIC Phase6 notification differential fixture"); $finish(0); end
+  if (c==292) begin $display("PASS QIC Phase6 notification differential fixture"); $finish(0); end
   else c<=c+1;
  endrule
 endmodule
