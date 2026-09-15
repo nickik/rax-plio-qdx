@@ -20,8 +20,6 @@ module mkTbQicTxIntegration(Empty);
         PlioIn b=bus; QliIn q=qli;
         case (s)
             0: begin b.reset=True; qic.advance(b,q); h.step(True); bus<=plioInDefault(); qli<=qliInDefault(); s<=1; end
-
-            // Worker read: address response then returned data response.
             1: begin
                 b=plioInDefault(); b.selected=True; b.adValid=True; b.ad=32'h100; b.parValid=True; b.par=oddParity32P1(32'h100);
                 b.spaceValid=True; b.space=PlioWorker; b.addressStrobe=True; b.read=True; b.byteEnable=4'hf; b.burst=BurstOne;
@@ -30,27 +28,24 @@ module mkTbQicTxIntegration(Empty);
             2: if (h.done) begin
                 BackplaneDrive x=h.backplane;
                 if (!x.responseValid || !x.ack || x.err || h.protocolFault) $fatal(1,"worker address response failed");
-                qic.advance(b,q); b=plioInDefault(); b.dataStrobe=True; bus<=b; qic.advance(b,q); s<=3;
+                qic.advance(b,q); b=plioInDefault(); b.dataStrobe=True; bus<=b; s<=3;
             end
-            3: begin q.mmioReady=True; qli<=q; qic.advance(plioInDefault(),q); s<=4; end
-            4: begin
+            3: begin qic.advance(b,q); b=plioInDefault(); bus<=b; s<=4; end
+            4: begin q.mmioReady=True; qli<=q; qic.advance(b,q); s<=5; end
+            5: begin
                 b=plioInDefault(); b.dataStrobe=True; q.mmioResponseValid=True; q.mmioResponse=mmioReadOk(32'h89abcdef); bus<=b; qli<=q;
-                h.start(qic.drivePlio(b,q)); s<=5;
+                h.start(qic.drivePlio(b,q)); s<=6;
             end
-            5: if (h.done) begin
+            6: if (h.done) begin
                 BackplaneDrive x=h.backplane;
                 if (!x.adParValid || x.ad!=32'h89abcdef || x.par!=oddParity32P1(32'h89abcdef) || !x.responseValid || !x.ack || h.protocolFault) $fatal(1,"worker read response failed");
                 $display("QTXTRACE|v1|case=worker_read|ad=%08x|par=%01x|ack=1|err=0",x.ad,x.par);
-                b=plioInDefault(); b.reset=True; q=qliInDefault(); qic.advance(b,q); h.step(True); bus<=plioInDefault(); qli<=q; s<=10;
+                qic.advance(b,q); bus<=plioInDefault(); qli<=qliInDefault(); s<=10;
             end
 
-            // DEVICE_TO_HOST one-word DMA.
             10: begin q=qliInDefault(); q.dmaRequestValid=True; q.dmaRequest=DmaRequest {direction:DeviceToHost,address:32'h2000,words:BurstOne}; qli<=q; qic.advance(plioInDefault(),q); s<=11; end
             11: begin b=plioInDefault(); b.grant=True; bus<=b; h.start(qic.drivePlio(b,q)); s<=12; end
-            12: if (h.done) begin
-                if (!h.backplane.request || h.protocolFault) $fatal(1,"DMA BR failed");
-                qic.advance(b,q); s<=13;
-            end
+            12: if (h.done) begin if (!h.backplane.request || h.protocolFault) $fatal(1,"DMA BR failed"); qic.advance(b,q); s<=13; end
             13: begin h.start(qic.drivePlio(b,q)); s<=14; end
             14: if (h.done) begin
                 BackplaneDrive x=h.backplane;
@@ -69,10 +64,9 @@ module mkTbQicTxIntegration(Empty);
             18: begin
                 QliOut qo=qic.driveQli(b,q);
                 if (!qo.dmaCompletionValid || qo.dmaCompletion.status!=DmaOk || qo.dmaCompletion.wordsCompleted!=1) $fatal(1,"D2H completion mismatch");
-                q.dmaCompletionReady=True; qic.advance(b,q); q=qliInDefault(); qli<=q; b=plioInDefault(); b.reset=True; qic.advance(b,q); h.step(True); bus<=plioInDefault(); s<=20;
+                q.dmaCompletionReady=True; qic.advance(b,q); bus<=plioInDefault(); qli<=qliInDefault(); s<=20;
             end
 
-            // Notification channel 3: BR, address, data, completion-ready.
             20: begin q=qliInDefault(); q.notificationValid=True; q.notification=NotificationRequest {channel:3}; qli<=q; qic.advance(plioInDefault(),q); s<=21; end
             21: begin b=plioInDefault(); b.grant=True; bus<=b; h.start(qic.drivePlio(b,q)); s<=22; end
             22: if (h.done) begin if (!h.backplane.request || h.protocolFault) $fatal(1,"notification BR failed"); qic.advance(b,q); s<=23; end
@@ -90,7 +84,6 @@ module mkTbQicTxIntegration(Empty);
                 b.ack=True; QliOut qo=qic.driveQli(b,q); if (!qo.notificationReady) $fatal(1,"notification ready missing");
                 $display("QTXTRACE|v1|case=notification_data|ad=00000000|ds=1|ready=1"); s<=30;
             end
-
             30: begin
                 if (h.protocolFault) $fatal(1,"legal integration sequence caused PTI protocol fault");
                 $display("PASS unified QIC + PTI + PLIO-TX integration"); $finish(0);
