@@ -70,7 +70,7 @@ module mkPLIOQICPhase4(PLIOQICPhase4Ifc);
                             out.dataStrobe = True;
                     end
                 end
-                default: noAction;
+                default: begin end
             endcase
         end
         return out;
@@ -95,7 +95,7 @@ module mkPLIOQICPhase4(PLIOQICPhase4Ifc);
                     out.dmaCompletionValid = True;
                     out.dmaCompletion = completion;
                 end
-                default: noAction;
+                default: begin end
             endcase
         end
         return out;
