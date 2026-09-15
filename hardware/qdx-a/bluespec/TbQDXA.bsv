@@ -140,14 +140,21 @@ module mkTbQDXA(Empty);
     rule r13 (phase == 13);
         QliOut q = qliOutDefault();
         QliIn d = dut.qicPort(q);
-        if (!d.dmaRequestValid || d.dmaRequest.direction != HostToDevice
-            || d.dmaRequest.address != 32'h1200_1000 || d.dmaRequest.words != BurstEight) begin
-            $display("FAIL SQ DMA request"); $finish(1);
+        if (!d.dmaRequestValid) begin
+            // MMIO response consumption has priority over queue advancement.
+            // Give READY one cycle to launch the SQ DMA request.
+            dut.advance(q, qdxAEndpointInDefault());
         end
-        q.dmaRequestReady = True;
-        dut.advance(q, qdxAEndpointInDefault());
-        dmaWord <= 0;
-        phase <= 14;
+        else begin
+            if (d.dmaRequest.direction != HostToDevice
+                || d.dmaRequest.address != 32'h1200_1000 || d.dmaRequest.words != BurstEight) begin
+                $display("FAIL SQ DMA request"); $finish(1);
+            end
+            q.dmaRequestReady = True;
+            dut.advance(q, qdxAEndpointInDefault());
+            dmaWord <= 0;
+            phase <= 14;
+        end
     endrule
 
     rule receiveSq (phase == 14 && dmaWord < 8);
