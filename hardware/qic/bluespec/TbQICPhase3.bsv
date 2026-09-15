@@ -164,12 +164,21 @@ module mkTbQICPhase3(Empty);
             $finish(1);
         end
 
+        // Channel 2 must be presented literally as controller address 0x00000008
+        // with parity valid and the four odd-parity bits equal to 0xE.
         if (cycle == 4 || cycle == 5) begin
-            if (!po.request || !po.addressStrobe || !po.adValid || po.ad != 32'h8
-                || !po.parValid || po.parity != oddParity32P1(32'h8)
+            if (!po.adValid || po.ad != 32'h0000_0008 || !po.parValid || po.parity != 4'he) begin
+                $display(
+                    "FAIL notification literal regression cycle=%0d adValid=%0d ad=%08x parValid=%0d parity=%01x",
+                    cycle, pack(po.adValid), po.ad, pack(po.parValid), po.parity
+                );
+                $finish(1);
+            end
+
+            if (!po.request || !po.addressStrobe
                 || !po.spaceValid || po.space != PlioController
                 || po.read || po.byteEnable != 4'hf || po.burst != BurstOne) begin
-                $display("FAIL notification address cycle=%0d", cycle);
+                $display("FAIL notification address/control cycle=%0d", cycle);
                 $finish(1);
             end
         end
