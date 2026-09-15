@@ -16,36 +16,39 @@ function QdxACommand mkSgCmd(Bit#(8) op, Bit#(32) tag, Bit#(32) sgAddr);
 endfunction
 
 function Bit#(32) hostReadWord(SgTestState s, Bit#(32) a);
+    Bit#(32) value = 0;
     if (s==SWriteRun) begin
         case (a)
-            32'h8000:return 32'h9000;
-            32'h8004:return 256;
-            32'h8008:return 32'ha000;
-            32'h800c:return 256;
+            32'h8000:value=32'h9000;
+            32'h8004:value=256;
+            32'h8008:value=32'ha000;
+            32'h800c:value=256;
             default:begin
-                if (a>=32'h9000 && a<32'h9100) return 32'h6600_0000+(a-32'h9000);
-                if (a>=32'ha000 && a<32'ha100) return 32'h7700_0000+(a-32'ha000);
-                return 0;
+                if (a>=32'h9000 && a<32'h9100) value=32'h6600_0000+(a-32'h9000);
+                else if (a>=32'ha000 && a<32'ha100) value=32'h7700_0000+(a-32'ha000);
             end
         endcase
     end
     else begin
         case (a)
-            32'h8100:return 32'hb000;
-            32'h8104:return 128;
-            32'h8108:return 32'hc000;
-            32'h810c:return 384;
-            default:return 0;
+            32'h8100:value=32'hb000;
+            32'h8104:value=128;
+            32'h8108:value=32'hc000;
+            32'h810c:value=384;
+            default:value=0;
         endcase
     end
+    return value;
 endfunction
 
 function Bit#(32) expectedRead(Bit#(32) a);
     Bit#(32) logicalWord=0;
+    Bit#(32) value=0;
     if (a>=32'hb000 && a<32'hb080) logicalWord=(a-32'hb000)>>2;
     else logicalWord=32+((a-32'hc000)>>2);
-    if (logicalWord<64) return 32'h6600_0000+(logicalWord<<2);
-    return 32'h7700_0000+((logicalWord-64)<<2);
+    if (logicalWord<64) value=32'h6600_0000+(logicalWord<<2);
+    else value=32'h7700_0000+((logicalWord-64)<<2);
+    return value;
 endfunction
 
 module mkTbQDXBSg(Empty);
