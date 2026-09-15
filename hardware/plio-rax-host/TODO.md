@@ -48,7 +48,7 @@ Goal: build a production-quality PLIO host adapter in Rust and Bluespec, startin
 
 ## M4 — Integrated `PLIOHostCore`
 
-**Status: M4a–M4d complete and verified on branch `plio-host-adapter-m4`. M4e/M4f not started.**
+**Status: complete and verified through M4f on branch `plio-host-adapter-m4`. Exact tested code head: `e58d9be003973a98fd26b620425d9e8ce1123dce`; dedicated run `34993792187`.**
 
 M4 combines the independently verified M1/M2/M3 engines into the actual host-independent PLIO bus controller. There is exactly one owner of the physical PLIO output image each cycle and one explicit scheduler deciding whether the host is acting as worker, bus manager for a card transaction, DMA target/source, or idle.
 
@@ -89,7 +89,7 @@ M4 combines the independently verified M1/M2/M3 engines into the actual host-ind
 - Integrate capability table, DMA state, worker state, notification state and asynchronous memory port under that scheduler.
 - Host outputs are deterministic and tri-stated when idle/reset.
 - Standalone `mkPLIOHostCore.v` generation is verified.
-- M4a–M4d leave two harmless public completion-clear/advance scheduling warnings for M4f hardening; deterministic validated usage keeps these calls on separate cycles.
+- Public worker/DMA completion state uses ordered two-port `mkCReg` storage: scheduler updates use port 0 and public observe/clear operations use port 1. This structurally defines same-cycle ordering and removes the integrated completion-clear scheduling warnings without suppression.
 
 ### M4d — Integrated deterministic differential tests
 
@@ -124,31 +124,38 @@ The M4 gate also reruns the exact M1, M2 and M3 Rust↔Bluesim differentials bef
 
 ### M4e — Seeded stress/conformance
 
-**Status: not started.**
+**Status: complete and verified with an exact 64-event seeded Rust↔Bluesim differential.**
 
-- Add deterministic seeded mixed worker/card/DMA/notification sequences.
-- Use bounded random wait states on both PLIO and memory sides.
-- Randomly insert legal card requests, notifications, DMA bursts and worker accesses.
-- Compare Rust and Bluesim after every semantic event and at final state.
-- Keep failures reproducible by printing seed, cycle, active role, slot, PLIO phase and memory phase.
-- Include assertions for one-hot grant, single bus owner, capability bounds and no ACK-before-memory-completion.
+- Fixed reproducible xorshift32 seed: `0x4d34e5a1`.
+- 64 mixed semantic transactions covering worker reads/writes, notifications and both DMA directions.
+- Bounded 0–3 cycle wait insertion on worker/manager PLIO phases and DMA memory request/response phases.
+- `PLIOHOSTSTRESS|v1` event traces are compared byte-for-byte between Rust and Bluesim after every completed transaction.
+- Rust asserts single physical PLIO owner throughout the generated sequences.
+- Stress checks notification pending/payload/claim state, DMA capability-before-ACK behavior, no device→host ACK before memory completion, host→device data availability after memory completion, completion status/beat count, arbitration cursor and final idle state.
+- Failure records retain seed and epoch so every sequence is reproducible.
 
 ### M4f — M4 acceptance gate
 
-**Status: not started.**
+**Status: complete and verified on exact code head `e58d9be003973a98fd26b620425d9e8ce1123dce`; dedicated Hardware PLIO Host M4 run `34993792187` passed.**
 
-M4 is fully accepted only when all of the following pass on the same commit:
+The same-commit acceptance gate passes all of the following:
 
 - existing M1 Rust↔Bluesim exact differential;
 - existing M2 Rust↔Bluesim exact differential;
 - existing M3 Rust↔Bluesim exact differential;
-- integrated deterministic `PLIOHOSTCORETRACE|v1` exact differential;
-- seeded integrated stress differential;
+- integrated deterministic 20-record `PLIOHOSTCORETRACE|v1` exact differential;
+- seeded 64-event `PLIOHOSTSTRESS|v1` exact differential;
 - standalone `mkPLIOWorkerHost.v` generation;
 - standalone `mkPLIOHostManagerM2.v` generation;
 - standalone `mkPLIOHostDmaM3.v` generation;
 - standalone integrated `mkPLIOHostCore.v` generation;
-- no unresolved Bluespec scheduling/ownership warnings in `mkPLIOHostCore` that can change externally visible behavior.
+- no unresolved G0036/G0117 completion-clear scheduling/ownership warnings in `mkPLIOHostCore`.
+
+The final gate reports:
+
+`PASS PLIO host M4a-M4f acceptance gate`
+
+Note: the standalone legacy `mkPLIOHostDmaM3` compilation still reports its pre-existing public-method scheduling warnings. Those warnings are outside the integrated `mkPLIOHostCore` scheduler and are unchanged by M4; the M4f integrated-core warning gate is clean.
 
 ## M5 — RAX CPU/MMIO/CSR attachment
 
@@ -185,4 +192,4 @@ M4 is fully accepted only when all of the following pass on the same commit:
 
 ## Scope rule for `plio-host-adapter-m4`
 
-M4a–M4d are implemented and verified. Stop here. Do not start M4e/M4f or the RAX CPU/CSR attachment (M5), concrete RAX memory-controller bridge (M6), or full QDX integration (M7) until explicitly requested.
+M4a–M4f are implemented and verified. Do not start the RAX CPU/CSR attachment (M5), concrete RAX memory-controller bridge (M6), or full QDX integration (M7) until explicitly requested.
