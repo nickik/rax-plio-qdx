@@ -50,7 +50,7 @@ module mkPLIOQICPhase5(PLIOQICPhase5Ifc);
                         out.adValid = True;
                         out.ad = request.address;
                         out.parValid = True;
-                        out.par = oddParity32P1(request.address);
+                        out.parity = oddParity32P1(request.address);
                         out.spaceValid = True;
                         out.space = PlioHostDma;
                         out.addressStrobe = True;
@@ -65,7 +65,7 @@ module mkPLIOQICPhase5(PLIOQICPhase5Ifc);
                         out.adValid = True;
                         out.ad = bufferData;
                         out.parValid = True;
-                        out.par = oddParity32P1(bufferData);
+                        out.parity = oddParity32P1(bufferData);
                         out.dataStrobe = True;
                     end
                 end

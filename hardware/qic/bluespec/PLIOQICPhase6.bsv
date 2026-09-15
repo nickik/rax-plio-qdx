@@ -50,7 +50,7 @@ module mkPLIOQICPhase6(PLIOQICPhase6Ifc);
                         out.adValid = True;
                         out.ad = address;
                         out.parValid = True;
-                        out.par = oddParity32P1(address);
+                        out.parity = oddParity32P1(address);
                         out.spaceValid = True;
                         out.space = PlioController;
                         out.addressStrobe = True;
@@ -65,7 +65,7 @@ module mkPLIOQICPhase6(PLIOQICPhase6Ifc);
                         out.adValid = True;
                         out.ad = 0;
                         out.parValid = True;
-                        out.par = oddParity32P1(0);
+                        out.parity = oddParity32P1(0);
                         out.dataStrobe = True;
                     end
                 end

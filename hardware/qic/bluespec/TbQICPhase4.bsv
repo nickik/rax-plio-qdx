@@ -29,7 +29,7 @@ function PlioIn dataBeat(Bit#(32) value, Bool badParity);
     x.adValid = True;
     x.ad = value;
     x.parValid = True;
-    x.par = oddParity32P1(value) ^ (badParity ? 4'h1 : 4'h0);
+    x.parity = oddParity32P1(value) ^ (badParity ? 4'h1 : 4'h0);
     return x;
 endfunction
 
@@ -92,12 +92,18 @@ function QliIn qiFor(Bit#(8) c);
 endfunction
 
 function String eventFor(Bit#(8) c);
-    if (c == 0 || c == 17 || c == 24) return "reset";
-    if (c == 1 || c == 2 || c == 18 || c == 19 || c == 25 || c == 26) return "manager_request";
-    if (c == 3 || c == 20 || c == 27) return "manager_address";
-    if (c == 15 || c == 16 || c == 22 || c == 23 || c == 29) return "dma_complete";
-    if (c == 21 || c == 28) return "fault";
-    return "dma_data";
+    String result = "dma_data";
+    if (c == 0 || c == 17 || c == 24)
+        result = "reset";
+    else if (c == 1 || c == 2 || c == 18 || c == 19 || c == 25 || c == 26)
+        result = "manager_request";
+    else if (c == 3 || c == 20 || c == 27)
+        result = "manager_address";
+    else if (c == 15 || c == 16 || c == 22 || c == 23 || c == 29)
+        result = "dma_complete";
+    else if (c == 21 || c == 28)
+        result = "fault";
+    return result;
 endfunction
 
 function Bit#(2) dmaDirCode(DmaDirection d);
@@ -105,27 +111,34 @@ function Bit#(2) dmaDirCode(DmaDirection d);
 endfunction
 
 function Bit#(3) dmaStatusCode(DmaStatus s);
+    Bit#(3) result = 0;
     case (s)
-        DmaOk: return 0;
-        DmaBusError: return 1;
-        DmaParityError: return 2;
-        DmaTimeout: return 3;
-        DmaProtocolError: return 4;
+        DmaOk: result = 0;
+        DmaBusError: result = 1;
+        DmaParityError: result = 2;
+        DmaTimeout: result = 3;
+        DmaProtocolError: result = 4;
     endcase
+    return result;
 endfunction
 
 function Action emitTrace(Bit#(8) cycle, PlioIn pi, QliIn qi, PlioOut po, QliOut qo);
     action
+        Bit#(32) cycle32 = zeroExtend(cycle);
+        Bit#(32) piAd = pi.adValid ? pi.ad : 0;
+        Bit#(4) piParity = pi.parValid ? pi.parity : 0;
+        Bit#(32) poAd = po.adValid ? po.ad : 0;
+        Bit#(4) poParity = po.parValid ? po.parity : 0;
         $display(
             "TRACE|v1|c=%08x|pi=%0d.%0d.%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qi=0.0.0.00000000.%0d.%0d.%08x.%0d.%0d.0.00000000.%0d.0.0|po=%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qo=%0d.0.00000000.0.0.00000000.0.0.%0d.%0d.%08x.%0d.%0d.%02x.%01x.0|ev=%s",
-            zeroExtend(cycle),
-            pack(pi.reset), pack(pi.selected), pack(pi.grant), pack(pi.adValid), pi.ad,
-            pack(pi.parValid), pi.par, pack(pi.spaceValid), pack(pi.space),
+            cycle32,
+            pack(pi.reset), pack(pi.selected), pack(pi.grant), pack(pi.adValid), piAd,
+            pack(pi.parValid), piParity, pack(pi.spaceValid), pack(pi.space),
             pack(pi.addressStrobe), pack(pi.read), pi.byteEnable, pack(pi.burst),
             pack(pi.dataStrobe), pack(pi.ack), pack(pi.err),
             pack(qi.dmaRequestValid), dmaDirCode(qi.dmaRequest.direction), qi.dmaRequest.address,
             pack(qi.dmaRequest.words), pack(qi.dmaReadReady), pack(qi.dmaCompletionReady),
-            pack(po.request), pack(po.adValid), po.ad, pack(po.parValid), po.par,
+            pack(po.request), pack(po.adValid), poAd, pack(po.parValid), poParity,
             pack(po.spaceValid), pack(po.space), pack(po.addressStrobe), pack(po.read),
             po.byteEnable, pack(po.burst), pack(po.dataStrobe), pack(po.ack), pack(po.err),
             pack(qo.reset), pack(qo.dmaRequestReady), pack(qo.dmaReadValid), qo.dmaRead.data,
