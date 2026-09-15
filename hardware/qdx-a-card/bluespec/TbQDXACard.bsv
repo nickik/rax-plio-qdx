@@ -133,11 +133,14 @@ module mkTbQDXACard(Empty);
         PlioIn b = plioInDefault();
         if (work == WReset) begin
             b.reset = True;
-            return b;
         end
-        if (isProgramming(work))
-            return workerBus(work,workerPhase);
-        return peerBus(peer,peerRead,peerBeat);
+        else if (isProgramming(work)) begin
+            b = workerBus(work, workerPhase);
+        end
+        else begin
+            b = peerBus(peer, peerRead, peerBeat);
+        end
+        return b;
     endfunction
 
     rule launch (card.ready && work != WDone);
