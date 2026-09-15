@@ -25,7 +25,7 @@ function HostWorkerRequest requestFor(HostCase c);
         CWaitRead8: r = HostWorkerRequest { slot: 0, address: 32'h101, width: HostW8, write: False, value: 0 };
         CBadParity: r = HostWorkerRequest { slot: 0, address: 32'h101, width: HostW8, write: False, value: 0 };
         CDataErr: r = HostWorkerRequest { slot: 0, address: 32'h100, width: HostW32, write: True, value: 32'h1122_3344 };
-        default: noAction;
+        default: r = r;
     endcase
     return r;
 endfunction
