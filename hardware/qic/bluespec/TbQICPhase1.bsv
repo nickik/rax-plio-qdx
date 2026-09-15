@@ -66,14 +66,18 @@ function Action emitTrace(Bit#(8) cycle, PlioIn pi, PlioOut po, QliOut qo, Strin
     action
         Bit#(32) cycle32 = zeroExtend(cycle);
         Bit#(8) completionStatus = zeroExtend(pack(qo.dmaCompletion.status));
+        Bit#(32) piAd = pi.adValid ? pi.ad : 0;
+        Bit#(4) piParity = pi.parValid ? pi.parity : 0;
+        Bit#(32) poAd = po.adValid ? po.ad : 0;
+        Bit#(4) poParity = po.parValid ? po.parity : 0;
         $display(
             "TRACE|v1|c=%08x|pi=%0d.%0d.%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qi=0.0.0.00000000.0.0.00000000.0.0.0.00000000.0.0.0|po=%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qo=%0d.%0d.%08x.%0d.%01x.%08x.%0d.%0d.%0d.%0d.%08x.%0d.%0d.%02x.%01x.%0d|ev=%s",
             cycle32,
-            pack(pi.reset), pack(pi.selected), pack(pi.grant), pack(pi.adValid), pi.ad,
-            pack(pi.parValid), pi.parity, pack(pi.spaceValid), pack(pi.space),
+            pack(pi.reset), pack(pi.selected), pack(pi.grant), pack(pi.adValid), piAd,
+            pack(pi.parValid), piParity, pack(pi.spaceValid), pack(pi.space),
             pack(pi.addressStrobe), pack(pi.read), pi.byteEnable, pack(pi.burst),
             pack(pi.dataStrobe), pack(pi.ack), pack(pi.err),
-            pack(po.request), pack(po.adValid), po.ad, pack(po.parValid), po.parity,
+            pack(po.request), pack(po.adValid), poAd, pack(po.parValid), poParity,
             pack(po.spaceValid), pack(po.space), pack(po.addressStrobe), pack(po.read),
             po.byteEnable, pack(po.burst), pack(po.dataStrobe), pack(po.ack), pack(po.err),
             pack(qo.reset), pack(qo.mmioRequestValid), qo.mmioRequest.address,
