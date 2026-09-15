@@ -46,14 +46,14 @@ echo "== M3 Rust DMA capability/memory model =="
 cargo test --manifest-path "$ROOT/Cargo.toml" -p plio-host-dma-model --all-targets
 cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p plio-host-dma-model --bin conformance | tee "$BUILD/m3-rust.log"
 grep '^PLIOHOSTM3TRACE|' "$BUILD/m3-rust.log" > "$BUILD/m3-rust.trace"
-test "$(wc -l < "$BUILD/m3-rust.trace")" -eq 10
+test "$(wc -l < "$BUILD/m3-rust.trace")" -eq 11
 
 echo "== M3 Bluesim DMA capability/memory model =="
 bsc "${BSC_STACK[@]}" -u -sim -p "$SEARCH" -bdir "$BUILD/m3-sim" -simdir "$BUILD/m3-sim" -info-dir "$BUILD/m3-sim" -g mkTbPLIOHostDmaM3 "$ROOT/plio-rax-host/bluespec/TbPLIOHostDmaM3.bsv"
 bsc "${BSC_STACK[@]}" -sim -p "$SEARCH" -bdir "$BUILD/m3-sim" -simdir "$BUILD/m3-sim" -e mkTbPLIOHostDmaM3 -o "$BUILD/tb-plio-host-m3"
 "$BUILD/tb-plio-host-m3" | tee "$BUILD/m3-bsv.log"
 grep '^PLIOHOSTM3TRACE|' "$BUILD/m3-bsv.log" > "$BUILD/m3-bsv.trace"
-test "$(wc -l < "$BUILD/m3-bsv.trace")" -eq 10
+test "$(wc -l < "$BUILD/m3-bsv.trace")" -eq 11
 grep -q '^PASS PLIO host M3 DMA capability/memory-port semantics$' "$BUILD/m3-bsv.log"
 echo "== Exact M3 Rust / Bluesim equivalence =="
 diff -u "$BUILD/m3-rust.trace" "$BUILD/m3-bsv.trace"
