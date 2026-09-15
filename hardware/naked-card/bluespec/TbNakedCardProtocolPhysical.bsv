@@ -65,7 +65,7 @@ module mkTbNakedCardProtocolPhysical(Empty);
             end
             PeerNotificationAddress: begin b.grant=True; b.ack=True; end
             PeerNotificationData: begin b.grant=True; b.ack=True; end
-            default: noAction;
+            default: begin end
         endcase
         return b;
     endfunction
@@ -98,8 +98,6 @@ module mkTbNakedCardProtocolPhysical(Empty);
             DmaRequest r=currentRequest(mode,burstIndex);
             if (requestPending) begin
                 d.dmaRequestValid=True; d.dmaRequest=r;
-                // Decoder preview for final DMA_HEADER LACK. The QIC is only
-                // clocked with local.toQic after the physical final token.
                 preview.dmaRequestValid=True; preview.dmaRequest=r;
             end
             else if (mode==ModeD2H && deviceIndex < wordCountFor(burstIndex)) begin
@@ -146,8 +144,10 @@ module mkTbNakedCardProtocolPhysical(Empty);
                 $display("FAIL DMA completion mode=%0d burst=%0d status=%0d count=%0d",pack(mode),burstIndex,pack(qo.dmaCompletion.status),qo.dmaCompletion.wordsCompleted);
                 $finish(1);
             end
-            $display("NAKEDTRACE|v1|case=%s|words=%0d|status=0",
-                mode==ModeD2H ? "d2h" : "h2d",expected);
+            if (mode==ModeD2H)
+                $display("NAKEDTRACE|v1|case=d2h|words=%0d|status=0",expected);
+            else
+                $display("NAKEDTRACE|v1|case=h2d|words=%0d|status=0",expected);
             if (burstIndex==3) begin
                 if (mode==ModeD2H) begin mode<=ModeH2D; burstIndex<=0; end
                 else begin mode<=ModeNotify; burstIndex<=0; end
