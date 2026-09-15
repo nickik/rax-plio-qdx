@@ -14,12 +14,11 @@ command -v bsc >/dev/null
 echo "== Rust QIC regression oracle =="
 cargo test --manifest-path "$ROOT/Cargo.toml" -p plio-qic-model
 
-echo "== Rust QLI-16 codec + NakedCard physical stack =="
-cargo test --manifest-path "$ROOT/Cargo.toml" -p qli16-model --all-targets
-cargo test --manifest-path "$ROOT/Cargo.toml" -p naked-card --test physical_stack -- --nocapture
-
 echo "== Exact Rust / Bluesim QLI-16 codec equivalence =="
 bash "$ROOT/scripts/test-qli16-codec.sh"
+
+echo "== Rust complete NakedCard physical stack =="
+cargo test --manifest-path "$ROOT/Cargo.toml" -p naked-card --test physical_stack -- --nocapture
 
 echo "== Bluesim full worker NakedCard =="
 bsc -u -sim -p "$SEARCH" \
