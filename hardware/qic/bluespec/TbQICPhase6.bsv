@@ -13,67 +13,65 @@ function QliIn notifDma(Bit#(8) ch); QliIn q=notif(ch); q.dmaRequestValid=True; 
 function QliIn dmaOnly(); QliIn q=qliInDefault(); q.dmaRequestValid=True; q.dmaRequest=DmaRequest{direction:HostToDevice,address:32'h4400_0000,words:BurstFour}; return q; endfunction
 
 function PlioIn pi(Bit#(16) c);
-    if (c==0 || c==10 || c==15 || c==21 || c==27 || c==288) return busReset();
-
+    PlioIn result = plioInDefault();
+    if (c==0 || c==10 || c==15 || c==21 || c==27 || c==288) begin
+        result = busReset();
+    end
     // Successful channel-2 transaction: grant, address waits/ACK, data wait/ACK.
-    if (c==3 || c==4 || c==5 || c==6 || c==7 || c==8) begin
-        if (c==6 || c==8) return bgAck();
-        return bg();
+    else if (c==3 || c==4 || c==5 || c==6 || c==7 || c==8) begin
+        result = (c==6 || c==8) ? bgAck() : bg();
     end
-
     // Address error on channel 1.
-    if (c==12 || c==13) begin
-        if (c==13) return bgErr();
-        return bg();
+    else if (c==12 || c==13) begin
+        result = c==13 ? bgErr() : bg();
     end
-
     // Data error on channel 3.
-    if (c==17 || c==18 || c==19) begin
-        if (c==18) return bgAck();
-        if (c==19) return bgErr();
-        return bg();
+    else if (c==17 || c==18 || c==19) begin
+        if (c==18) result = bgAck();
+        else if (c==19) result = bgErr();
+        else result = bg();
     end
-
     // BG loss during channel-0 data: address succeeds at c24, grant absent at c25.
-    if (c==23 || c==24) begin
-        if (c==24) return bgAck();
-        return bg();
+    else if (c==23 || c==24) begin
+        result = c==24 ? bgAck() : bg();
     end
-
     // Channel-2 data timeout: address succeeds at c30, then 256 granted waits.
-    if (c==29 || c==30 || (c>=31 && c<=286)) begin
-        if (c==30) return bgAck();
-        return bg();
+    else if (c==29 || c==30 || (c>=31 && c<=286)) begin
+        result = c==30 ? bgAck() : bg();
     end
-
     // Wrong producer channel at the ACKed data beat.
-    if (c==290 || c==291 || c==292) begin
-        if (c==291 || c==292) return bgAck();
-        return bg();
+    else if (c==290 || c==291 || c==292) begin
+        result = (c==291 || c==292) ? bgAck() : bg();
     end
-
-    return plioInDefault();
+    return result;
 endfunction
 
 function QliIn qi(Bit#(16) c);
-    if (c>=1 && c<=8) return notifDma(2);
-    if (c==9) return dmaOnly();
-    if (c>=11 && c<=14) return notif(1);
-    if (c>=16 && c<=20) return notif(3);
-    if (c>=22 && c<=26) return notif(0);
-    if (c>=28 && c<=287) return notif(2);
-    if (c>=289 && c<=291) return notif(1);
-    if (c==292) return notif(2);
-    return qliInDefault();
+    QliIn result = qliInDefault();
+    if (c>=1 && c<=8) result = notifDma(2);
+    else if (c==9) result = dmaOnly();
+    else if (c>=11 && c<=14) result = notif(1);
+    else if (c>=16 && c<=20) result = notif(3);
+    else if (c>=22 && c<=26) result = notif(0);
+    else if (c>=28 && c<=287) result = notif(2);
+    else if (c>=289 && c<=291) result = notif(1);
+    else if (c==292) result = notif(2);
+    return result;
 endfunction
 
 function String ev(Bit#(16) c);
-    if (c==0 || c==10 || c==15 || c==21 || c==27 || c==288) return "reset";
-    if (c==13 || c==19 || c==25) return "fault";
-    if (c==4 || c==5 || c==6 || c==13 || c==18 || c==24 || c==30 || c==291) return "manager_address";
-    if (c==7 || c==8 || c==19 || c==25 || (c>=31 && c<=286) || c==292) return "notification_data";
-    if (c==9) return "idle";
-    return "manager_request";
+    String result = "manager_request";
+    if (c==0 || c==10 || c==15 || c==21 || c==27 || c==288)
+        result = "reset";
+    else if (c==13 || c==19 || c==25)
+        result = "fault";
+    else if (c==4 || c==5 || c==6 || c==13 || c==18 || c==24 || c==30 || c==291)
+        result = "manager_address";
+    else if (c==7 || c==8 || c==19 || c==25 || (c>=31 && c<=286) || c==292)
+        result = "notification_data";
+    else if (c==9)
+        result = "idle";
+    return result;
 endfunction
 
 function Bit#(8) notifChannel(QliIn q); return q.notificationValid ? q.notification.channel : 0; endfunction
@@ -85,10 +83,15 @@ function Bit#(2) dmaWords(QliIn q); return q.dmaRequestValid ? pack(q.dmaRequest
 
 function Action trace(Bit#(16) c,PlioIn i,QliIn q,PlioOut o,QliOut z);
  action
+  Bit#(32) cycle32 = zeroExtend(c);
+  Bit#(32) piAd = i.adValid ? i.ad : 0;
+  Bit#(4) piParity = i.parValid ? i.parity : 0;
+  Bit#(32) poAd = o.adValid ? o.ad : 0;
+  Bit#(4) poParity = o.parValid ? o.parity : 0;
   $display("TRACE|v1|c=%08x|pi=%0d.%0d.%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qi=0.0.0.00000000.%0d.%0d.%08x.%0d.0.0.00000000.0.%0d.%02x|po=%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qo=%0d.0.00000000.0.0.00000000.0.0.%0d.0.00000000.0.0.00.0.%0d|ev=%s",
-   zeroExtend(c), pack(i.reset),pack(i.selected),pack(i.grant),pack(i.adValid),i.ad,pack(i.parValid),i.par,pack(i.spaceValid),pack(i.space),pack(i.addressStrobe),pack(i.read),i.byteEnable,pack(i.burst),pack(i.dataStrobe),pack(i.ack),pack(i.err),
+   cycle32, pack(i.reset),pack(i.selected),pack(i.grant),pack(i.adValid),piAd,pack(i.parValid),piParity,pack(i.spaceValid),pack(i.space),pack(i.addressStrobe),pack(i.read),i.byteEnable,pack(i.burst),pack(i.dataStrobe),pack(i.ack),pack(i.err),
    dmaValid(q),dmaDir(q),dmaAddr(q),dmaWords(q),notifValid(q),notifChannel(q),
-   pack(o.request),pack(o.adValid),o.ad,pack(o.parValid),o.par,pack(o.spaceValid),pack(o.space),pack(o.addressStrobe),pack(o.read),o.byteEnable,pack(o.burst),pack(o.dataStrobe),pack(o.ack),pack(o.err),
+   pack(o.request),pack(o.adValid),poAd,pack(o.parValid),poParity,pack(o.spaceValid),pack(o.space),pack(o.addressStrobe),pack(o.read),o.byteEnable,pack(o.burst),pack(o.dataStrobe),pack(o.ack),pack(o.err),
    pack(z.reset),pack(z.dmaRequestReady),pack(z.notificationReady),ev(c));
  endaction
 endfunction
