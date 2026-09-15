@@ -1,0 +1,105 @@
+package TbPLIOHostQDXAIntegration;
+
+import Vector::*;
+import RegFile::*;
+import QLITypes::*;
+import QICInterfaces::*;
+import PLIOTx::*;
+import QDXA::*;
+import QDXACard::*;
+import PLIOWorkerHost::*;
+import PLIOHostCore::*;
+
+function PlioOut fromBackplane(BackplaneDrive bp);
+    PlioOut o=plioOutDefault();
+    o.request=bp.request;
+    if(bp.controlValid) begin o.spaceValid=True;o.space=unpack(bp.control.space);o.addressStrobe=bp.control.addressStrobe;o.read=bp.control.read;o.byteEnable=bp.control.byteEnable;o.burst=unpack(bp.control.burstLen);o.dataStrobe=bp.control.dataStrobe; end
+    if(bp.adParValid) begin o.adValid=True;o.ad=bp.ad;o.parValid=True;o.parity=bp.parity; end
+    if(bp.responseValid) begin o.ack=bp.ack;o.err=bp.err; end
+    return o;
+endfunction
+
+typedef enum { SBind0,SBind1a,SBind1b,SBind1c,SBind2a,SBind2b,SBind2c,SBind2d,SReset,SReadCap,SSqBase,SSqSize,SCqBase,SCqSize,SControl,SSqTail,SRun,SDone } Stage deriving(Bits,Eq,FShow);
+function Bool workerStage(Stage s); return s>=SReadCap && s<=SSqTail; endfunction
+function HostWorkerRequest workerReq(Stage s);
+    Bit#(32) a=regQdxCap; Bit#(32) d=0; HostWorkerWidth w=HostW32; Bool wr=True;
+    case(s)
+      SReadCap:begin a=regQdxCap;wr=False;end
+      SSqBase:begin a=regSqBase;d=32'h1200_1000;end
+      SSqSize:begin a=regSqSize;d=4;w=HostW16;end
+      SCqBase:begin a=regCqBase;d=32'h2300_2000;end
+      SCqSize:begin a=regCqSize;d=4;w=HostW16;end
+      SControl:begin a=regQdxControl;d=5;end
+      SSqTail:begin a=regSqTail;d=1;w=HostW16;end
+      default:begin end
+    endcase
+    return HostWorkerRequest{slot:0,address:a,width:w,write:wr,value:d};
+endfunction
+function Stage nextWorker(Stage s);
+    case(s) SReadCap:return SSqBase;SSqBase:return SSqSize;SSqSize:return SCqBase;SCqBase:return SCqSize;SCqSize:return SControl;SControl:return SSqTail;SSqTail:return SRun;default:return s;endcase
+endfunction
+
+module mkTbPLIOHostQDXAIntegration(Empty);
+    PLIOHostCoreIfc host<-mkPLIOHostCore;
+    QDXACardIfc card<-mkQDXACard;
+    RegFile#(Bit#(30),Bit#(32)) mem<-mkRegFileFull;
+    Reg#(Stage) stage<-mkReg(SBind0);
+    Reg#(Bool) workerSent<-mkReg(False);
+    Reg#(PlioOut) cardImage<-mkReg(plioOutDefault());
+    Reg#(Bool) launched<-mkReg(False);
+    Reg#(Bool) memResp<-mkReg(False); Reg#(Bool) memRespWrite<-mkReg(False); Reg#(Bit#(32)) memRespData<-mkReg(0);
+    Reg#(Bit#(16)) watchdog<-mkReg(0);
+
+    rule bind0(stage==SBind0); host.bindDma(0,0,0,25'h10000,True,True); stage<=SBind1a; endrule
+    rule bind1a(stage==SBind1a);host.bindDma(0,1,0,25'h10000,True,True);stage<=SBind1b;endrule
+    rule bind1b(stage==SBind1b);host.bindDma(0,1,0,25'h10000,True,True);stage<=SBind1c;endrule
+    rule bind1c(stage==SBind1c);host.bindDma(0,1,0,25'h10000,True,True);stage<=SBind2a;endrule
+    rule bind2a(stage==SBind2a);host.bindDma(0,2,0,25'h10000,True,True);stage<=SBind2b;endrule
+    rule bind2b(stage==SBind2b);host.bindDma(0,2,0,25'h10000,True,True);stage<=SBind2c;endrule
+    rule bind2c(stage==SBind2c);host.bindDma(0,2,0,25'h10000,True,True);stage<=SBind2d;endrule
+    rule bind2d(stage==SBind2d);
+        host.bindDma(0,2,0,25'h10000,True,True);
+        for(Integer i=0;i<8;i=i+1) mem.upd(fromInteger(16'h400+i),32'ha000_0000+fromInteger(i*4));
+        for(Integer i=0;i<4;i=i+1) mem.upd(fromInteger(16'h800+i),0);
+        stage<=SReset;
+    endrule
+
+    rule launch(!launched && stage>=SReset && stage!=SDone && card.ready);
+        Vector#(8,PlioOut) cards=replicate(plioOutDefault());cards[0]=cardImage;
+        Vector#(8,PlioIn) h=host.drive(cards,stage==SReset);
+        card.startCycle(h[0]); launched<=True;
+    endrule
+
+    rule consume(launched && card.cycleDone && stage>=SReset && stage!=SDone);
+        BackplaneDrive bp=card.backplane; PlioOut ci=fromBackplane(bp); Vector#(8,PlioOut) cards=replicate(plioOutDefault());cards[0]=ci;
+        Bool send=workerStage(stage)&&!workerSent&&!host.workerCompletionValid;
+        HostWorkerRequest wr=workerReq(stage);
+        Bool req=host.memoryRequestValid; Bool reqWr=host.memoryWrite; Bit#(32) reqAddr=host.memoryAddress; Bit#(32) reqData=host.memoryWriteData;
+        host.advance(cards,send,wr,True,memResp,False,memResp&&!memRespWrite,memRespData,stage==SReset);
+        if(req) begin
+            if(reqWr) mem.upd(reqAddr[31:2],reqData); else memRespData<=mem.sub(reqAddr[31:2]);
+            memRespWrite<=reqWr; memResp<=True;
+        end else memResp<=False;
+        if(send) workerSent<=True;
+        if(host.workerCompletionValid) begin
+            HostWorkerCompletion c=host.workerCompletion;
+            if(c.status!=HostSuccess) begin $display("FAIL M4.5 QDX-A worker status=%0d stage=%0d",pack(c.status),pack(stage));$finish(1);end
+            if(stage==SReadCap && c.data!=qdxCapValue) begin $display("FAIL M4.5 QDX-A discovery %08x",c.data);$finish(1);end
+            if(stage==SReadCap) $display("M45TRACE|card=qdxa|event=discover|cap=%08x",c.data);
+            host.clearWorkerCompletion; stage<=nextWorker(stage); workerSent<=False;
+        end
+        if(stage==SReset) begin stage<=SReadCap;workerSent<=False;$display("M45TRACE|card=qdxa|event=reset");end
+        if(stage==SRun && host.notificationPending(0,0)) begin
+            Bit#(32) c0=mem.sub(30'h800);Bit#(32)c1=mem.sub(30'h801);Bit#(32)c2=mem.sub(30'h802);Bit#(32)c3=mem.sub(30'h803);
+            if(c0!=32'hc001_0000||c1!=32'ha000_0004||c2!=32'ha000_0018||c3!=32'ha000_001c) begin $display("FAIL M4.5 QDX-A CQ %08x %08x %08x %08x",c0,c1,c2,c3);$finish(1);end
+            if(card.qdxError!=QdxErrNone||card.sqHead!=1||card.sqTail!=1||card.cqTail!=1||card.endpointLastCommand0!=32'ha000_0000) begin $display("FAIL M4.5 QDX-A final state");$finish(1);end
+            $display("M45TRACE|card=qdxa|event=end_to_end|sq_dma=1|cq_dma=1|notify=1|cq_exact=1"); stage<=SDone;
+        end
+        if(card.protocolFault) begin $display("FAIL M4.5 QDX-A physical protocol fault");$finish(1);end
+        cardImage<=ci;card.finishCycle;launched<=False;watchdog<=watchdog+1;
+        if(watchdog>2000) begin $display("FAIL M4.5 QDX-A watchdog role=%0d qdx=%0d",pack(host.debugRole),pack(card.qdxState));$finish(1);end
+    endrule
+
+    rule done(stage==SDone && !launched);$display("PASS M4.5 real PLIOHostCore <-> physical QDX-A card");$finish(0);endrule
+endmodule
+endpackage

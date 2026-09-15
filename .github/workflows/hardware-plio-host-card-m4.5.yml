@@ -1,0 +1,31 @@
+name: Hardware PLIO host/card M4.5
+on:
+  push:
+    branches: [plio-host-card-m4.5]
+    paths:
+      - 'hardware/m4.5/**'
+      - 'hardware/plio-rax-host/**'
+      - 'hardware/naked-card/**'
+      - 'hardware/qdx-a/**'
+      - 'hardware/qdx-a-card/**'
+      - 'hardware/qdx-b/**'
+      - 'hardware/qdx-b-card/**'
+      - 'hardware/scripts/test-plio-host-card-m4.5.sh'
+      - 'hardware/Cargo.toml'
+      - '.github/workflows/hardware-plio-host-card-m4.5.yml'
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bluespec
+        run: |
+          curl -L -o /tmp/bsc.tar.gz https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-ubuntu-22.04.tar.gz
+          mkdir -p /tmp/bsc && tar -xzf /tmp/bsc.tar.gz -C /tmp/bsc --strip-components=1
+          echo '/tmp/bsc/bin' >> "$GITHUB_PATH"
+      - name: Run M4.5 physical host/card gate
+        run: bash hardware/scripts/test-plio-host-card-m4.5.sh

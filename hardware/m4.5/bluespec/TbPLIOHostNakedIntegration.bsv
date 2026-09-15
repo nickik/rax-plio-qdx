@@ -1,0 +1,32 @@
+package TbPLIOHostNakedIntegration;
+import Vector::*;import QLITypes::*;import QICInterfaces::*;import PLIOQIC::*;import QLI16Codec::*;import NakedDevice::*;import PLIOTx::*;import PLIOTxCardHarness::*;import PLIOWorkerHost::*;import PLIOHostCore::*;
+function PlioOut nakedFromBp(BackplaneDrive bp);PlioOut o=plioOutDefault();o.request=bp.request;if(bp.controlValid)begin o.spaceValid=True;o.space=unpack(bp.control.space);o.addressStrobe=bp.control.addressStrobe;o.read=bp.control.read;o.byteEnable=bp.control.byteEnable;o.burst=unpack(bp.control.burstLen);o.dataStrobe=bp.control.dataStrobe;end if(bp.adParValid)begin o.adValid=True;o.ad=bp.ad;o.parValid=True;o.parity=bp.parity;end if(bp.responseValid)begin o.ack=bp.ack;o.err=bp.err;end return o;endfunction
+typedef enum {NReset,NRead,NWrite,NError,NTimeout,NTimeoutRun,NDone} NStage deriving(Bits,Eq,FShow);
+function HostWorkerRequest nreq(NStage s);Bit#(32)a=0;Bool wr=False;Bit#(32)d=0;if(s==NWrite)begin a=32'h18;wr=True;d=32'h12345678;end else if(s==NError)a=32'h80;else if(s==NTimeout)a=0;return HostWorkerRequest{slot:0,address:a,width:HostW32,write:wr,value:d};endfunction
+module mkTbPLIOHostNakedIntegration(Empty);
+ PLIOHostCoreIfc host<-mkPLIOHostCore;PLIOQICIfc qic<-mkPLIOQIC;QLI16CodecIfc codec<-mkQLI16Codec;NakedDeviceIfc dev<-mkNakedDevice;PLIOTxCardHarnessIfc phy<-mkPLIOTxCardHarness;
+ Reg#(NStage)stage<-mkReg(NReset);Reg#(Bool)sent<-mkReg(False);Reg#(Bit#(4))phase<-mkReg(0);Reg#(PlioOut)cardImage<-mkReg(plioOutDefault());Reg#(PlioIn)sampled<-mkReg(plioInDefault());Reg#(QliIn)held<-mkReg(qliInDefault());Reg#(Bit#(9))timeoutCycles<-mkReg(0);
+ rule launch(phase==0&&stage!=NDone&&stage!=NTimeoutRun&&phy.ready);Vector#(8,PlioOut)c=replicate(plioOutDefault());c[0]=cardImage;Vector#(8,PlioIn)h=host.drive(c,stage==NReset);phy.startReceive(h[0]);sampled<=h[0];phase<=1;endrule
+ rule rx(phase==1&&!phy.receiveDone);phy.step(False);endrule
+ rule beginLocal(phase==1&&phy.receiveDone);PlioIn b=phy.toQic;QliIn d=qliInDefault();d.mmioReady=dev.requestReady;d.dmaCompletionReady=True;if(dev.responseValid)begin d.mmioResponseValid=True;d.mmioResponse=dev.response;end QliOut qo=qic.driveQli(b,qliInDefault());codec.load(qo,d);sampled<=b;phase<=2;endrule
+ rule l0(phase==2);codec.step;phase<=3;endrule rule l1(phase==3);codec.step;phase<=4;endrule
+ rule apply(phase==4&&codec.cycleComplete);QliIn qi=codec.toQic;QliOut qo=codec.toDevice;dev.applyQli(qo);PlioOut po=qic.drivePlio(sampled,qi);phy.startTransmit(po);held<=qi;phase<=5;endrule
+ rule tx(phase==5&&!phy.transmitDone);phy.step(False);endrule
+ rule consume(phase==5&&phy.transmitDone);
+  BackplaneDrive bp=phy.backplane;PlioOut ci=nakedFromBp(bp);Vector#(8,PlioOut)c=replicate(plioOutDefault());c[0]=ci;Bool send=(stage==NRead||stage==NWrite||stage==NError)&&!sent&&!host.workerCompletionValid;
+  host.advance(c,send,nreq(stage),True,False,False,False,0,stage==NReset);if(send)sent<=True;
+  if(host.workerCompletionValid)begin HostWorkerCompletion x=host.workerCompletion;case(stage)NRead:begin if(x.status!=HostSuccess||x.data!=32'h504c494f)begin $display("FAIL M4.5 Naked read");$finish(1);end $display("M45TRACE|card=naked|event=read|data=%08x",x.data);stage<=NWrite;end NWrite:begin if(x.status!=HostSuccess)begin $display("FAIL M4.5 Naked write");$finish(1);end $display("M45TRACE|card=naked|event=write|ack=1");stage<=NError;end NError:begin if(x.status!=HostBusError)begin $display("FAIL M4.5 Naked ERR status=%0d",pack(x.status));$finish(1);end $display("M45TRACE|card=naked|event=err|typed=1");stage<=NTimeout;end default:noAction;endcase host.clearWorkerCompletion;sent<=False;end
+  if(stage==NReset)begin stage<=NRead;sent<=False;$display("M45TRACE|card=naked|event=reset");end
+  if(stage==NTimeout)begin stage<=NTimeoutRun;sent<=True;end
+  if(phy.protocolFault||codec.protocolFault)begin $display("FAIL M4.5 Naked physical protocol fault");$finish(1);end qic.advance(sampled,held);phy.finishCycle;cardImage<=ci;phase<=0;
+ endrule
+ // Deliberately model a physically non-responding/unplugged slot after proving the real card paths.
+ rule timeoutRun(stage==NTimeoutRun);
+  Vector#(8,PlioOut)c=replicate(plioOutDefault());HostWorkerRequest r=nreq(NTimeout);
+  host.advance(c,timeoutCycles==0,r,True,False,False,False,0,False);timeoutCycles<=timeoutCycles+1;
+  if(host.workerCompletionValid)begin if(host.workerCompletion.status!=HostTimeout)begin $display("FAIL M4.5 timeout status=%0d",pack(host.workerCompletion.status));$finish(1);end $display("M45TRACE|card=naked|event=timeout|cycles=256");stage<=NDone;end
+  if(timeoutCycles>270)begin $display("FAIL M4.5 timeout missing");$finish(1);end
+ endrule
+ rule done(stage==NDone);$display("PASS M4.5 real PLIOHostCore <-> NakedCard physical worker/reset/error plus timeout");$finish(0);endrule
+endmodule
+endpackage
