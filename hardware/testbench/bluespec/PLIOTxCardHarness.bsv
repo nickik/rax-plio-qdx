@@ -19,6 +19,7 @@ interface PLIOTxCardHarnessIfc;
     method Action startTransmit(PlioOut image);
     method Bool transmitDone;
     method BackplaneDrive backplane;
+    method Action finishCycle;
     method Action step(Bool reset);
     method Bool protocolFault;
 endinterface
@@ -92,6 +93,10 @@ module mkPLIOTxCardHarness(PLIOTxCardHarnessIfc);
 
     method Bool transmitDone = state==CTxDone;
     method BackplaneDrive backplane if (state==CTxDone) = exposed;
+
+    method Action finishCycle if (state==CTxDone);
+        state<=CIdle;
+    endmethod
 
     method Action step(Bool reset);
         action
