@@ -97,17 +97,21 @@ function PlioIn workerBus(Work w, WorkerPhase p);
     return b;
 endfunction
 
-function PlioIn peerBus(PeerState p, Bool dmaRead, Bit#(5) beat);
+function PlioIn peerBus(PeerState p, Bool dmaRead, Bit#(5) beat, Bool responsePending);
     PlioIn b = plioInDefault();
     case (p)
         PeerGrant: b.grant = True;
         PeerDmaAddress: begin b.grant=True; b.ack=True; end
         PeerDmaData: begin
-            b.grant=True; b.ack=True;
-            if (dmaRead) begin
-                Bit#(32) data = 32'ha000_0000 + zeroExtend(beat)*4;
-                b.adValid=True; b.ad=data;
-                b.parValid=True; b.parity=oddParity32P1(data);
+            b.grant=True;
+            // ACK only a data phase observed on the previous physical round trip.
+            if (responsePending) begin
+                b.ack=True;
+                if (dmaRead) begin
+                    Bit#(32) data = 32'ha000_0000 + zeroExtend(beat)*4;
+                    b.adValid=True; b.ad=data;
+                    b.parValid=True; b.parity=oddParity32P1(data);
+                end
             end
         end
         PeerNotificationAddress: begin b.grant=True; b.ack=True; end
@@ -126,6 +130,7 @@ module mkTbQDXACard(Empty);
     Reg#(Bool) peerRead <- mkReg(False);
     Reg#(Bit#(5)) peerBeat <- mkReg(0);
     Reg#(Bit#(5)) peerTotal <- mkReg(0);
+    Reg#(Bool) dataResponsePending <- mkReg(False);
     Reg#(Bool) notificationSeen <- mkReg(False);
     Reg#(Bit#(16)) idleCycles <- mkReg(0);
 
@@ -138,7 +143,7 @@ module mkTbQDXACard(Empty);
             b = workerBus(work, workerPhase);
         end
         else begin
-            b = peerBus(peer, peerRead, peerBeat);
+            b = peerBus(peer, peerRead, peerBeat, dataResponsePending);
         end
         return b;
     endfunction
@@ -187,6 +192,7 @@ module mkTbQDXACard(Empty);
         else begin
             case (peer)
                 PeerIdle: begin
+                    dataResponsePending <= False;
                     if (bp.request) nextPeer = PeerGrant;
                 end
 
@@ -222,6 +228,7 @@ module mkTbQDXACard(Empty);
                             peerRead <= rd;
                             peerTotal <= total;
                             peerBeat <= 0;
+                            dataResponsePending <= False;
                             nextPeer = PeerDmaAddress;
                         end
                         else if (bp.control.space == 2) begin
@@ -239,12 +246,26 @@ module mkTbQDXACard(Empty);
                 end
 
                 PeerDmaAddress: begin
-                    if (bp.controlValid && bp.control.addressStrobe)
+                    if (bp.controlValid && bp.control.addressStrobe) begin
+                        dataResponsePending <= False;
                         nextPeer = PeerDmaData;
+                    end
                 end
 
                 PeerDmaData: begin
-                    if (bp.controlValid && bp.control.dataStrobe) begin
+                    if (dataResponsePending) begin
+                        // This cycle returns ACK (and, for H2D, host data) for the
+                        // data phase observed on the prior physical cycle.
+                        dataResponsePending <= False;
+                        Bit#(5) n = peerBeat + 1;
+                        peerBeat <= n;
+                        if (n == peerTotal) begin
+                            if (!peerRead)
+                                $display("QDXACARDTRACE|v1|event=cq_data|words=4|exact=1");
+                            nextPeer = PeerIdle;
+                        end
+                    end
+                    else if (bp.controlValid && bp.control.dataStrobe) begin
                         if (!peerRead) begin
                             Bit#(32) expected = 0;
                             case (peerBeat)
@@ -258,13 +279,7 @@ module mkTbQDXACard(Empty);
                                 $finish(1);
                             end
                         end
-                        Bit#(5) n = peerBeat + 1;
-                        peerBeat <= n;
-                        if (n == peerTotal) begin
-                            if (!peerRead)
-                                $display("QDXACARDTRACE|v1|event=cq_data|words=4|exact=1");
-                            nextPeer = PeerIdle;
-                        end
+                        dataResponsePending <= True;
                     end
                 end
 

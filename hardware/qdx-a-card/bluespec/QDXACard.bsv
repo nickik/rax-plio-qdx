@@ -30,6 +30,7 @@ interface QDXACardIfc;
     method Action finishCycle;
 
     method Bool protocolFault;
+    method UnifiedQicState qicState;
     method QdxAState qdxState;
     method QdxAError qdxError;
     method Bit#(16) sqHead;
@@ -158,6 +159,7 @@ module mkQDXACard(QDXACardIfc);
     endmethod
 
     method Bool protocolFault = fault || phy.protocolFault || qliCodec.protocolFault;
+    method UnifiedQicState qicState = qic.debugState;
     method QdxAState qdxState = qdx.debugState;
     method QdxAError qdxError = qdx.debugError;
     method Bit#(16) sqHead = qdx.debugSqHead;
