@@ -112,12 +112,12 @@ function Action emitTrace(Bit#(16) cycle, PlioIn pi, QliIn qi, PlioOut po, QliOu
             "TRACE|v1|c=%08x|pi=%0d.%0d.%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qi=0.0.0.00000000.%0d.%0d.%08x.%01x.0.0.00000000.%0d.%0d.%01x|po=%0d.%0d.%08x.%0d.%01x.%0d.%01x.%0d.%0d.%01x.%01x.%0d.%0d.%0d|qo=%0d.0.00000000.0.0.00000000.0.0.%0d.0.00000000.0.%0d.%02x.%01x.0|ev=%s",
             zeroExtend(cycle),
             pack(pi.reset), pack(pi.selected), pack(pi.grant), pack(pi.adValid), pi.ad,
-            pack(pi.parValid), pi.par, pack(pi.spaceValid), pack(pi.space),
+            pack(pi.parValid), pi.parity, pack(pi.spaceValid), pack(pi.space),
             pack(pi.addressStrobe), pack(pi.read), pi.byteEnable, pack(pi.burst),
             pack(pi.dataStrobe), pack(pi.ack), pack(pi.err),
             pack(qi.dmaRequestValid), dmaDirectionCode(qi), dmaAddressTrace(qi), dmaWordsCode(qi),
             pack(qi.dmaCompletionReady), pack(qi.notificationValid), notificationChannelTrace(qi),
-            pack(po.request), pack(po.adValid), po.ad, pack(po.parValid), po.par,
+            pack(po.request), pack(po.adValid), po.ad, pack(po.parValid), po.parity,
             pack(po.spaceValid), pack(po.space), pack(po.addressStrobe), pack(po.read),
             po.byteEnable, pack(po.burst), pack(po.dataStrobe), pack(po.ack), pack(po.err),
             pack(qo.reset), pack(qo.dmaRequestReady), pack(qo.dmaCompletionValid),
@@ -159,11 +159,11 @@ module mkTbQICPhase3(Empty);
         end
 
         if (cycle == 4 || cycle == 5) begin
-            if (!po.request || !po.addressStrobe || !po.adValid || po.ad != 32'h8
-                || !po.parValid || po.par != oddParity32P1(32'h8)
+            if (!po.request || !po.addressStrobe || !po.adValid || po.ad != 32'h0000_0008
+                || !po.parValid || po.parity != 4'he
                 || !po.spaceValid || po.space != PlioController
                 || po.read || po.byteEnable != 4'hf || po.burst != BurstOne) begin
-                $display("FAIL notification address cycle=%0d", cycle);
+                $display("FAIL notification address/parity cycle=%0d ad=%08x parity=%01x expected=e", cycle, po.ad, po.parity);
                 $finish(1);
             end
         end
