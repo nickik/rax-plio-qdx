@@ -9,6 +9,7 @@ members = [
     "qic/rust",
     "testbench/rust",
     "naked-card/rust",
+    "qdx-a/rust",
     "trace/rust",
 ]
 

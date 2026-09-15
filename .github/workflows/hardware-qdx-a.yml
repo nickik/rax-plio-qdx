@@ -2,12 +2,13 @@ name: Hardware QDX-A
 
 on:
   push:
-    branches: [qdx-a-chip]
+    branches: [qdx-a-chip, qdx-a-rust-differential]
   pull_request:
     paths:
       - 'hardware/qdx-a/**'
       - 'hardware/qli/**'
       - 'hardware/qic/**'
+      - 'hardware/Cargo.toml'
       - 'hardware/scripts/test-qdx-a.sh'
       - '.github/workflows/hardware-qdx-a.yml'
   workflow_dispatch:
@@ -25,6 +26,7 @@ jobs:
       BSC_SHA256: '9da36623e301ae14ba5e670cb98d11c99277faa915025ccb7615de3ec14002c3'
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Install pinned Bluespec compiler
         shell: bash
@@ -41,8 +43,9 @@ jobs:
 
       - name: Tool check
         run: |
+          cargo --version
           bsc -help >/dev/null
           echo "BSC $BSC_VERSION installed"
 
-      - name: Run QDX-A chip validation
+      - name: Run QDX-A Rust/Bluesim differential validation
         run: bash hardware/scripts/test-qdx-a.sh
