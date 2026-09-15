@@ -12,6 +12,15 @@ module mkTbPLIOHostDmaM3(Empty);
     Reg#(Bit#(5)) beat <- mkReg(0);
     Reg#(Bit#(9)) waits <- mkReg(0);
     Reg#(Bit#(4)) matrixStep <- mkReg(0);
+    Reg#(Bit#(16)) cycles <- mkReg(0);
+
+    rule watchdog;
+        cycles <= cycles + 1;
+        if (cycles == 2000) begin
+            $display("FAIL M3 watchdog phase=%0d state=%0d completion=%0d", phase, pack(dma.debugState), pack(dma.completionValid));
+            $finish(1);
+        end
+    endrule
 
     rule run;
         case (phase)
