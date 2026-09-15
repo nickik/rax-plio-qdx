@@ -39,11 +39,11 @@ module mkTbQDXBEndpoint(Empty);
             default:noAction;
         endcase
         case (ts)
-            TWrite:q.command=mkCmd(OP_WRITE,1,32'h11,3,1,32'h3000);
-            TRead:q.command=mkCmd(OP_READ,1,32'h12,3,1,32'h5000);
-            TIdentify:q.command=mkCmd(OP_IDENTIFY_CONTROLLER,0,32'h13,0,0,32'h6000);
-            TDurable:q.command=mkCmd(OP_WRITE_DURABLE,1,32'h14,4,1,32'h3000);
-            TFlush:q.command=mkCmd(OP_FLUSH,1,32'h15,0,0,0);
+            TWrite:q.command=mkCmd(8'h11,1,32'h11,3,1,32'h3000);
+            TRead:q.command=mkCmd(8'h10,1,32'h12,3,1,32'h5000);
+            TIdentify:q.command=mkCmd(8'h01,0,32'h13,0,0,32'h6000);
+            TDurable:q.command=mkCmd(8'h14,1,32'h14,4,1,32'h3000);
+            TFlush:q.command=mkCmd(8'h12,1,32'h15,0,0,0);
             default:noAction;
         endcase
 
@@ -84,24 +84,24 @@ module mkTbQDXBEndpoint(Empty);
         case (ts)
             TWrite:if (e.commandReady) ts<=TWriteRun;
             TWriteRun:if (e.completionValid) begin
-                if (e.completion[0]!=32'h11 || e.completion[1][15:0]!=ST_SUCCESS || e.completion[2]!=1) begin $display("FAIL WRITE completion"); $finish(1); end
+                if (e.completion[0]!=32'h11 || e.completion[1][15:0]!=stSuccess || e.completion[2]!=1) begin $display("FAIL WRITE completion"); $finish(1); end
                 ts<=TWriteAck;
             end
             TWriteAck:ts<=TRead;
             TRead:if (e.commandReady) ts<=TReadRun;
-            TReadRun:if (e.completionValid) begin if (e.completion[1][15:0]!=ST_SUCCESS || e.completion[2]!=1) begin $display("FAIL READ completion"); $finish(1); end ts<=TReadAck; end
+            TReadRun:if (e.completionValid) begin if (e.completion[1][15:0]!=stSuccess || e.completion[2]!=1) begin $display("FAIL READ completion"); $finish(1); end ts<=TReadAck; end
             TReadAck:ts<=TIdentify;
             TIdentify:if (e.commandReady) ts<=TIdentifyRun;
-            TIdentifyRun:if (e.completionValid) begin if (e.completion[1][15:0]!=ST_SUCCESS) begin $display("FAIL IDENTIFY completion"); $finish(1); end ts<=TIdentifyAck; end
+            TIdentifyRun:if (e.completionValid) begin if (e.completion[1][15:0]!=stSuccess) begin $display("FAIL IDENTIFY completion"); $finish(1); end ts<=TIdentifyAck; end
             TIdentifyAck:ts<=TDurable;
             TDurable:if (e.commandReady) ts<=TDurableRun;
             TDurableRun:if (e.completionValid) begin
-                if (e.completion[1][15:0]!=ST_SUCCESS || e.completion[1][19]!=1) begin $display("FAIL WRITE_DURABLE completion"); $finish(1); end
+                if (e.completion[1][15:0]!=stSuccess || e.completion[1][19]!=1) begin $display("FAIL WRITE_DURABLE completion"); $finish(1); end
                 ts<=TDurableAck;
             end
             TDurableAck:ts<=TFlush;
             TFlush:if (e.commandReady) ts<=TFlushRun;
-            TFlushRun:if (e.completionValid) begin if (e.completion[1][15:0]!=ST_SUCCESS) begin $display("FAIL FLUSH"); $finish(1); end ts<=TFlushAck; end
+            TFlushRun:if (e.completionValid) begin if (e.completion[1][15:0]!=stSuccess) begin $display("FAIL FLUSH"); $finish(1); end ts<=TFlushAck; end
             TFlushAck:begin if (ep.debugFlushCount!=1) begin $display("FAIL flush count"); $finish(1); end ts<=TDone; end
             default:noAction;
         endcase
