@@ -38,6 +38,7 @@ module mkTbNakedCardProtocolPhysical(Empty);
     Reg#(Bool) peerRead <- mkReg(False);
     Reg#(Bit#(5)) peerTotal <- mkReg(0);
     Reg#(Bit#(5)) peerBeat <- mkReg(0);
+    Reg#(Bool) peerAckPending <- mkReg(False);
 
     Reg#(Bit#(4)) phase <- mkReg(0);
     Reg#(PlioIn) sampledBus <- mkReg(plioInDefault());
@@ -51,7 +52,7 @@ module mkTbNakedCardProtocolPhysical(Empty);
         };
     endfunction
 
-    function PlioIn peerBus(PeerState p, Bool read, Bit#(5) beat);
+    function PlioIn peerBus(PeerState p, Bool read, Bit#(5) beat, Bool ackPending);
         PlioIn b = plioInDefault();
         case (p)
             PeerGrant: b.grant = True;
@@ -61,8 +62,8 @@ module mkTbNakedCardProtocolPhysical(Empty);
             end
             PeerDmaData: begin
                 b.grant = True;
-                b.ack = True;
-                if (read) begin
+                b.ack = ackPending;
+                if (read && ackPending) begin
                     Bit#(32) data = 32'h7000_0000 + zeroExtend(beat) * 4;
                     b.adValid = True;
                     b.ad = data;
@@ -89,11 +90,12 @@ module mkTbNakedCardProtocolPhysical(Empty);
         deviceIndex <= 0;
         peer <= PeerIdle;
         peerBeat <= 0;
+        peerAckPending <= False;
         phase <= 1;
     endrule
 
     rule startReceive (phase == 1 && phy.ready && mode != ModeDone);
-        phy.startReceive(peerBus(peer, peerRead, peerBeat));
+        phy.startReceive(peerBus(peer, peerRead, peerBeat, peerAckPending));
         phase <= 2;
     endrule
 
@@ -244,6 +246,7 @@ module mkTbNakedCardProtocolPhysical(Empty);
                             default: peerTotal <= 16;
                         endcase
                         peerBeat <= 0;
+                        peerAckPending <= False;
                         next = PeerDmaAddress;
                     end
                     else if (bp.control.space == 2) begin
@@ -256,10 +259,19 @@ module mkTbNakedCardProtocolPhysical(Empty);
                 end
             end
             PeerDmaAddress: begin
-                if (bp.controlValid && bp.control.addressStrobe) next = PeerDmaData;
+                if (bp.controlValid && bp.control.addressStrobe) begin
+                    peerAckPending <= False;
+                    next = PeerDmaData;
+                end
             end
             PeerDmaData: begin
-                if (bp.controlValid && bp.control.dataStrobe) begin
+                if (peerAckPending) begin
+                    Bit#(5) n = peerBeat + 1;
+                    peerBeat <= n;
+                    peerAckPending <= False;
+                    if (n == peerTotal) next = PeerIdle;
+                end
+                else if (bp.controlValid && bp.control.dataStrobe) begin
                     if (!peerRead) begin
                         Bit#(32) expectedData = 32'h4000_0000 + zeroExtend(peerBeat) * 4;
                         if (!bp.adParValid || bp.ad != expectedData
@@ -268,9 +280,7 @@ module mkTbNakedCardProtocolPhysical(Empty);
                             $finish(1);
                         end
                     end
-                    Bit#(5) n = peerBeat + 1;
-                    peerBeat <= n;
-                    if (n == peerTotal) next = PeerIdle;
+                    peerAckPending <= True;
                 end
             end
             PeerNotificationAddress: begin
