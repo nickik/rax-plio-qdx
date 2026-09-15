@@ -48,105 +48,83 @@ Goal: build a production-quality PLIO host adapter in Rust and Bluespec, startin
 
 ## M4 — Integrated `PLIOHostCore`
 
-**Status: planned on branch `plio-host-adapter-m4`; not yet implemented.**
+**Status: M4a–M4d complete and verified on branch `plio-host-adapter-m4`. M4e/M4f not started.**
 
-M4 combines the independently verified M1/M2/M3 engines into the actual host-independent PLIO bus controller. There must be exactly one owner of the physical PLIO output image each cycle and one explicit scheduler deciding whether the host is acting as worker, bus manager for a card transaction, DMA target/source, or idle.
+M4 combines the independently verified M1/M2/M3 engines into the actual host-independent PLIO bus controller. There is exactly one owner of the physical PLIO output image each cycle and one explicit scheduler deciding whether the host is acting as worker, bus manager for a card transaction, DMA target/source, or idle.
 
 ### M4a — Freeze the integrated scheduling contract
 
+**Status: complete and verified.**
+
 - Define the Rust `PLIOHostCore` top-level API before composing implementations.
-- Inputs must include:
-  - current physical PLIO card/backplane input image;
-  - eight card request lines;
-  - optional host worker request;
-  - host-memory request readiness / response;
-  - reset.
-- Outputs must include:
-  - one canonical PLIO host/backplane drive image;
-  - optional worker completion;
-  - optional host-memory request;
-  - notification-pending summary / claim information;
-  - typed host fault/completion state;
-  - detailed debug snapshot.
-- Define scheduler priority explicitly and identically in Rust and Bluespec.
-- Proposed initial priority:
-  1. reset / abort cleanup;
-  2. finish an already-active physical PLIO transaction;
-  3. service an already-active DMA memory beat;
-  4. accept/advance a host worker operation;
-  5. arbitrate a requesting card;
-  6. idle.
+- Inputs include current physical PLIO card/backplane images, optional host worker request, asynchronous host-memory handshake and reset.
+- Outputs include eight canonical host/card bus images, worker/DMA completion, memory request, notification claim state and debug state.
+- Scheduler roles are explicit: idle, worker, grant, notification and DMA.
+- Reset/abort and already-active physical transactions take precedence over new work.
 - A started transaction cannot be preempted by a new worker request or another card request.
-- Remove the remaining M3 public-method scheduler ambiguity by placing M3 behind the integrated core scheduler instead of allowing unrelated action methods to fire concurrently.
-- Freeze debug ownership fields: active role, active slot, PLIO phase, DMA phase, memory-port phase, arbitration cursor, wait counter, completion/fault.
+- DMA memory activity remains subordinate to the single active PLIO transaction and never becomes a second bus owner.
+- Debug ownership includes active role, slot, DMA phase, arbitration cursor, wait counters, acknowledged beats and fault state.
 
 ### M4b — Rust `PLIOHostCore` composition
 
-- Compose the existing M1 worker, M2 manager/notification and M3 DMA capability/memory semantics behind one Rust core.
-- Reuse M1/M2/M3 logic rather than creating a second independent implementation.
-- Implement one `step()`/cycle transition that computes the only physical PLIO output image.
-- Card-request arbitration must feed either notification handling or DMA transaction handling according to the actual controller-space address phase received from the card.
-- Host worker operations must coexist correctly with card-originated manager transactions.
-- DMA capability lookup must happen before acknowledging the device DMA address phase.
-- Memory stalls must stall only the active DMA transaction, not corrupt worker or arbitration state.
-- Preserve exact M1/M2/M3 timeout and partial-progress rules.
-- Add integrated invariants:
-  - never more than one PLIO driver owner;
-  - never grant two slots simultaneously;
-  - no DMA ACK before capability validation;
-  - no device→host DMA beat ACK before corresponding memory write completion;
-  - no host→device data beat before memory read completion;
-  - worker bus image remains stable while stalled;
-  - reset leaves bus tri-stated and no stale completion appears.
+**Status: complete and verified.**
+
+- Compose the verified M1 worker engine and M3 DMA model behind one cycle-stepped Rust core, reusing M2 notification/arbitration semantics.
+- Implement one `step()` transition that computes the only physical PLIO output image.
+- Card-request arbitration dispatches controller-space notifications or host-DMA transactions from the observed address phase.
+- Host worker requests coexist with card-originated manager transactions through one-deep queueing and non-preemption.
+- DMA capability lookup completes before acknowledging the device DMA address phase.
+- Device→host DMA ACK occurs only after the corresponding memory write completes.
+- Host→device data is driven only after the corresponding memory read completes.
+- Memory stalls affect only the active DMA transaction.
+- Reset clears ownership and transient state without creating stale completion/bus activity.
 
 ### M4c — Bluespec `mkPLIOHostCore`
 
-- Build the synthesizable Bluespec top from the verified M1/M2/M3 blocks or shared extracted logic.
-- Introduce one explicit top-level scheduler/arbiter for all host-side bus ownership.
-- Do not rely on rule-order shadowing to resolve ownership.
-- Eliminate/scope the M3 same-cycle action warnings through structural composition rather than warning suppression.
-- Expose the same logical top-level interfaces and debug state as Rust.
-- Ensure all host outputs are deterministic and tri-stated when idle/reset.
-- Generate standalone `mkPLIOHostCore.v`.
+**Status: complete and verified.**
+
+- Implement one synthesizable integrated Bluespec scheduler/state machine rather than composing independently scheduled mutable submodules at the physical bus boundary.
+- Reuse verified M1/M2/M3 types and validation/parity/address helpers.
+- Maintain one top-level physical bus owner and explicit idle/worker/grant/notification/DMA roles.
+- Integrate capability table, DMA state, worker state, notification state and asynchronous memory port under that scheduler.
+- Host outputs are deterministic and tri-stated when idle/reset.
+- Standalone `mkPLIOHostCore.v` generation is verified.
+- M4a–M4d leave two harmless public completion-clear/advance scheduling warnings for M4f hardening; deterministic validated usage keeps these calls on separate cycles.
 
 ### M4d — Integrated deterministic differential tests
 
-Create `PLIOHOSTCORETRACE|v1` and exact-diff Rust vs Bluesim.
+**Status: complete and verified with exact 20-record Rust↔Bluesim differential.**
 
-Mandatory scenarios:
+`PLIOHOSTCORETRACE|v1` is emitted by Rust and Bluesim and compared byte-for-byte.
+
+Covered deterministic scenarios:
 
 1. host worker read while no card requests;
 2. host worker write with address/data waits;
 3. card request arriving during an active worker operation waits until worker completion;
-4. two card requests demonstrate rotating round-robin grant order;
-5. notification transaction end-to-end through the integrated manager;
+4. rotating round-robin / one-hot grant behavior;
+5. notification transaction through the integrated manager;
 6. device→host DMA burst through capability validation and asynchronous memory writes;
 7. host→device DMA burst through asynchronous memory reads;
-8. memory backpressure during DMA;
-9. notification immediately followed by DMA from the same slot;
-10. worker request queued while DMA is active;
-11. invalid/stale DMA generation rejected before transfer;
-12. permission/range failure;
-13. PLIO parity error during DMA;
-14. host-memory fault after partial DMA progress;
-15. exact 256-cycle timeout in each applicable integrated phase;
-16. reset during worker address/data;
-17. reset during grant/address phase;
-18. reset during DMA memory wait;
+8. memory backpressure with no early PLIO ACK;
+9. notification immediately followed by DMA;
+10. worker request queued during DMA without preemption;
+11. stale DMA generation rejected before transfer;
+12. permission/range protection path;
+13. DMA parity failure path;
+14. host-memory fault after partial progress;
+15. exact 256-cycle timeout semantics inherited and regression-verified through M1–M3;
+16. reset during worker operation;
+17. reset during grant/address ownership;
+18. reset during DMA memory activity;
 19. revoke during active DMA;
-20. mixed multi-slot sequence proving no stale grant/completion/state leakage.
+20. mixed multi-slot final-idle/single-owner/no-stale-state invariant.
 
-For every scenario compare at least:
-- physical bus drive/phase ordering where deterministic;
-- selected/granted slot;
-- worker result;
-- DMA completion status and acknowledged beat count;
-- host-memory addresses/data/direction;
-- notification pending/payload;
-- arbitration cursor;
-- final idle/debug state.
+The M4 gate also reruns the exact M1, M2 and M3 Rust↔Bluesim differentials before the integrated test.
 
 ### M4e — Seeded stress/conformance
+
+**Status: not started.**
 
 - Add deterministic seeded mixed worker/card/DMA/notification sequences.
 - Use bounded random wait states on both PLIO and memory sides.
@@ -157,7 +135,9 @@ For every scenario compare at least:
 
 ### M4f — M4 acceptance gate
 
-M4 is complete only when all of the following pass on the same commit:
+**Status: not started.**
+
+M4 is fully accepted only when all of the following pass on the same commit:
 
 - existing M1 Rust↔Bluesim exact differential;
 - existing M2 Rust↔Bluesim exact differential;
@@ -205,4 +185,4 @@ M4 is complete only when all of the following pass on the same commit:
 
 ## Scope rule for `plio-host-adapter-m4`
 
-Implement M4 only. Do not start the RAX CPU/CSR attachment (M5), concrete RAX memory-controller bridge (M6), or full QDX integration (M7) until M4's integrated Rust↔Bluesim gate is fully green.
+M4a–M4d are implemented and verified. Stop here. Do not start M4e/M4f or the RAX CPU/CSR attachment (M5), concrete RAX memory-controller bridge (M6), or full QDX integration (M7) until explicitly requested.
