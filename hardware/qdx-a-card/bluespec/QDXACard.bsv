@@ -40,7 +40,7 @@ endinterface
 
 module mkQDXACard(QDXACardIfc);
     PLIOQICIfc qic <- mkPLIOQIC;
-    QLI16CodecIfc local <- mkQLI16Codec;
+    QLI16CodecIfc qliCodec <- mkQLI16Codec;
     QDXAIfc qdx <- mkQDXA;
     QDXATestEndpointIfc endpoint <- mkQDXATestEndpoint;
     PLIOTxCardHarnessIfc phy <- mkPLIOTxCardHarness;
@@ -62,7 +62,7 @@ module mkQDXACard(QDXACardIfc);
                 QdxAEndpointIn ei = endpoint.drive(eo);
 
                 qic.advance(image, qliInDefault());
-                local.resetCodec;
+                qliCodec.resetCodec;
                 qdx.advance(qr, ei);
                 endpoint.advance(eo);
                 phy.step(True);
@@ -99,23 +99,23 @@ module mkQDXACard(QDXACardIfc);
         QliOut qicSemantic = qic.driveQli(b, devicePreview);
         QliIn qdxSemantic = qdx.qicPort(qicSemantic);
 
-        local.load(qicSemantic, qdxSemantic);
+        qliCodec.load(qicSemantic, qdxSemantic);
         phase <= CardLocal0;
     endrule
 
     rule local0 (phase == CardLocal0);
-        local.step;
+        qliCodec.step;
         phase <= CardLocal1;
     endrule
 
     rule local1 (phase == CardLocal1);
-        local.step;
+        qliCodec.step;
         phase <= CardApply;
     endrule
 
-    rule applyLocal (phase == CardApply && local.cycleComplete);
-        QliIn toQic = local.toQic;
-        QliOut toQdx = local.toDevice;
+    rule applyLocal (phase == CardApply && qliCodec.cycleComplete);
+        QliIn toQic = qliCodec.toQic;
+        QliOut toQdx = qliCodec.toDevice;
 
         QdxAEndpointOut eo = qdx.endpointPort(toQdx);
         QdxAEndpointIn ei = endpoint.drive(eo);
@@ -136,7 +136,7 @@ module mkQDXACard(QDXACardIfc);
         BackplaneDrive bp = phy.backplane;
         qic.advance(sampledBus, heldQli);
         exposed <= bp;
-        if (phy.protocolFault || local.protocolFault)
+        if (phy.protocolFault || qliCodec.protocolFault)
             fault <= True;
         phy.finishCycle;
         phase <= CardExpose;
@@ -149,7 +149,7 @@ module mkQDXACard(QDXACardIfc);
         phase <= CardIdle;
     endmethod
 
-    method Bool protocolFault = fault || phy.protocolFault || local.protocolFault;
+    method Bool protocolFault = fault || phy.protocolFault || qliCodec.protocolFault;
     method QdxAState qdxState = qdx.debugState;
     method QdxAError qdxError = qdx.debugError;
     method Bit#(16) sqHead = qdx.debugSqHead;
