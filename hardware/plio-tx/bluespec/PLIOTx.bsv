@@ -155,7 +155,6 @@ interface PLIOTxIfc;
     method BackplaneDrive driveBackplane(Bool reset, QicPtiDrive qic, BackplaneSample bus);
     method PtiObserve observeQic(Bool reset, QicPtiDrive qic, BackplaneSample bus);
     method Action advance(Bool reset, QicPtiDrive qic, BackplaneSample bus);
-
     method Bool debugControlValid;
     method PtiControlImage debugControl;
     method Bool debugDataValid;
@@ -229,14 +228,11 @@ module mkPLIOTx(PLIOTxIfc);
         end
     endfunction
 
-    function BackplaneDrive computeDrive(QicPtiDrive qic, BackplaneSample bus);
+    function BackplaneDrive computeDrive(QicPtiDrive qic);
         BackplaneDrive out = backplaneDriveDefault();
         out.request = qic.busRequest;
 
-        Bool riseBad = driveRiseIllegal(qic);
-        Bool responseBad = responseIllegal(qic);
-        Bool effectiveDrive = qic.driveEnable && !riseBad;
-
+        Bool effectiveDrive = qic.driveEnable && !driveRiseIllegal(qic);
         if (effectiveDrive && controlValid) begin
             if (controlReg.driveControl) begin
                 out.controlValid = True;
@@ -249,12 +245,11 @@ module mkPLIOTx(PLIOTxIfc);
             end
         end
 
-        if (qic.responseEnable && !responseBad) begin
+        if (qic.responseEnable && !responseIllegal(qic)) begin
             out.responseValid = True;
             out.ack = qic.responseAck;
             out.err = qic.responseErr;
         end
-
         return out;
     endfunction
 
@@ -271,7 +266,7 @@ module mkPLIOTx(PLIOTxIfc);
     endfunction
 
     function Bool contentionNow(QicPtiDrive qic, BackplaneSample bus);
-        BackplaneDrive out = computeDrive(qic, bus);
+        BackplaneDrive out = computeDrive(qic);
         return (out.adParValid && bus.externalAdParDrive)
             || (out.controlValid && bus.externalControlDrive)
             || (out.responseValid && bus.externalResponseDrive);
@@ -279,7 +274,7 @@ module mkPLIOTx(PLIOTxIfc);
 
     method BackplaneDrive driveBackplane(Bool reset, QicPtiDrive qic, BackplaneSample bus);
         if (reset) return backplaneDriveDefault();
-        return computeDrive(qic, bus);
+        return computeDrive(qic);
     endmethod
 
     method PtiObserve observeQic(Bool reset, QicPtiDrive qic, BackplaneSample bus);
@@ -302,7 +297,6 @@ module mkPLIOTx(PLIOTxIfc);
 
             if (!dirBad && qic.direction == PtiTxToQic) begin
                 case (qic.token.kind)
-                    PtiIdle: noAction;
                     PtiControl: begin
                         out.rxValid = True;
                         out.rxToken = controlToken(receiveControlImage(bus.control));
@@ -317,6 +311,7 @@ module mkPLIOTx(PLIOTxIfc);
                             out.rxToken = ptiToken(PtiDataHi, inSampleAd[31:16], inSamplePar[3:2]);
                         end
                     end
+                    default: begin end
                 endcase
             end
         end
@@ -355,19 +350,17 @@ module mkPLIOTx(PLIOTxIfc);
                     || tokenIllegal(qic)
                     || missingControl(qic)
                     || missingData(qic);
-
-                if (currentFault) protocolFaultReg <= True;
-                if (contentionNow(qic, bus)) contentionReg <= True;
+                Bool faultNext = protocolFaultReg || currentFault;
 
                 if (qic.token.kind == PtiIdle) begin
-                    if (outLowPending || inLowPending) protocolFaultReg <= True;
+                    if (outLowPending || inLowPending) faultNext = True;
                     outLowPending <= False;
                     inLowPending <= False;
                     inSampleValid <= False;
                     directionValid <= True;
                     directionReg <= qic.direction;
                     if (qic.direction == PtiQicToTx && qic.token.ptd != 0)
-                        protocolFaultReg <= True;
+                        faultNext = True;
                 end
                 else if (dirBad) begin
                     outLowPending <= False;
@@ -381,20 +374,20 @@ module mkPLIOTx(PLIOTxIfc);
                     end
 
                     if (qic.direction == PtiQicToTx) begin
-                        if (outLowPending && qic.token.kind != PtiDataHi) begin
-                            protocolFaultReg <= True;
-                            outLowPending <= False;
-                        end
-
                         case (qic.token.kind)
                             PtiControl: begin
+                                if (outLowPending) begin
+                                    faultNext = True;
+                                    outLowPending <= False;
+                                end
                                 if (validControlToken(qic.token)) begin
                                     controlReg <= unpackControl(ptiData(qic.token));
                                     controlValid <= True;
                                 end
-                                else protocolFaultReg <= True;
+                                else faultNext = True;
                             end
                             PtiDataLo: begin
+                                if (outLowPending) faultNext = True;
                                 outLowData <= ptiData(qic.token);
                                 outLowPar <= ptiParity(qic.token);
                                 outLowPending <= True;
@@ -406,21 +399,22 @@ module mkPLIOTx(PLIOTxIfc);
                                     dataValid <= True;
                                     outLowPending <= False;
                                 end
-                                else protocolFaultReg <= True;
+                                else faultNext = True;
                             end
-                            default: noAction;
+                            default: begin end
                         endcase
                     end
                     else begin
-                        if (inLowPending && qic.token.kind != PtiDataHi) begin
-                            protocolFaultReg <= True;
-                            inLowPending <= False;
-                            inSampleValid <= False;
-                        end
-
                         case (qic.token.kind)
-                            PtiControl: noAction;
+                            PtiControl: begin
+                                if (inLowPending) begin
+                                    faultNext = True;
+                                    inLowPending <= False;
+                                    inSampleValid <= False;
+                                end
+                            end
                             PtiDataLo: begin
+                                if (inLowPending) faultNext = True;
                                 inSampleAd <= bus.ad;
                                 inSamplePar <= bus.par;
                                 inSampleValid <= True;
@@ -430,16 +424,19 @@ module mkPLIOTx(PLIOTxIfc);
                                 if (inLowPending && inSampleValid)
                                     inLowPending <= False;
                                 else begin
-                                    protocolFaultReg <= True;
+                                    faultNext = True;
                                     inSampleValid <= False;
                                 end
                             end
-                            default: noAction;
+                            default: begin end
                         endcase
                     end
                 end
 
+                protocolFaultReg <= faultNext;
+                contentionReg <= contentionReg || contentionNow(qic, bus);
                 previousSlotIdle <= qic.token.kind == PtiIdle;
+
                 if (!qic.driveEnable)
                     driveActive <= False;
                 else if (prevDrive)
