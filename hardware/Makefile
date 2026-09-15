@@ -1,4 +1,4 @@
-.PHONY: test test-rust conformance-rust test-bluespec
+.PHONY: test test-rust conformance-rust test-bluespec test-qic-phase4-6
 
 test: test-rust test-bluespec
 
@@ -10,3 +10,7 @@ conformance-rust:
 
 test-bluespec:
 	bash scripts/test-bluespec.sh
+	bash scripts/test-qic-phase4-6.sh
+
+test-qic-phase4-6:
+	bash scripts/test-qic-phase4-6.sh
