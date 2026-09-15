@@ -61,6 +61,8 @@ fn main() {
     emit(1, "configured", &chip);
 
     write_reg(&mut chip, REG_SQ_TAIL, 0x3, 1);
+    assert_eq!(chip.state(), QdxAState::ReadyIdle);
+    chip.advance(&QicToDevice::default(), &EndpointIn::default());
     assert_eq!(chip.state(), QdxAState::SqRequest);
     let sq = chip.qic_port(&QicToDevice::default()).dma_request.expect("SQ request");
     assert_eq!(sq.direction, DmaDirection::HostToDevice);
