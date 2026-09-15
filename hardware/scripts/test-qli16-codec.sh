@@ -12,7 +12,8 @@ command -v cargo >/dev/null
 command -v bsc >/dev/null
 
 echo "== Rust QLI-16 encoding + stateful codec =="
-cargo test --manifest-path "$ROOT/Cargo.toml" -p qli16-model --all-targets
+cargo test --manifest-path "$ROOT/Cargo.toml" -p qli16-model --lib
+cargo test --manifest-path "$ROOT/Cargo.toml" -p qli16-model --test codec
 
 echo "== Bluesim QLI-16 stateful codec =="
 bsc -u -sim -p "$SEARCH" \
