@@ -1,0 +1,213 @@
+package PLIOQIC;
+
+import QLITypes::*;
+import QICInterfaces::*;
+import PLIOQICPhase1::*;
+import PLIOQICPhase2::*;
+
+typedef enum {
+    UIdle, UWorkerReadData, UWorkerWriteData, UWorkerOffer, UWorkerResponse,
+    URequestDma, UDmaAddress, UDmaData, UDmaComplete,
+    URequestNotification, UNotificationAddress, UNotificationData
+} UnifiedQicState deriving (Bits, Eq, FShow);
+
+interface PLIOQICIfc;
+    method PlioOut drivePlio(PlioIn bus, QliIn qli);
+    method QliOut driveQli(PlioIn bus, QliIn qli);
+    method Action advance(PlioIn bus, QliIn qli);
+    method UnifiedQicState debugState;
+endinterface
+
+module mkPLIOQIC(PLIOQICIfc);
+    Reg#(UnifiedQicState) state <- mkReg(UIdle);
+    Reg#(Bit#(9)) waitCount <- mkReg(0);
+    Reg#(Bit#(32)) heldAddress <- mkReg(0);
+    Reg#(Bit#(4)) heldBe <- mkReg(0);
+    Reg#(Bit#(32)) heldWriteData <- mkReg(0);
+    Reg#(Bool) heldWrite <- mkReg(False);
+    Reg#(DmaRequest) dmaReq <- mkReg(DmaRequest { direction: HostToDevice, address: 0, words: BurstOne });
+    Reg#(DmaCompletion) completion <- mkReg(DmaCompletion { status: DmaOk, wordsCompleted: 0 });
+    Reg#(Bit#(5)) completed <- mkReg(0);
+    Reg#(Bool) bufferValid <- mkReg(False);
+    Reg#(Bit#(32)) bufferData <- mkReg(0);
+    Reg#(NotificationRequest) notification <- mkReg(NotificationRequest { channel: 0 });
+
+    function Bool timedOut(); return waitCount >= 255; endfunction
+    function Bool validDma(DmaRequest r); return r.address[1:0] == 0; endfunction
+    function Bool validNotification(NotificationRequest r); return r.channel < 4; endfunction
+    function Bool finalReadBuffer();
+        return dmaReq.direction == HostToDevice && bufferValid && completed == burstWordCount(dmaReq.words);
+    endfunction
+
+    method PlioOut drivePlio(PlioIn bus, QliIn qli);
+        PlioOut out = plioOutDefault();
+        if (!bus.reset) begin
+            case (state)
+                UIdle: begin
+                    if (workerAddressCycleP2(bus)) begin
+                        if (workerAddressValidP2(bus)) out.ack = True; else out.err = True;
+                    end
+                end
+                UWorkerReadData: if (timedOut()) out.err = True;
+                UWorkerWriteData: begin
+                    if (timedOut()) out.err = True;
+                    else if (bus.dataStrobe && (!bus.adValid || !bus.parValid || ((oddParity32P2(bus.ad) & heldBe) != (bus.par & heldBe)))) out.err = True;
+                end
+                UWorkerOffer: if (timedOut()) out.err = True;
+                UWorkerResponse: begin
+                    if (timedOut()) out.err = True;
+                    else if (bus.dataStrobe && qli.mmioResponseValid) begin
+                        case (qli.mmioResponse.status)
+                            MmioReadOk: if (!heldWrite) begin out.adValid=True; out.ad=qli.mmioResponse.data; out.parValid=True; out.par=oddParity32P2(qli.mmioResponse.data); out.ack=True; end else out.err=True;
+                            MmioWriteOk: if (heldWrite) out.ack=True; else out.err=True;
+                            MmioError: out.err=True;
+                        endcase
+                    end
+                end
+                URequestDma, URequestNotification: out.request = True;
+                UDmaAddress: begin
+                    out.request=True;
+                    if (bus.grant && !timedOut()) begin
+                        out.adValid=True; out.ad=dmaReq.address; out.parValid=True; out.par=oddParity32P1(dmaReq.address);
+                        out.spaceValid=True; out.space=PlioHostDma; out.addressStrobe=True;
+                        out.read=(dmaReq.direction==HostToDevice); out.byteEnable=4'hf; out.burst=dmaReq.words;
+                    end
+                end
+                UDmaData: begin
+                    Bool finalBuf = finalReadBuffer();
+                    out.request = !finalBuf;
+                    if (!timedOut() && (finalBuf || bus.grant)) begin
+                        if (dmaReq.direction == HostToDevice) begin
+                            if (!bufferValid && completed < burstWordCount(dmaReq.words)) out.dataStrobe=True;
+                        end else if (bufferValid) begin
+                            out.adValid=True; out.ad=bufferData; out.parValid=True; out.par=oddParity32P1(bufferData); out.dataStrobe=True;
+                        end
+                    end
+                end
+                UNotificationAddress: begin
+                    out.request=True;
+                    if (bus.grant && !timedOut()) begin
+                        Bit#(32) a=zeroExtend(notification.channel)<<2;
+                        out.adValid=True; out.ad=a; out.parValid=True; out.par=oddParity32P1(a); out.spaceValid=True; out.space=PlioController;
+                        out.addressStrobe=True; out.read=False; out.byteEnable=4'hf; out.burst=BurstOne;
+                    end
+                end
+                UNotificationData: begin
+                    out.request=True;
+                    if (bus.grant && !timedOut()) begin out.adValid=True; out.ad=0; out.parValid=True; out.par=oddParity32P1(0); out.dataStrobe=True; end
+                end
+                default: noAction;
+            endcase
+        end
+        return out;
+    endmethod
+
+    method QliOut driveQli(PlioIn bus, QliIn qli);
+        QliOut out=qliOutDefault(); out.reset=bus.reset;
+        if (!bus.reset) begin
+            case (state)
+                UIdle: if (!qli.notificationValid && qli.dmaRequestValid && validDma(qli.dmaRequest)) out.dmaRequestReady=True;
+                UWorkerOffer: if (!timedOut()) begin out.mmioRequestValid=True; out.mmioRequest=MmioRequest { address:heldAddress, write:heldWrite, byteEnable:heldBe, writeData:heldWriteData }; end
+                UWorkerResponse: begin if (timedOut()) out.mmioCancel=True; else out.mmioResponseReady=bus.dataStrobe; end
+                UDmaData: begin
+                    if (!timedOut() && (finalReadBuffer() || bus.grant)) begin
+                        if (dmaReq.direction==HostToDevice && bufferValid) begin out.dmaReadValid=True; out.dmaRead=DmaWord { data:bufferData }; end
+                        else if (dmaReq.direction==DeviceToHost && !bufferValid && completed < burstWordCount(dmaReq.words)) out.dmaWriteReady=True;
+                    end
+                end
+                UDmaComplete: begin out.dmaCompletionValid=True; out.dmaCompletion=completion; end
+                UNotificationData: if (bus.grant && !timedOut() && bus.ack && qli.notificationValid && qli.notification==notification) out.notificationReady=True;
+                default: noAction;
+            endcase
+        end
+        return out;
+    endmethod
+
+    method Action advance(PlioIn bus, QliIn qli);
+        action
+            if (bus.reset) begin state<=UIdle; waitCount<=0; completed<=0; bufferValid<=False; end
+            else case (state)
+                UIdle: begin
+                    waitCount<=0; completed<=0; bufferValid<=False;
+                    if (workerAddressCycleP2(bus) && workerAddressValidP2(bus)) begin
+                        heldAddress<=bus.ad; heldBe<=bus.byteEnable; heldWrite<=!bus.read; heldWriteData<=0;
+                        state <= bus.read ? UWorkerReadData : UWorkerWriteData;
+                    end else if (qli.notificationValid) begin
+                        if (validNotification(qli.notification)) begin notification<=qli.notification; state<=URequestNotification; end
+                    end else if (qli.dmaRequestValid && validDma(qli.dmaRequest)) begin dmaReq<=qli.dmaRequest; state<=URequestDma; end
+                end
+                UWorkerReadData: begin
+                    if (timedOut()) begin state<=UIdle; waitCount<=0; end
+                    else if (bus.dataStrobe) begin heldWrite<=False; heldWriteData<=0; state<=UWorkerOffer; end
+                    else waitCount<=waitCount+1;
+                end
+                UWorkerWriteData: begin
+                    if (timedOut()) begin state<=UIdle; waitCount<=0; end
+                    else if (bus.dataStrobe) begin
+                        if (bus.adValid && bus.parValid && ((oddParity32P2(bus.ad)&heldBe)==(bus.par&heldBe))) begin heldWrite<=True; heldWriteData<=bus.ad; waitCount<=0; state<=UWorkerOffer; end
+                        else begin state<=UIdle; waitCount<=0; end
+                    end else waitCount<=waitCount+1;
+                end
+                UWorkerOffer: begin
+                    if (timedOut()) begin state<=UIdle; waitCount<=0; end
+                    else if (qli.mmioReady) state<=UWorkerResponse;
+                    else waitCount<=waitCount+1;
+                end
+                UWorkerResponse: begin
+                    if (timedOut()) begin state<=UIdle; waitCount<=0; end
+                    else if (bus.dataStrobe && qli.mmioResponseValid) begin state<=UIdle; waitCount<=0; end
+                    else waitCount<=waitCount+1;
+                end
+                URequestDma: if (bus.grant) begin waitCount<=0; state<=UDmaAddress; end
+                UDmaAddress: begin
+                    if (!bus.grant) begin completion<=DmaCompletion {status:DmaProtocolError,wordsCompleted:0}; state<=UDmaComplete; waitCount<=0; end
+                    else if (timedOut()) begin completion<=DmaCompletion {status:DmaTimeout,wordsCompleted:0}; state<=UDmaComplete; waitCount<=0; end
+                    else if (bus.err) begin completion<=DmaCompletion {status:DmaBusError,wordsCompleted:0}; state<=UDmaComplete; waitCount<=0; end
+                    else if (bus.ack) begin completed<=0; bufferValid<=False; waitCount<=0; state<=UDmaData; end
+                    else waitCount<=waitCount+1;
+                end
+                UDmaData: begin
+                    Bool finalBuf=finalReadBuffer();
+                    if (!finalBuf && !bus.grant) begin completion<=DmaCompletion {status:DmaProtocolError,wordsCompleted:completed}; state<=UDmaComplete; waitCount<=0; end
+                    else if (timedOut()) begin completion<=DmaCompletion {status:DmaTimeout,wordsCompleted:completed}; state<=UDmaComplete; waitCount<=0; end
+                    else if (dmaReq.direction==HostToDevice) begin
+                        if (bufferValid) begin
+                            if (qli.dmaReadReady) begin
+                                if (completed==burstWordCount(dmaReq.words)) begin completion<=DmaCompletion {status:DmaOk,wordsCompleted:completed}; bufferValid<=False; state<=UDmaComplete; end
+                                else begin bufferValid<=False; waitCount<=0; end
+                            end else waitCount<=waitCount+1;
+                        end else if (bus.err) begin completion<=DmaCompletion {status:DmaBusError,wordsCompleted:completed}; state<=UDmaComplete; waitCount<=0; end
+                        else if (bus.ack) begin
+                            if (bus.adValid && bus.parValid && oddParity32P1(bus.ad)==bus.par) begin bufferData<=bus.ad; bufferValid<=True; completed<=completed+1; waitCount<=0; end
+                            else begin completion<=DmaCompletion {status:DmaParityError,wordsCompleted:completed}; state<=UDmaComplete; waitCount<=0; end
+                        end else waitCount<=waitCount+1;
+                    end else begin
+                        if (bufferValid) begin
+                            if (bus.err) begin completion<=DmaCompletion {status:DmaBusError,wordsCompleted:completed}; state<=UDmaComplete; waitCount<=0; end
+                            else if (bus.ack) begin
+                                Bit#(5) n=completed+1; completed<=n; bufferValid<=False; waitCount<=0;
+                                if (n==burstWordCount(dmaReq.words)) begin completion<=DmaCompletion {status:DmaOk,wordsCompleted:n}; state<=UDmaComplete; end
+                            end else waitCount<=waitCount+1;
+                        end else if (qli.dmaWriteValid) begin bufferData<=qli.dmaWrite.data; bufferValid<=True; waitCount<=0; end
+                        else waitCount<=waitCount+1;
+                    end
+                end
+                UDmaComplete: if (qli.dmaCompletionReady) state<=UIdle;
+                URequestNotification: if (bus.grant) begin waitCount<=0; state<=UNotificationAddress; end
+                UNotificationAddress: begin
+                    if (!bus.grant || timedOut() || bus.err) begin waitCount<=0; state<=UIdle; end
+                    else if (bus.ack) begin waitCount<=0; state<=UNotificationData; end
+                    else waitCount<=waitCount+1;
+                end
+                UNotificationData: begin
+                    if (!bus.grant || timedOut() || bus.err || bus.ack) begin waitCount<=0; state<=UIdle; end
+                    else waitCount<=waitCount+1;
+                end
+            endcase
+        endaction
+    endmethod
+
+    method UnifiedQicState debugState=state;
+endmodule
+
+endpackage
