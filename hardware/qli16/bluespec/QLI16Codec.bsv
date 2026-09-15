@@ -29,7 +29,6 @@ function Qli16Token notificationCompletionToken(NotificationRequest req);
 endfunction
 
 interface QLI16CodecIfc;
-    // One load per PLIO cycle followed by exactly two step calls.
     method Action load(QliOut qic, QliIn device);
     method Qli16Slot currentSlot;
     method Action step;
@@ -85,7 +84,7 @@ module mkQLI16Codec(QLI16CodecIfc);
         endcase
     endfunction
 
-    function Bit#(3) dLength(DTxKind k, MmioResponse r);
+    function Bit#(3) dLength(DTxKind k);
         case (k)
             DTxMmioReadResponse: return 3;
             DTxMmioSimpleResponse: return 1;
@@ -112,7 +111,7 @@ module mkQLI16Codec(QLI16CodecIfc);
             QTxDmaRead: t=(i==0) ? dmaDataLo(0,qWord) : dmaDataHi(0,qWord);
             QTxDmaCompletion: t=dmaCompletionToken(qCompletion);
             QTxNotificationCompletion: t=notificationCompletionToken(qNotification);
-            default: noAction;
+            default: begin end
         endcase
         return t;
     endfunction
@@ -137,7 +136,7 @@ module mkQLI16Codec(QLI16CodecIfc);
             end
             DTxDmaWrite: t=(i==0) ? dmaDataLo(1,dWord) : dmaDataHi(1,dWord);
             DTxNotificationRequest: t=notificationToken(dNotification);
-            default: noAction;
+            default: begin end
         endcase
         return t;
     endfunction
@@ -230,7 +229,7 @@ module mkQLI16Codec(QLI16CodecIfc);
             return Qli16Slot { valid:True, ack:(!finalToken || qFinalReady(qKind)), token:qToken(qKind,qIndex) };
         end
         else begin
-            Bit#(3) len=dLength(dKind,dResponse);
+            Bit#(3) len=dLength(dKind);
             Bool finalToken=(dIndex+1)==len;
             return Qli16Slot { valid:True, ack:(!finalToken || dFinalReady(dKind)), token:dToken(dKind,dIndex) };
         end
@@ -273,7 +272,7 @@ module mkQLI16Codec(QLI16CodecIfc);
             end
             else begin
                 lastDirValid <= True; lastDir <= 1;
-                Bit#(3) len=dLength(dKind,dResponse);
+                Bit#(3) len=dLength(dKind);
                 Bool finalToken=(dIndex+1)==len;
                 Bool ack=!finalToken || dFinalReady(dKind);
                 if (ack) begin
