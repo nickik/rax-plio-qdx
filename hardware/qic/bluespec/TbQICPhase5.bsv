@@ -66,7 +66,7 @@ function QliIn qiFor(Bit#(16) c);
             20: result = wordStim(32'h0000_00bb);
             22: result = wordStim(32'h0000_00cc);
             13, 24, 286: result.dmaCompletionReady = True;
-            default: noAction;
+            default: begin end
         endcase
     end
     return result;
