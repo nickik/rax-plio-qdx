@@ -75,10 +75,6 @@ interface MainboardFPGAIfc;
     method Bit#(32) memoryBackendWriteData;
     method Bool memoryBackendResponseReady;
 
-    // Queue one physical board-cycle image. The method is guarded by queue
-    // capacity, so a producer cannot overwrite an unconsumed registered image.
-    // mkLFIFOF gives the intended pipeline-style enqueue/dequeue scheduling
-    // without introducing a same-cycle external-input combinational bypass.
     method Action advance(Vector#(8, BackplaneDrive) cards,
         LightingBusMasterDrive cpu,
         Bool workerValid, HostWorkerRequest workerRequest,
@@ -113,8 +109,12 @@ interface MainboardFPGAIfc;
     method Bool debugPreferCpu;
     method Bool debugCpuGrantHeld;
     method Bool debugCpuRequestSeen;
+    method Bool debugCpuResponsePending;
+    method Bool debugPlioResponsePending;
     method Bool debugCyclePending;
     method Bool debugAdvanceReady;
+    method MemoryControllerState debugMemoryControllerState;
+    method Bool debugMemoryHostResponseValid;
     method Bool debugPlioMemoryRequestValid;
     method PLIOHostCoreRole debugPlioRole;
     method Bool debugPlioFaultValid;
@@ -130,8 +130,24 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Reg#(Bool) cpuGrantHeld <- mkReg(False);
     Reg#(Bool) cpuRequestSeen <- mkReg(False);
 
-    // A real queue replaces the old epoch register. advance() is guarded by
-    // notFull, so callers cannot toggle/overwrite an image before it is used.
+    // MemoryController owns the backend transaction, while the mainboard owns
+    // delivery to the selected bus master.  A controller response is therefore
+    // captured before hostResponseConsumed is called.  This prevents a CPU
+    // READY pulse from disappearing between sampled board cycles and prevents a
+    // PLIO response from being consumed before PLIOHostCore sees it.
+    Reg#(Bool) cpuResponsePending <- mkReg(False);
+    Reg#(Bool) cpuResponseFault <- mkReg(False);
+    Reg#(Bool) cpuResponseReadDataValid <- mkReg(False);
+    Reg#(Bit#(32)) cpuResponseReadData <- mkReg(0);
+
+    Reg#(Bool) plioResponsePending <- mkReg(False);
+    Reg#(Bool) plioResponseFault <- mkReg(False);
+    Reg#(Bool) plioResponseReadDataValid <- mkReg(False);
+    Reg#(Bit#(32)) plioResponseReadData <- mkReg(0);
+
+    // Registered physical-cycle boundary.  mkLFIFOF permits a consumed image to
+    // be replaced in the same clock while still preventing overwrite of an
+    // unconsumed image and avoiding a combinational external-input path.
     FIFOF#(MainboardCycleInputs) cycleQ <- mkLFIFOF;
 
     rule applyReset (cycleQ.notEmpty && cycleQ.first.reset);
@@ -142,6 +158,14 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         preferCpu <= True;
         cpuGrantHeld <= False;
         cpuRequestSeen <= False;
+        cpuResponsePending <= False;
+        cpuResponseFault <= False;
+        cpuResponseReadDataValid <= False;
+        cpuResponseReadData <= 0;
+        plioResponsePending <= False;
+        plioResponseFault <= False;
+        plioResponseReadDataValid <= False;
+        plioResponseReadData <= 0;
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             False, False, False, False, 0, True);
         cycleQ.deq;
@@ -161,6 +185,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
 
     rule reserveCpuGrant (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
+        && !cpuResponsePending && !plioResponsePending
         && !cpuGrantHeld
         && memory.hostRequestReady
         && cycleQ.first.cpu.busRequest
@@ -171,6 +196,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
 
     rule abandonCpuGrant (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
+        && !cpuResponsePending && !plioResponsePending
         && cpuGrantHeld
         && !cycleQ.first.cpu.busRequest
         && !cycleQ.first.cpu.request);
@@ -180,13 +206,25 @@ module mkMainboardFPGA(MainboardFPGAIfc);
 
     rule rearmCpuRequest (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
+        && !cpuResponsePending
         && cpuRequestSeen
         && !cycleQ.first.cpu.request);
         cpuRequestSeen <= False;
     endrule
 
+    rule retireCpuResponse (cycleQ.notEmpty && !cycleQ.first.reset
+        && cpuResponsePending
+        && !cycleQ.first.cpu.request);
+        cpuResponsePending <= False;
+        cpuResponseFault <= False;
+        cpuResponseReadDataValid <= False;
+        cpuResponseReadData <= 0;
+        cpuRequestSeen <= False;
+    endrule
+
     rule rejectPartialCpu (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
+        && !cpuResponsePending && !plioResponsePending
         && cycleQ.first.cpu.request
         && cycleQ.first.cpu.payload.byteEnable != 4'hf
         && (cpuGrantHeld
@@ -199,6 +237,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
 
     rule startMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
+        && !cpuResponsePending && !plioResponsePending
         && memory.hostRequestReady
         && ( (cycleQ.first.cpu.request
                 && !cpuRequestSeen
@@ -232,19 +271,42 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         end
     endrule
 
-    rule completeMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
+    // Capture the controller response independently of the physical-cycle
+    // dequeue.  The selected master then consumes the stable board-level copy.
+    rule captureMemoryResponse (!(cycleQ.notEmpty && cycleQ.first.reset)
         && memoryOwner != MainMemNone
         && memory.hostResponseValid);
+        if (memoryOwner == MainMemCpu) begin
+            cpuResponsePending <= True;
+            cpuResponseFault <= memory.hostResponseFault;
+            cpuResponseReadDataValid <= memory.hostReadDataValid;
+            cpuResponseReadData <= memory.hostReadData;
+            preferCpu <= False;
+            memoryOwner <= MainMemNone;
+        end
+        else begin
+            plioResponsePending <= True;
+            plioResponseFault <= memory.hostResponseFault;
+            plioResponseReadDataValid <= memory.hostReadDataValid;
+            plioResponseReadData <= memory.hostReadData;
+            // Keep MainMemPlio ownership until PLIOHostCore actually receives
+            // this response; this also blocks a second memory request.
+        end
         memory.hostResponseConsumed;
-        if (memoryOwner == MainMemCpu) preferCpu <= False;
-        else preferCpu <= True;
-        memoryOwner <= MainMemNone;
     endrule
 
-    rule advancePlioHost (cycleQ.notEmpty && !cycleQ.first.reset);
+    // A freshly completed PLIO response is captured first.  Holding the
+    // current physical image for that one clock ensures the same image can be
+    // presented to PLIOHostCore together with the stable response next cycle.
+    rule advancePlioHost (cycleQ.notEmpty && !cycleQ.first.reset
+        && !(memoryOwner == MainMemPlio
+            && memory.hostResponseValid
+            && !plioResponsePending));
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
-        Bool selectCpu = cycle.cpu.request
+        Bool noPendingResponse = !cpuResponsePending && !plioResponsePending;
+        Bool selectCpu = noPendingResponse
+            && cycle.cpu.request
             && !cpuRequestSeen
             && cycle.cpu.payload.byteEnable == 4'hf
             && memoryOwner == MainMemNone
@@ -252,21 +314,30 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             && (cpuGrantHeld
                 || (cycle.cpu.busRequest
                     && (!host.memoryRequestValid || preferCpu)));
-        Bool acceptPlio = memoryOwner == MainMemNone
+        Bool acceptPlio = noPendingResponse
+            && memoryOwner == MainMemNone
             && !cpuGrantHeld
             && memory.hostRequestReady
             && host.memoryRequestValid
             && (!cycle.cpu.busRequest || !preferCpu)
             && !selectCpu;
-        Bool plioResponseValid = memoryOwner == MainMemPlio
-            && memory.hostResponseValid;
+        Bool deliverPlioResponse = memoryOwner == MainMemPlio
+            && plioResponsePending;
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             acceptPlio,
-            plioResponseValid,
-            memory.hostResponseFault,
-            memory.hostReadDataValid,
-            memory.hostReadData,
+            deliverPlioResponse,
+            plioResponseFault,
+            plioResponseReadDataValid,
+            plioResponseReadData,
             False);
+        if (deliverPlioResponse) begin
+            plioResponsePending <= False;
+            plioResponseFault <= False;
+            plioResponseReadDataValid <= False;
+            plioResponseReadData <= 0;
+            memoryOwner <= MainMemNone;
+            preferCpu <= True;
+        end
         cycleQ.deq;
     endrule
 
@@ -281,6 +352,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         if (!reset) begin
             Bool plioWaiting = host.memoryRequestValid;
             Bool canArbitrate = memoryOwner == MainMemNone
+                && !cpuResponsePending && !plioResponsePending
                 && !cpuGrantHeld
                 && memory.hostRequestReady;
             Bool selectCpu = canArbitrate
@@ -288,13 +360,14 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 && (!plioWaiting || preferCpu);
             Bool cpuOwnsBus = cpuGrantHeld
                 || selectCpu
-                || memoryOwner == MainMemCpu;
+                || memoryOwner == MainMemCpu
+                || cpuResponsePending;
             if (cpuOwnsBus) begin
                 out.busGrant = True;
-                if (memoryOwner == MainMemCpu && memory.hostResponseValid) begin
-                    out.error = memory.hostResponseFault;
-                    out.ready = !memory.hostResponseFault;
-                    if (memory.hostReadDataValid) out.readData = memory.hostReadData;
+                if (cpuResponsePending) begin
+                    out.error = cpuResponseFault;
+                    out.ready = !cpuResponseFault;
+                    if (cpuResponseReadDataValid) out.readData = cpuResponseReadData;
                 end
                 else if ((cpuGrantHeld || selectCpu)
                     && cpu.request
@@ -380,8 +453,12 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     method Bool debugPreferCpu = preferCpu;
     method Bool debugCpuGrantHeld = cpuGrantHeld;
     method Bool debugCpuRequestSeen = cpuRequestSeen;
+    method Bool debugCpuResponsePending = cpuResponsePending;
+    method Bool debugPlioResponsePending = plioResponsePending;
     method Bool debugCyclePending = cycleQ.notEmpty;
     method Bool debugAdvanceReady = cycleQ.notFull;
+    method MemoryControllerState debugMemoryControllerState = memory.debugState;
+    method Bool debugMemoryHostResponseValid = memory.hostResponseValid;
     method Bool debugPlioMemoryRequestValid = host.memoryRequestValid;
     method PLIOHostCoreRole debugPlioRole = host.debugRole;
     method Bool debugPlioFaultValid = host.debugFaultValid;

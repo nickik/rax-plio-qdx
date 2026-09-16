@@ -59,9 +59,11 @@ module mkTbP0CpuResponse(Empty);
     endrule
 
     rule resetDrain (stage == P0ResetDrain);
-        $display("TRACE|p0-cpu-response|phase=reset-drain|owner=%0d|held=%0d|seen=%0d|cycle_pending=%0d|advance_ready=%0d",
+        $display("TRACE|p0-cpu-response|phase=reset-drain|owner=%0d|held=%0d|seen=%0d|cpu_resp=%0d|plio_resp=%0d|mc_state=%0d|mc_host_resp=%0d|cycle_pending=%0d|advance_ready=%0d",
             pack(board.debugMemoryOwner), pack(board.debugCpuGrantHeld),
-            pack(board.debugCpuRequestSeen), pack(board.debugCyclePending),
+            pack(board.debugCpuRequestSeen), pack(board.debugCpuResponsePending),
+            pack(board.debugPlioResponsePending), pack(board.debugMemoryControllerState),
+            pack(board.debugMemoryHostResponseValid), pack(board.debugCyclePending),
             pack(board.debugAdvanceReady));
         stage <= P0BusRequest;
     endrule
@@ -69,10 +71,11 @@ module mkTbP0CpuResponse(Empty);
     rule busRequest (stage == P0BusRequest);
         let cpu = cpuBusRequest();
         let bus = board.lightingMemory(idleCards(), cpu, False);
-        $display("TRACE|p0-cpu-response|phase=bus-request|grant=%0d|ready=%0d|owner=%0d|held=%0d|seen=%0d|cycle_pending=%0d",
+        $display("TRACE|p0-cpu-response|phase=bus-request|grant=%0d|ready=%0d|owner=%0d|held=%0d|seen=%0d|cpu_resp=%0d|mc_state=%0d|mc_host_resp=%0d|cycle_pending=%0d",
             pack(bus.busGrant), pack(bus.ready), pack(board.debugMemoryOwner),
             pack(board.debugCpuGrantHeld), pack(board.debugCpuRequestSeen),
-            pack(board.debugCyclePending));
+            pack(board.debugCpuResponsePending), pack(board.debugMemoryControllerState),
+            pack(board.debugMemoryHostResponseValid), pack(board.debugCyclePending));
         if (!bus.busGrant || bus.ready || bus.error) begin
             $display("FAIL|p0-cpu-response|phase=bus-request");
             $finish(1);
@@ -85,10 +88,11 @@ module mkTbP0CpuResponse(Empty);
     rule activeRequest (stage == P0ActiveRequest);
         let cpu = cpuWriteRequest();
         let bus = board.lightingMemory(idleCards(), cpu, False);
-        $display("TRACE|p0-cpu-response|phase=active|grant=%0d|ready=%0d|owner=%0d|held=%0d|seen=%0d|cycle_pending=%0d",
+        $display("TRACE|p0-cpu-response|phase=active|grant=%0d|ready=%0d|owner=%0d|held=%0d|seen=%0d|cpu_resp=%0d|mc_state=%0d|mc_host_resp=%0d|cycle_pending=%0d",
             pack(bus.busGrant), pack(bus.ready), pack(board.debugMemoryOwner),
             pack(board.debugCpuGrantHeld), pack(board.debugCpuRequestSeen),
-            pack(board.debugCyclePending));
+            pack(board.debugCpuResponsePending), pack(board.debugMemoryControllerState),
+            pack(board.debugMemoryHostResponseValid), pack(board.debugCyclePending));
         if (!bus.busGrant || bus.ready || bus.error) begin
             $display("FAIL|p0-cpu-response|phase=active");
             $finish(1);
@@ -105,10 +109,12 @@ module mkTbP0CpuResponse(Empty);
         Bool submitResponse = board.memoryBackendResponseReady
             && !backendResponseSubmitted;
 
-        $display("TRACE|p0-cpu-response|cycle=%0d|grant=%0d|ready=%0d|error=%0d|owner=%0d|held=%0d|seen=%0d|cycle_pending=%0d|advance_ready=%0d|backend_req=%0d|backend_resp_ready=%0d|submit_resp=%0d|response_submitted=%0d",
+        $display("TRACE|p0-cpu-response|cycle=%0d|grant=%0d|ready=%0d|error=%0d|owner=%0d|held=%0d|seen=%0d|cpu_resp=%0d|plio_resp=%0d|mc_state=%0d|mc_host_resp=%0d|cycle_pending=%0d|advance_ready=%0d|backend_req=%0d|backend_resp_ready=%0d|submit_resp=%0d|response_submitted=%0d",
             cycle, pack(bus.busGrant), pack(bus.ready), pack(bus.error),
             pack(board.debugMemoryOwner), pack(board.debugCpuGrantHeld),
-            pack(board.debugCpuRequestSeen), pack(board.debugCyclePending),
+            pack(board.debugCpuRequestSeen), pack(board.debugCpuResponsePending),
+            pack(board.debugPlioResponsePending), pack(board.debugMemoryControllerState),
+            pack(board.debugMemoryHostResponseValid), pack(board.debugCyclePending),
             pack(board.debugAdvanceReady), pack(board.memoryBackendRequestValid),
             pack(board.memoryBackendResponseReady), pack(submitResponse),
             pack(backendResponseSubmitted));
@@ -118,19 +124,18 @@ module mkTbP0CpuResponse(Empty);
                 $display("FAIL|p0-cpu-response|ready-before-backend-response");
                 $finish(1);
             end
-            $display("PASS|p0-cpu-response|CPU observes backend completion");
+            $display("PASS|p0-cpu-response|CPU observes stable captured backend completion");
             $finish(0);
         end
 
-        // This is the exact regression witness: a backend response has already
-        // been supplied, but the board released CPU ownership without ever
-        // presenting READY/ERROR to the CPU.
         if (backendResponseSubmitted
             && board.debugMemoryOwner == MainMemNone
+            && !board.debugCpuResponsePending
             && !bus.ready && !bus.error) begin
-            $display("FAIL|p0-cpu-response|response-lost|cycle=%0d|seen=%0d|cycle_pending=%0d",
-                cycle, pack(board.debugCpuRequestSeen),
-                pack(board.debugCyclePending));
+            $display("FAIL|p0-cpu-response|response-lost|cycle=%0d|mc_state=%0d|mc_host_resp=%0d|seen=%0d|cycle_pending=%0d",
+                cycle, pack(board.debugMemoryControllerState),
+                pack(board.debugMemoryHostResponseValid),
+                pack(board.debugCpuRequestSeen), pack(board.debugCyclePending));
             $finish(1);
         end
 
@@ -140,8 +145,9 @@ module mkTbP0CpuResponse(Empty);
 
         cycle <= cycle + 1;
         if (cycle == 12) begin
-            $display("FAIL|p0-cpu-response|short-watchdog|owner=%0d|backend_req=%0d|backend_resp_ready=%0d",
-                pack(board.debugMemoryOwner),
+            $display("FAIL|p0-cpu-response|short-watchdog|owner=%0d|cpu_resp=%0d|mc_state=%0d|backend_req=%0d|backend_resp_ready=%0d",
+                pack(board.debugMemoryOwner), pack(board.debugCpuResponsePending),
+                pack(board.debugMemoryControllerState),
                 pack(board.memoryBackendRequestValid),
                 pack(board.memoryBackendResponseReady));
             $finish(1);
