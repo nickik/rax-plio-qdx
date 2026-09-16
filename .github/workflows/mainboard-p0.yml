@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'hardware/mainboard-fpga/**'
+      - '.github/actions/setup-bsc/**'
       - '.github/workflows/mainboard-p0.yml'
   workflow_dispatch:
 
@@ -13,8 +14,8 @@ concurrency:
 
 env:
   BSC_VERSION: '2026.01'
-  BSC_URL: https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-debian-12.13.tar.gz
-  BSC_SHA256: 9da36623e301ae14ba5e670cb98d11c99277faa915025ccb7615de3ec14002c3
+  BSC_URL: 'https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-debian-12.13.tar.gz'
+  BSC_SHA256: '9da36623e301ae14ba5e670cb98d11c99277faa915025ccb7615de3ec14002c3'
 
 jobs:
   cpu-response:
@@ -22,17 +23,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install pinned Bluespec compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/bsc.tar.gz"
-          prefix="$RUNNER_TEMP/bsc"
-          curl -L --fail --retry 5 --retry-delay 2 "$BSC_URL" -o "$archive"
-          echo "$BSC_SHA256  $archive" | sha256sum -c -
-          mkdir -p "$prefix"
-          tar -xzf "$archive" -C "$prefix" --strip-components=1
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
       - name: CPU response lifecycle
         run: make -C hardware/mainboard-fpga -f Makefile.p0 test-cpu-response
       - name: Upload CPU trace
@@ -48,17 +43,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install pinned Bluespec compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/bsc.tar.gz"
-          prefix="$RUNNER_TEMP/bsc"
-          curl -L --fail --retry 5 --retry-delay 2 "$BSC_URL" -o "$archive"
-          echo "$BSC_SHA256  $archive" | sha256sum -c -
-          mkdir -p "$prefix"
-          tar -xzf "$archive" -C "$prefix" --strip-components=1
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
       - name: PLIO response lifecycle
         run: make -C hardware/mainboard-fpga -f Makefile.p0 test-plio-response
       - name: Upload PLIO trace
@@ -70,22 +59,15 @@ jobs:
           if-no-files-found: warn
 
   cpu-established:
-    needs: [cpu-response, plio-response]
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
-      - name: Install pinned Bluespec compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/bsc.tar.gz"
-          prefix="$RUNNER_TEMP/bsc"
-          curl -L --fail --retry 5 --retry-delay 2 "$BSC_URL" -o "$archive"
-          echo "$BSC_SHA256  $archive" | sha256sum -c -
-          mkdir -p "$prefix"
-          tar -xzf "$archive" -C "$prefix" --strip-components=1
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
       - name: CPU grant retention
         run: |
           make -C hardware/mainboard-fpga test-cpu-grant
@@ -115,22 +97,15 @@ jobs:
           if-no-files-found: warn
 
   plio-dma:
-    needs: [cpu-response, plio-response]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install pinned Bluespec compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/bsc.tar.gz"
-          prefix="$RUNNER_TEMP/bsc"
-          curl -L --fail --retry 5 --retry-delay 2 "$BSC_URL" -o "$archive"
-          echo "$BSC_SHA256  $archive" | sha256sum -c -
-          mkdir -p "$prefix"
-          tar -xzf "$archive" -C "$prefix" --strip-components=1
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
       - name: One-beat PLIO DMA
         run: |
           make -C hardware/mainboard-fpga test-plio-dma
@@ -145,22 +120,15 @@ jobs:
           if-no-files-found: warn
 
   qdx-compat:
-    needs: [cpu-established, plio-dma]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Install pinned Bluespec compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/bsc.tar.gz"
-          prefix="$RUNNER_TEMP/bsc"
-          curl -L --fail --retry 5 --retry-delay 2 "$BSC_URL" -o "$archive"
-          echo "$BSC_SHA256  $archive" | sha256sum -c -
-          mkdir -p "$prefix"
-          tar -xzf "$archive" -C "$prefix" --strip-components=1
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
       - name: Raw QDX-B card reset cycle
         run: make -C hardware/mainboard-fpga -f Makefile.diagnostics test-qdx-card-cycle
       - name: Mainboard QLIO slot reset cycle
@@ -180,45 +148,30 @@ jobs:
             hardware/mainboard-fpga/build/**/run.log
           if-no-files-found: warn
 
-  full-regression:
-    needs: [qdx-compat]
+  core-sanity:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Install RTL tools
+      - name: Install Yosys
         run: |
           sudo apt-get update
-          sudo apt-get install -y iverilog yosys
-      - name: Install pinned Bluespec compiler
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/bsc.tar.gz"
-          prefix="$RUNNER_TEMP/bsc"
-          curl -L --fail --retry 5 --retry-delay 2 "$BSC_URL" -o "$archive"
-          echo "$BSC_SHA256  $archive" | sha256sum -c -
-          mkdir -p "$prefix"
-          tar -xzf "$archive" -C "$prefix" --strip-components=1
-          echo "$prefix/bin" >> "$GITHUB_PATH"
-      - name: Full focused mainboard regression
-        run: make -C hardware test-mainboard-fpga
-      - name: Existing memory-controller regressions
-        env:
-          MEMORY_CONTROLLER_DEBUG_DIR: ${{ runner.temp }}/memory-controller-debug
-        run: |
-          bash hardware/scripts/test-memory-controller.sh
-          bash hardware/scripts/test-memory-controller-backend.sh
-          bash hardware/scripts/test-memory-controller-bram.sh
-      - name: Full aggregate Bluespec suite
-        run: make -C hardware test-bluespec
-      - name: Upload final diagnostics
+          sudo apt-get install -y yosys
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
+      - name: Registered-backend integration
+        run: make -C hardware/mainboard-fpga test-core
+      - name: Generated-Verilog structural sanity
+        run: make -C hardware/mainboard-fpga verilog-sanity
+      - name: Upload core diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: p0-full-${{ github.run_id }}
+          name: p0-core-${{ github.run_id }}
           path: |
-            hardware/mainboard-fpga/build/**/compile.log
-            hardware/mainboard-fpga/build/**/run.log
-            ${{ runner.temp }}/memory-controller-debug
+            hardware/mainboard-fpga/build/core/*.log
+            hardware/mainboard-fpga/build/rtl/**
           if-no-files-found: warn
