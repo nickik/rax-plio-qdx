@@ -106,15 +106,21 @@ module mkTbPLIOHostCore(Empty);
                 if (!core.dmaCompletionValid || core.dmaCompletionStatus!=DmaOk || core.dmaCompletionBeats!=1) begin $display("FAIL M4 DMA completion"); $finish(1); end
                 if (core.debugRole != CoreIdle || outs[1].grant) begin $display("FAIL M4 grant not withdrawn after successful DMA"); $finish(1); end
                 core.clearDmaCompletion;
-                core.advance(cards,False,dummyWorker,False,False,False,False,0,False);
                 phase<=17;
             end
             17: begin
                 cards[1]=reqOnly(); outs=core.drive(cards,False);
-                if (core.debugRole != CoreGrant || !outs[1].grant) begin $display("FAIL M4 continuous BR did not receive fresh grant"); $finish(1); end
-                core.advance(cards,False,dummyWorker,False,False,False,False,0,True); phase<=18;
+                if (core.debugRole != CoreIdle || outs[1].grant) begin $display("FAIL M4 expected BG-low arbitration boundary"); $finish(1); end
+                core.advance(cards,False,dummyWorker,False,False,False,False,0,False);
+                phase<=18;
             end
             18: begin
+                cards[1]=reqOnly(); outs=core.drive(cards,False);
+                if (core.debugRole != CoreGrant || !outs[1].grant) begin $display("FAIL M4 continuous BR did not receive fresh grant"); $finish(1); end
+                core.advance(cards,False,dummyWorker,False,False,False,False,0,True);
+                phase<=19;
+            end
+            19: begin
                 outs=core.drive(cards,True);
                 for (Integer i=0;i<8;i=i+1) if (!outs[i].reset || outs[i].grant || outs[i].selected) begin $display("FAIL M4 reset drive"); $finish(1); end
                 $display("PLIOHOSTCORETRACE|v1|case=worker_read|status=ok|slot=2|value=12345678");
