@@ -37,19 +37,14 @@ module mkMemoryController(MemoryControllerIfc);
     method Bool hostRequestReady = state == MemIdle;
 
     method Action hostRequest(Bool write, Bit#(32) address, Bit#(32) writeData) if (state == MemIdle);
+        Bool misaligned = address[1:0] != 0;
         requestWrite <= write;
         requestAddress <= address;
         requestWriteData <= writeData;
-        responseFault <= False;
+        responseFault <= misaligned;
         responseReadDataValid <= False;
         responseReadData <= 0;
-        if (address[1:0] != 0) begin
-            responseFault <= True;
-            state <= MemHostResponse;
-        end
-        else begin
-            state <= MemBackendRequest;
-        end
+        state <= misaligned ? MemHostResponse : MemBackendRequest;
     endmethod
 
     method Bool hostResponseValid = state == MemHostResponse;
