@@ -196,7 +196,13 @@ module mkQLI16Codec(QLI16CodecIfc);
                     dResponse<=device.mmioResponse;
                     dKind <= (device.mmioResponse.status==MmioReadOk) ? DTxMmioReadResponse : DTxMmioSimpleResponse; dIndex<=0;
                 end
-                else if (device.dmaRequestValid) begin dRequest<=device.dmaRequest; dKind<=DTxDmaRequest; dIndex<=0; end
+                else if (device.dmaRequestValid) begin
+                    // A DMA request is a three-token D2Q message. Keep it off
+                    // the half-duplex link until QIC can accept the semantic
+                    // request, otherwise its final token can strand the D2Q
+                    // direction and block reverse worker MMIO.
+                    if (qic.dmaRequestReady) begin dRequest<=device.dmaRequest; dKind<=DTxDmaRequest; dIndex<=0; end
+                end
                 else if (device.dmaWriteValid) begin
                     // The link is half duplex. Preserve DMA-data priority while
                     // valid, but do not start the message until QIC can accept
