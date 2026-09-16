@@ -52,31 +52,57 @@ jobs:
           yosys -V
           nextpnr-ice40 --version
 
-      # Keep these as independent steps and run all of them even when one
-      # fails. A mainboard regression must identify the broken boundary
-      # directly rather than collapse into one opaque aggregate failure.
+      # Each boundary has an independent executable and an explicit PASS
+      # marker check. Bluesim does not reliably propagate $finish(1) through
+      # every shell invocation, so the text result is part of the gate.
       - name: Mainboard diagnostic - CPU grant retention
-        run: make -C hardware/mainboard-fpga test-cpu-grant
+        run: |
+          make -C hardware/mainboard-fpga test-cpu-grant
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-cpu-grant/run.log
+          grep -Fq 'PASS|cpu-grant|' hardware/mainboard-fpga/build/diag-cpu-grant/run.log
 
       - name: Mainboard diagnostic - CPU write/backend
         if: always()
-        run: make -C hardware/mainboard-fpga test-cpu-write
+        run: |
+          make -C hardware/mainboard-fpga test-cpu-write
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-cpu-write/run.log
+          grep -Fq 'PASS|cpu-write|' hardware/mainboard-fpga/build/diag-cpu-write/run.log
 
       - name: Mainboard diagnostic - CPU read/backend
         if: always()
-        run: make -C hardware/mainboard-fpga test-cpu-read
+        run: |
+          make -C hardware/mainboard-fpga test-cpu-read
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-cpu-read/run.log
+          grep -Fq 'PASS|cpu-read|' hardware/mainboard-fpga/build/diag-cpu-read/run.log
 
       - name: Mainboard diagnostic - reset/stale response/recovery
         if: always()
-        run: make -C hardware/mainboard-fpga test-reset-recovery
+        run: |
+          make -C hardware/mainboard-fpga test-reset-recovery
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-reset-recovery/run.log
+          grep -Fq 'PASS|reset-recovery|' hardware/mainboard-fpga/build/diag-reset-recovery/run.log
 
       - name: Mainboard diagnostic - PLIO DMA
         if: always()
-        run: make -C hardware/mainboard-fpga test-plio-dma
+        run: |
+          make -C hardware/mainboard-fpga test-plio-dma
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-plio-dma/run.log
+          grep -Fq 'PASS|plio-dma|' hardware/mainboard-fpga/build/diag-plio-dma/run.log
+
+      - name: QDX-B isolation - raw card reset cycle
+        if: always()
+        run: make -C hardware/mainboard-fpga -f Makefile.diagnostics test-qdx-card-cycle
+
+      - name: QDX-B isolation - mainboard slot reset cycle
+        if: always()
+        run: make -C hardware/mainboard-fpga -f Makefile.diagnostics test-qdx-slot-cycle
 
       - name: Mainboard diagnostic - physical QDX-B
         if: always()
-        run: make -C hardware/mainboard-fpga test-qdx-b
+        run: |
+          make -C hardware/mainboard-fpga test-qdx-b
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/qdxb/run.log
+          grep -Fq 'PASS mainboard FPGA <-> physical mkQDXBCard integration' hardware/mainboard-fpga/build/qdxb/run.log
 
       - name: Upload mainboard diagnostics
         if: always()

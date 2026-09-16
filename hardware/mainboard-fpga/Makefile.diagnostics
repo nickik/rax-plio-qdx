@@ -1,0 +1,37 @@
+include Makefile
+
+.PHONY: test-qdx-card-cycle test-qdx-slot-cycle
+
+test-qdx-card-cycle:
+	rm -rf $(BUILD)/qdx-card-cycle
+	mkdir -p $(BUILD)/qdx-card-cycle
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(QDXB_SEARCH)' \
+		-bdir $(BUILD)/qdx-card-cycle -simdir $(BUILD)/qdx-card-cycle -info-dir $(BUILD)/qdx-card-cycle \
+		-g mkTbQDXBCardResetCycle bluespec/TbMainboardQDXBIsolation.bsv 2>&1 | tee $(BUILD)/qdx-card-cycle/compile.log
+	$(BSC) +RTS -K8M -RTS -sim -p '$(QDXB_SEARCH)' \
+		-bdir $(BUILD)/qdx-card-cycle -simdir $(BUILD)/qdx-card-cycle \
+		-e mkTbQDXBCardResetCycle -o $(BUILD)/qdx-card-cycle/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 30s $(BUILD)/qdx-card-cycle/tb 2>&1 | tee $(BUILD)/qdx-card-cycle/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/qdx-card-cycle/tb 2>&1 | tee $(BUILD)/qdx-card-cycle/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/qdx-card-cycle/run.log; then exit 1; fi
+	@grep -Fq 'PASS|qdx-card-cycle|raw reset cycle completes' $(BUILD)/qdx-card-cycle/run.log || { echo 'FAIL missing qdx-card-cycle PASS marker'; exit 1; }
+
+test-qdx-slot-cycle:
+	rm -rf $(BUILD)/qdx-slot-cycle
+	mkdir -p $(BUILD)/qdx-slot-cycle
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(QDXB_SEARCH)' \
+		-bdir $(BUILD)/qdx-slot-cycle -simdir $(BUILD)/qdx-slot-cycle -info-dir $(BUILD)/qdx-slot-cycle \
+		-g mkTbMainboardQDXBResetCycle bluespec/TbMainboardQDXBIsolation.bsv 2>&1 | tee $(BUILD)/qdx-slot-cycle/compile.log
+	$(BSC) +RTS -K8M -RTS -sim -p '$(QDXB_SEARCH)' \
+		-bdir $(BUILD)/qdx-slot-cycle -simdir $(BUILD)/qdx-slot-cycle \
+		-e mkTbMainboardQDXBResetCycle -o $(BUILD)/qdx-slot-cycle/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 30s $(BUILD)/qdx-slot-cycle/tb 2>&1 | tee $(BUILD)/qdx-slot-cycle/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/qdx-slot-cycle/tb 2>&1 | tee $(BUILD)/qdx-slot-cycle/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/qdx-slot-cycle/run.log; then exit 1; fi
+	@grep -Fq 'PASS|qdx-slot-cycle|mainboard slot reset cycle completes' $(BUILD)/qdx-slot-cycle/run.log || { echo 'FAIL missing qdx-slot-cycle PASS marker'; exit 1; }

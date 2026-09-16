@@ -37,10 +37,11 @@ module mkTbMainboardQDXBIntegration(Empty);
     Reg#(Bit#(16)) watchdog <- mkReg(0);
     Reg#(Bit#(32)) clockTicks <- mkReg(0);
 
-    // This watchdog is deliberately independent of completed card cycles.
-    // The previous watchdog advanced only in consumeCardCycle, so a card that
-    // never asserted cycleDone produced no useful diagnostic until the shell
-    // timeout killed Bluesim.
+    // This monitor owns clockTicks. Other rules deliberately do not read
+    // clockTicks: a previous debug version created a two-way scheduling
+    // conflict (monitor writes clockTicks while consume reads it; consume
+    // writes stage/launched while monitor reads them) and starved the real
+    // card-cycle consume rule. Debugging must never alter forward progress.
     rule observeProgress (stage != QbDone);
         clockTicks <= clockTicks + 1;
 
@@ -96,8 +97,8 @@ module mkTbMainboardQDXBIntegration(Empty);
             False, False, False, False, 0, reset);
 
         if (watchdog[5:0] == 0) begin
-            $display("DBG|qdx-b|clock=%0d|physical_cycles=%0d|stage=%0d|reset=%0d|send_worker=%0d|request=%0d|control_valid=%0d|response_valid=%0d|role=%0d|qic=%0d|qdx=%0d|owner=%0d|plio_mem_req=%0d|host_fault_valid=%0d|card_fault=%0d",
-                clockTicks, watchdog, pack(stage), pack(reset),
+            $display("DBG|qdx-b-cycle|physical_cycles=%0d|stage=%0d|reset=%0d|send_worker=%0d|request=%0d|control_valid=%0d|response_valid=%0d|role=%0d|qic=%0d|qdx=%0d|owner=%0d|plio_mem_req=%0d|host_fault_valid=%0d|card_fault=%0d",
+                watchdog, pack(stage), pack(reset),
                 pack(sendWorker), pack(nextImage.request),
                 pack(nextImage.controlValid), pack(nextImage.responseValid),
                 pack(board.debugPlioRole), pack(card.qicState),
@@ -115,8 +116,8 @@ module mkTbMainboardQDXBIntegration(Empty);
         end
 
         if (card.protocolFault) begin
-            $display("FAIL|qdx-b|physical-protocol-fault|clock=%0d|physical_cycles=%0d|role=%0d|qic=%0d|qdx=%0d",
-                clockTicks, watchdog, pack(board.debugPlioRole),
+            $display("FAIL|qdx-b|physical-protocol-fault|physical_cycles=%0d|role=%0d|qic=%0d|qdx=%0d",
+                watchdog, pack(board.debugPlioRole),
                 pack(card.qicState), pack(card.qdxState));
             $finish(1);
         end
@@ -126,8 +127,8 @@ module mkTbMainboardQDXBIntegration(Empty);
         launched <= False;
         watchdog <= watchdog + 1;
         if (watchdog > 2000) begin
-            $display("FAIL|qdx-b|physical-cycle-watchdog|clock=%0d|role=%0d|qic=%0d|qdx=%0d|owner=%0d|plio_mem_req=%0d|host_fault_valid=%0d|host_fault=%0d",
-                clockTicks, pack(board.debugPlioRole), pack(card.qicState),
+            $display("FAIL|qdx-b|physical-cycle-watchdog|role=%0d|qic=%0d|qdx=%0d|owner=%0d|plio_mem_req=%0d|host_fault_valid=%0d|host_fault=%0d",
+                pack(board.debugPlioRole), pack(card.qicState),
                 pack(card.qdxState), pack(board.debugMemoryOwner),
                 pack(board.debugPlioMemoryRequestValid),
                 pack(board.debugPlioFaultValid), pack(board.debugPlioFault));
@@ -140,8 +141,8 @@ module mkTbMainboardQDXBIntegration(Empty);
     );
         HostWorkerCompletion c = board.workerCompletion;
         if (c.status != HostSuccess || c.data != qdxCapValue) begin
-            $display("FAIL|qdx-b|discovery|status=%0d|data=%08x|expected=%08x|clock=%0d|physical_cycles=%0d",
-                pack(c.status), c.data, qdxCapValue, clockTicks, watchdog);
+            $display("FAIL|qdx-b|discovery|status=%0d|data=%08x|expected=%08x|physical_cycles=%0d",
+                pack(c.status), c.data, qdxCapValue, watchdog);
             $finish(1);
         end
         if (card.protocolFault || card.qdxError != QdxErrNone) begin
@@ -154,7 +155,7 @@ module mkTbMainboardQDXBIntegration(Empty);
     endrule
 
     rule done (stage == QbDone && !launched);
-        $display("MAINBOARDQDXBTRACE|v3|registered_cycle=once|physical_slot=ok|worker_read=ok|cap=%08x|physical_cycles=%0d|clock_ticks=%0d",
+        $display("MAINBOARDQDXBTRACE|v4|registered_cycle=once|debug_nonintrusive=1|physical_slot=ok|worker_read=ok|cap=%08x|physical_cycles=%0d|clock_ticks=%0d",
             qdxCapValue, watchdog, clockTicks);
         $display("PASS mainboard FPGA <-> physical mkQDXBCard integration");
         $finish(0);
