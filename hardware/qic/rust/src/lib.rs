@@ -171,10 +171,11 @@ impl Qic {
                 }
             }
             State::DmaComplete { completion } => {
-                // Keep BR asserted for as long as the host still owns BG, just
-                // like PLIOQIC.bsv's UDmaComplete state.  This closes the
-                // manager transaction before a queued worker cycle may begin.
-                card.request = bus.grant;
+                // Successful completion still owns the manager bus until the
+                // endpoint consumes the local QLI completion. Fault/timeout
+                // completion has already terminated the manager transaction,
+                // so BR must be released even if BG is still sampled high.
+                card.request = bus.grant && completion.status == DmaStatus::Ok;
                 qli.dma_completion = Some(completion);
             }
             State::NotificationAddress { request, wait } => {
