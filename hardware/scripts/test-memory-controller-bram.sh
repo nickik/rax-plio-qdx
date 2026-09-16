@@ -9,7 +9,7 @@ BSC="${BSC:-bsc}"
 BSC_STACK=(+RTS -K8M -RTS)
 
 rm -rf "$BUILD"
-mkdir -p "$BUILD/sim" "$BUILD/rtl-default" "$BUILD/rtl-128k"
+mkdir -p "$BUILD/sim" "$BUILD/lane-sim" "$BUILD/rtl-default" "$BUILD/rtl-128k"
 
 command -v "$BSC" >/dev/null
 command -v yosys >/dev/null
@@ -25,8 +25,32 @@ echo "== Default 1 MiB integrated BRAM backend Bluesim semantics =="
     2>&1 | tee "$BUILD/bsc-sim-link.log"
 "$BUILD/tb-block-ram-backend" 2>&1 | tee "$BUILD/sim.log"
 grep '^MEMBRAMTRACE|' "$BUILD/sim.log" > "$BUILD/semantics.trace"
-test "$(wc -l < "$BUILD/semantics.trace")" -eq 5
-grep -q '^PASS FPGA block RAM backend semantics$' "$BUILD/sim.log"
+test "$(wc -l < "$BUILD/semantics.trace")" -eq 4
+grep -q '^MEMBRAMTRACE|v2|case=mask0101|status=ok|value=11bb33dd$' "$BUILD/semantics.trace"
+grep -q '^MEMBRAMTRACE|v2|case=mask1010|status=ok|value=aa66cc88$' "$BUILD/semantics.trace"
+grep -q '^PASS FPGA byte-lane block RAM backend semantics$' "$BUILD/sim.log"
+
+echo "== Dedicated physical BRAM byte-lane semantics =="
+"$BSC" "${BSC_STACK[@]}" -u -sim -p "$SEARCH" \
+    -bdir "$BUILD/lane-sim" -simdir "$BUILD/lane-sim" -info-dir "$BUILD/lane-sim" \
+    -g mkTbBlockRamByteLanes "$ROOT/memory-controller/bluespec/TbBlockRamByteLanes.bsv" \
+    2>&1 | tee "$BUILD/bsc-lane-compile.log"
+"$BSC" "${BSC_STACK[@]}" -sim -p "$SEARCH" \
+    -bdir "$BUILD/lane-sim" -simdir "$BUILD/lane-sim" \
+    -e mkTbBlockRamByteLanes -o "$BUILD/tb-block-ram-byte-lanes" \
+    2>&1 | tee "$BUILD/bsc-lane-link.log"
+"$BUILD/tb-block-ram-byte-lanes" 2>&1 | tee "$BUILD/lane-sim.log"
+grep '^MEMBRAMLANE|' "$BUILD/lane-sim.log" > "$BUILD/lane-semantics.trace"
+test "$(wc -l < "$BUILD/lane-semantics.trace")" -eq 5
+for expected in \
+    'case=lane0|status=ok|value=112233dd' \
+    'case=lane1|status=ok|value=1122cc44' \
+    'case=lane2|status=ok|value=11bb3344' \
+    'case=lane3|status=ok|value=aa223344' \
+    'case=mask0000|status=ok|value=11223344'; do
+    grep -q "^MEMBRAMLANE|${expected}$" "$BUILD/lane-semantics.trace"
+done
+grep -q '^PASS FPGA BRAM independent byte-lane semantics$' "$BUILD/lane-sim.log"
 
 echo "== Locate BSC BRAM1 synthesis primitive =="
 BSC_REAL="$(readlink -f "$(command -v "$BSC")")"
@@ -48,24 +72,24 @@ yosys_memory_stats() {
     local top="$1"
     local dir="$2"
     local log="$3"
+    local expected_bits="$4"
     local rtl
     rtl="$(find "$dir" -maxdepth 1 -name '*.v' -print | sort | tr '\n' ' ')"
     test -n "$rtl"
-    yosys -p "read_verilog -sv $rtl $BRAM1_V; hierarchy -check -top $top; flatten; proc; opt; stat" \
+    yosys -p "read_verilog -sv $rtl $BRAM1_V; hierarchy -check -top $top; flatten; proc; opt; memory_collect; stat" \
         2>&1 | tee "$log"
+    # Byte-enabled implementation is intentionally four independent 8-bit memories.
+    grep -Eq 'Number of memories:[[:space:]]+4' "$log"
+    grep -Eq "Number of memory bits:[[:space:]]+${expected_bits}" "$log"
 }
 
-echo "== 1 MiB default integrated BRAM RTL =="
+echo "== 1 MiB default four-lane BRAM RTL =="
 generate_rtl mkDefaultBlockRamBackend "$BUILD/rtl-default"
-yosys_memory_stats mkDefaultBlockRamBackend "$BUILD/rtl-default" "$BUILD/yosys-default-memory.log"
-grep -Eq 'Number of memories:[[:space:]]+1' "$BUILD/yosys-default-memory.log"
-grep -Eq 'Number of memory bits:[[:space:]]+8388608' "$BUILD/yosys-default-memory.log"
+yosys_memory_stats mkDefaultBlockRamBackend "$BUILD/rtl-default" "$BUILD/yosys-default-memory.log" 8388608
 
-echo "== 128 KiB alternative BRAM configuration RTL =="
+echo "== 128 KiB alternative four-lane BRAM RTL =="
 generate_rtl mkBlockRamBackend128KiB "$BUILD/rtl-128k"
-yosys_memory_stats mkBlockRamBackend128KiB "$BUILD/rtl-128k" "$BUILD/yosys-128k-memory.log"
-grep -Eq 'Number of memories:[[:space:]]+1' "$BUILD/yosys-128k-memory.log"
-grep -Eq 'Number of memory bits:[[:space:]]+1048576' "$BUILD/yosys-128k-memory.log"
+yosys_memory_stats mkBlockRamBackend128KiB "$BUILD/rtl-128k" "$BUILD/yosys-128k-memory.log" 1048576
 
 echo "== Map default 1 MiB backend to native iCE40 block-RAM cells =="
 RTL_DEFAULT="$(find "$BUILD/rtl-default" -maxdepth 1 -name '*.v' -print | sort | tr '\n' ' ')"
@@ -73,4 +97,4 @@ yosys -p "read_verilog -sv $RTL_DEFAULT $BRAM1_V; hierarchy -check -top mkDefaul
     2>&1 | tee "$BUILD/yosys-ice40.log"
 grep -Eq 'SB_RAM40_4K[[:space:]]+[1-9][0-9]*' "$BUILD/yosys-ice40.log"
 
-echo "PASS 1 MiB integrated BRAM simulation, sizing, and native block-RAM synthesis"
+echo "PASS four-lane BRAM simulation, sizing, and native block-RAM synthesis"
