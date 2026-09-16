@@ -30,13 +30,9 @@ typedef struct {
     Bool reset;
 } MainboardCycleInputs deriving (Bits, FShow);
 
-// Convert the physical-cycle card boundary used by mkQDXBCard back into the
-// logical PLIO image consumed by PLIOHostCore. This intentionally lives on
-// the mainboard: cards do not need to know which host implementation is used.
 function PlioOut plioOutFromBackplane(BackplaneDrive bp);
     PlioOut out = plioOutDefault();
     out.request = bp.request;
-
     if (bp.controlValid) begin
         out.spaceValid = True;
         out.space = unpack(bp.control.space);
@@ -46,19 +42,16 @@ function PlioOut plioOutFromBackplane(BackplaneDrive bp);
         out.burst = unpack(bp.control.burstLen);
         out.dataStrobe = bp.control.dataStrobe;
     end
-
     if (bp.adParValid) begin
         out.adValid = True;
         out.ad = bp.ad;
         out.parValid = True;
         out.parity = bp.parity;
     end
-
     if (bp.responseValid) begin
         out.ack = bp.ack;
         out.err = bp.err;
     end
-
     return out;
 endfunction
 
@@ -72,10 +65,8 @@ endfunction
 
 interface MainboardFPGAIfc;
     method Vector#(8, PlioIn) plioSlots(Vector#(8, BackplaneDrive) cards, Bool reset);
-
     method LightingBusInputs lightingMemory(Vector#(8, BackplaneDrive) cards,
         LightingBusMasterDrive cpu, Bool reset);
-
     method LightingModuleInterrupts interrupts(Bool timerIrq, Bool machineFault);
 
     method Bool memoryBackendRequestValid;
@@ -86,8 +77,8 @@ interface MainboardFPGAIfc;
 
     // Queue one physical board-cycle image. The method is guarded by queue
     // capacity, so a producer cannot overwrite an unconsumed registered image.
-    // mkPipelineFIFOF preserves the registered boundary while allowing a new
-    // image to follow a consumed image without an artificial testbench bubble.
+    // mkLFIFOF gives the intended pipeline-style enqueue/dequeue scheduling
+    // without introducing a same-cycle external-input combinational bypass.
     method Action advance(Vector#(8, BackplaneDrive) cards,
         LightingBusMasterDrive cpu,
         Bool workerValid, HostWorkerRequest workerRequest,
@@ -136,22 +127,12 @@ module mkMainboardFPGA(MainboardFPGAIfc);
 
     Reg#(MainMemoryOwner) memoryOwner <- mkReg(MainMemNone);
     Reg#(Bool) preferCpu <- mkReg(True);
-
-    // LightingMemoryBus is explicitly two phase: BUS_REQ obtains BUS_GRANT,
-    // and REQ is asserted only after the module has observed that grant. Keep
-    // the grant reserved across that boundary so a newly arriving PLIO DMA
-    // request cannot steal a bus that has already been granted to the CPU.
     Reg#(Bool) cpuGrantHeld <- mkReg(False);
-
-    // A completed CPU request remains consumed until a sampled cycle observes
-    // REQ deasserted. The cycle in which READY/ERROR is observed still contains
-    // the old asserted REQ and must not become a second transaction later.
     Reg#(Bool) cpuRequestSeen <- mkReg(False);
 
-    // The old epoch register could be overwritten by a producer that called
-    // advance() on consecutive BSV clocks while the internal consumer was
-    // scheduled later. A real queue makes acceptance atomic and backpressured.
-    FIFOF#(MainboardCycleInputs) cycleQ <- mkPipelineFIFOF;
+    // A real queue replaces the old epoch register. advance() is guarded by
+    // notFull, so callers cannot toggle/overwrite an image before it is used.
+    FIFOF#(MainboardCycleInputs) cycleQ <- mkLFIFOF;
 
     rule applyReset (cycleQ.notEmpty && cycleQ.first.reset);
         let cycle = cycleQ.first;
@@ -228,7 +209,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             || (!cpuGrantHeld
                 && host.memoryRequestValid
                 && (!cycleQ.first.cpu.busRequest || !preferCpu)) ));
-
         let cycle = cycleQ.first;
         Bool selectCpu = cycle.cpu.request
             && !cpuRequestSeen
@@ -236,7 +216,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             && (cpuGrantHeld
                 || (cycle.cpu.busRequest
                     && (!host.memoryRequestValid || preferCpu)));
-
         if (selectCpu) begin
             memory.hostRequest(cycle.cpu.payload.write,
                 cycle.cpu.payload.addr,
@@ -262,13 +241,9 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         memoryOwner <= MainMemNone;
     endrule
 
-    // Commit exactly one queued physical board-cycle image. Reset has its own
-    // mutually-exclusive rule above. Dequeueing is the sole non-reset commit
-    // point, so an image cannot be replayed or overwritten before consumption.
     rule advancePlioHost (cycleQ.notEmpty && !cycleQ.first.reset);
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
-
         Bool selectCpu = cycle.cpu.request
             && !cpuRequestSeen
             && cycle.cpu.payload.byteEnable == 4'hf
@@ -277,17 +252,14 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             && (cpuGrantHeld
                 || (cycle.cpu.busRequest
                     && (!host.memoryRequestValid || preferCpu)));
-
         Bool acceptPlio = memoryOwner == MainMemNone
             && !cpuGrantHeld
             && memory.hostRequestReady
             && host.memoryRequestValid
             && (!cycle.cpu.busRequest || !preferCpu)
             && !selectCpu;
-
         Bool plioResponseValid = memoryOwner == MainMemPlio
             && memory.hostResponseValid;
-
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             acceptPlio,
             plioResponseValid,
@@ -306,7 +278,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     method LightingBusInputs lightingMemory(Vector#(8, BackplaneDrive) cards,
         LightingBusMasterDrive cpu, Bool reset);
         LightingBusInputs out = lightingBusInputsDefault();
-
         if (!reset) begin
             Bool plioWaiting = host.memoryRequestValid;
             Bool canArbitrate = memoryOwner == MainMemNone
@@ -318,10 +289,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             Bool cpuOwnsBus = cpuGrantHeld
                 || selectCpu
                 || memoryOwner == MainMemCpu;
-
             if (cpuOwnsBus) begin
                 out.busGrant = True;
-
                 if (memoryOwner == MainMemCpu && memory.hostResponseValid) begin
                     out.error = memory.hostResponseFault;
                     out.ready = !memory.hostResponseFault;
@@ -334,7 +303,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 end
             end
         end
-
         return out;
     endmethod
 
@@ -377,25 +345,20 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         Bit#(25) length, Bool deviceRead, Bool deviceWrite);
         host.bindDma(slot, channel, base, length, deviceRead, deviceWrite);
     endmethod
-
     method Action revokeDma(Bit#(3) slot, Bit#(4) channel);
         host.revokeDma(slot, channel);
     endmethod
-
     method Bit#(4) dmaGeneration(Bit#(3) slot, Bit#(4) channel)
         = host.dmaGeneration(slot, channel);
 
     method Bool workerCompletionValid = host.workerCompletionValid;
     method HostWorkerCompletion workerCompletion = host.workerCompletion;
-
     method Action clearWorkerCompletion;
         host.clearWorkerCompletion;
     endmethod
-
     method Bool dmaCompletionValid = host.dmaCompletionValid;
     method DmaM3Status dmaCompletionStatus = host.dmaCompletionStatus;
     method Bit#(5) dmaCompletionBeats = host.dmaCompletionBeats;
-
     method Action clearDmaCompletion;
         host.clearDmaCompletion;
     endmethod
@@ -404,13 +367,11 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         Bool enabled, Bool masked, Bit#(4) classCode);
         host.setNotificationConfig(slot, channel, enabled, masked, classCode);
     endmethod
-
     method Bool claimValid = host.claimValid;
     method Bit#(3) claimSlot = host.claimSlot;
     method Bit#(2) claimChannel = host.claimChannel;
     method Bit#(32) claimPayload = host.claimPayload;
     method Bit#(4) claimClass = host.claimClass;
-
     method Action claimFirst;
         host.claimFirst;
     endmethod
