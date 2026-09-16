@@ -72,6 +72,7 @@ interface MainboardFPGAIfc;
     method Bool memoryBackendRequestValid;
     method Bool memoryBackendWrite;
     method Bit#(32) memoryBackendAddress;
+    method Bit#(4) memoryBackendByteEnable;
     method Bit#(32) memoryBackendWriteData;
     method Bool memoryBackendResponseReady;
 
@@ -210,32 +211,19 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         cpuRequestSeen <= False;
     endrule
 
-    rule rejectPartialCpu (cycleQ.notEmpty && !cycleQ.first.reset
-        && memoryOwner == MainMemNone
-        && !cpuResponsePending
-        && cycleQ.first.cpu.request
-        && cycleQ.first.cpu.payload.byteEnable != 4'hf
-        && (cpuGrantHeld
-            || (!cpuGrantHeld && memory.hostRequestReady
-                && cycleQ.first.cpu.busRequest
-                && (!host.memoryRequestValid || preferCpu))));
-        cpuGrantHeld <= False;
-        preferCpu <= False;
-    endrule
-
     rule startCpuMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
         && !cpuResponsePending
         && memory.hostRequestReady
         && cycleQ.first.cpu.request
         && !cpuRequestSeen
-        && cycleQ.first.cpu.payload.byteEnable == 4'hf
         && (cpuGrantHeld
             || (cycleQ.first.cpu.busRequest
                 && (!host.memoryRequestValid || preferCpu))));
         let cycle = cycleQ.first;
         memory.hostRequest(cycle.cpu.payload.write,
             cycle.cpu.payload.addr,
+            cycle.cpu.payload.byteEnable,
             cycle.cpu.payload.writeData);
         memoryOwner <= MainMemCpu;
         cpuGrantHeld <= False;
@@ -256,6 +244,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
 
     // PLIO request acceptance is one atomic rule: the MemoryController request
     // is created in the same clock that PLIOHostCore sees memoryRequestReady.
+    // PLIO DMA remains a full 32-bit transfer and therefore always uses BE=f.
     rule advancePlioRequest (cycleQ.notEmpty && !cycleQ.first.reset
         && !cpuResponsePending
         && memoryOwner == MainMemNone
@@ -269,6 +258,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             True, False, False, False, 0, False);
         memory.hostRequest(host.memoryWrite,
             host.memoryAddress,
+            4'hf,
             host.memoryWriteData);
         memoryOwner <= MainMemPlio;
         cycleQ.deq;
@@ -339,11 +329,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                     out.ready = !cpuResponseFault;
                     if (cpuResponseReadDataValid) out.readData = cpuResponseReadData;
                 end
-                else if ((cpuGrantHeld || selectCpu)
-                    && cpu.request
-                    && cpu.payload.byteEnable != 4'hf) begin
-                    out.error = True;
-                end
             end
         end
         return out;
@@ -360,6 +345,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     method Bool memoryBackendRequestValid = memory.backendRequestValid;
     method Bool memoryBackendWrite = memory.backendWrite;
     method Bit#(32) memoryBackendAddress = memory.backendAddress;
+    method Bit#(4) memoryBackendByteEnable = memory.backendByteEnable;
     method Bit#(32) memoryBackendWriteData = memory.backendWriteData;
     method Bool memoryBackendResponseReady = memory.backendResponseReady;
 

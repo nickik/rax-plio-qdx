@@ -89,9 +89,6 @@ module mkTbMainboardRegisteredBackend(Empty);
     endrule
 
     rule setup (stage == RbSetup);
-        // Force several cycles in MemBackendRequest. This is the boundary that
-        // the old monolithic test modeled incorrectly by sampling requestReady
-        // independently from accepting the request.
         ram.setRequestHoldoff(8'd6);
         stage <= RbWriteBusReq;
     endrule
@@ -124,9 +121,6 @@ module mkTbMainboardRegisteredBackend(Empty);
         stage <= RbWriteWait;
     endrule
 
-    // Request acceptance is atomic at the external registered-cycle boundary:
-    // the fake backend accepts the request in the same testbench rule that
-    // queues backendRequestReady=True into MainboardFPGA.
     rule writeAcceptRequest (stage == RbWriteWait
         && board.memoryBackendRequestValid && ram.requestReady);
         LightingBusMasterDrive cpu = cpuRequest(32'h0000_0100, True,
@@ -142,7 +136,8 @@ module mkTbMainboardRegisteredBackend(Empty);
             $finish(1);
         end
         ram.acceptRequest(board.memoryBackendWrite,
-            board.memoryBackendAddress, board.memoryBackendWriteData);
+            board.memoryBackendAddress, board.memoryBackendByteEnable,
+            board.memoryBackendWriteData);
         board.advance(idleCards(), cpu, False, noWorkerRequest(),
             True, False, False, False, 0, False);
         watchdog <= watchdog + 1;
@@ -198,9 +193,6 @@ module mkTbMainboardRegisteredBackend(Empty);
         end
     endrule
 
-    // READY/ERROR is deliberately sticky until the CPU drops request. Queue an
-    // explicit request-low board cycle and do not start the next transaction
-    // until retireCpuResponse has consumed it.
     rule writeRetire (stage == RbWriteRetire);
         LightingBusMasterDrive cpu = lightingBusMasterDriveDefault();
         LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
@@ -262,7 +254,8 @@ module mkTbMainboardRegisteredBackend(Empty);
             $finish(1);
         end
         ram.acceptRequest(board.memoryBackendWrite,
-            board.memoryBackendAddress, board.memoryBackendWriteData);
+            board.memoryBackendAddress, board.memoryBackendByteEnable,
+            board.memoryBackendWriteData);
         board.advance(idleCards(), cpu, False, noWorkerRequest(),
             True, False, False, False, 0, False);
         watchdog <= watchdog + 1;
