@@ -1,0 +1,177 @@
+name: Mainboard P0 Debug
+
+on:
+  pull_request:
+    paths:
+      - 'hardware/mainboard-fpga/**'
+      - '.github/actions/setup-bsc/**'
+      - '.github/workflows/mainboard-p0.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mainboard-p0-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  BSC_VERSION: '2026.01'
+  BSC_URL: 'https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-debian-12.13.tar.gz'
+  BSC_SHA256: '9da36623e301ae14ba5e670cb98d11c99277faa915025ccb7615de3ec14002c3'
+
+jobs:
+  cpu-response:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
+      - name: CPU response lifecycle
+        run: make -C hardware/mainboard-fpga -f Makefile.p0 test-cpu-response
+      - name: Upload CPU trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-cpu-response-${{ github.run_id }}
+          path: hardware/mainboard-fpga/build/p0/cpu-response/*.log
+          if-no-files-found: warn
+
+  plio-response:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
+      - name: PLIO response lifecycle
+        run: make -C hardware/mainboard-fpga -f Makefile.p0 test-plio-response
+      - name: Upload PLIO trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-plio-response-${{ github.run_id }}
+          path: hardware/mainboard-fpga/build/p0/plio-response/*.log
+          if-no-files-found: warn
+
+  cpu-established:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
+      - name: CPU grant retention
+        run: |
+          make -C hardware/mainboard-fpga test-cpu-grant
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-cpu-grant/run.log
+          grep -Fq 'PASS|cpu-grant|' hardware/mainboard-fpga/build/diag-cpu-grant/run.log
+      - name: CPU write/backend
+        run: |
+          make -C hardware/mainboard-fpga test-cpu-write
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-cpu-write/run.log
+          grep -Fq 'PASS|cpu-write|' hardware/mainboard-fpga/build/diag-cpu-write/run.log
+      - name: CPU read/backend
+        run: |
+          make -C hardware/mainboard-fpga test-cpu-read
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-cpu-read/run.log
+          grep -Fq 'PASS|cpu-read|' hardware/mainboard-fpga/build/diag-cpu-read/run.log
+      - name: Reset stale-response recovery
+        run: |
+          make -C hardware/mainboard-fpga test-reset-recovery
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-reset-recovery/run.log
+          grep -Fq 'PASS|reset-recovery|' hardware/mainboard-fpga/build/diag-reset-recovery/run.log
+      - name: Upload CPU diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-cpu-established-${{ github.run_id }}
+          path: hardware/mainboard-fpga/build/diag-*/run.log
+          if-no-files-found: warn
+
+  plio-dma:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
+      - name: One-beat PLIO DMA
+        run: |
+          make -C hardware/mainboard-fpga test-plio-dma
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/diag-plio-dma/run.log
+          grep -Fq 'PASS|plio-dma|' hardware/mainboard-fpga/build/diag-plio-dma/run.log
+      - name: Upload PLIO DMA trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-plio-dma-${{ github.run_id }}
+          path: hardware/mainboard-fpga/build/diag-plio-dma/*.log
+          if-no-files-found: warn
+
+  qdx-compat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
+      - name: Raw QDX-B card reset cycle
+        run: make -C hardware/mainboard-fpga -f Makefile.diagnostics test-qdx-card-cycle
+      - name: Mainboard QLIO slot reset cycle
+        run: make -C hardware/mainboard-fpga -f Makefile.diagnostics test-qdx-slot-cycle
+      - name: Physical QDX-B worker transaction
+        run: |
+          make -C hardware/mainboard-fpga test-qdx-b
+          ! grep -q '^FAIL|' hardware/mainboard-fpga/build/qdxb/run.log
+          grep -Fq 'PASS mainboard FPGA <-> physical mkQDXBCard integration' hardware/mainboard-fpga/build/qdxb/run.log
+      - name: Upload QDX diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-qdx-${{ github.run_id }}
+          path: |
+            hardware/mainboard-fpga/build/**/compile.log
+            hardware/mainboard-fpga/build/**/run.log
+          if-no-files-found: warn
+
+  core-sanity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yosys
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y yosys
+      - uses: ./.github/actions/setup-bsc
+        with:
+          version: ${{ env.BSC_VERSION }}
+          url: ${{ env.BSC_URL }}
+          sha256: ${{ env.BSC_SHA256 }}
+      - name: Registered-backend integration
+        run: make -C hardware/mainboard-fpga test-core
+      - name: Generated-Verilog structural sanity
+        run: make -C hardware/mainboard-fpga verilog-sanity
+      - name: Upload core diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-core-${{ github.run_id }}
+          path: |
+            hardware/mainboard-fpga/build/core/*.log
+            hardware/mainboard-fpga/build/rtl/**
+          if-no-files-found: warn
