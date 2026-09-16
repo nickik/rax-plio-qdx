@@ -1,4 +1,4 @@
-.PHONY: test test-rust conformance-rust test-bluespec test-qic-phase4-6 test-qic-phase7-9 test-memory-controller test-memory-controller-bram
+.PHONY: test test-rust conformance-rust test-bluespec test-qic-phase4-6 test-qic-phase7-9 test-memory-controller test-memory-controller-bram test-mainboard-fpga
 
 test: test-rust test-bluespec
 
@@ -15,6 +15,7 @@ test-bluespec:
 	bash scripts/test-qic-phase8.sh
 	bash scripts/test-qic-phase9.sh
 	bash scripts/test-memory-controller.sh
+	$(MAKE) -C mainboard-fpga test
 
 test-qic-phase4-6:
 	bash scripts/test-qic-phase4-6.sh
@@ -29,3 +30,6 @@ test-memory-controller:
 
 test-memory-controller-bram:
 	bash scripts/test-memory-controller-bram.sh
+
+test-mainboard-fpga:
+	$(MAKE) -C mainboard-fpga test

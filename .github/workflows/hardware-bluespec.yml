@@ -20,7 +20,7 @@ concurrency:
 jobs:
   qli-naked-device:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       BSC_VERSION: '2026.01'
       BSC_URL: 'https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-debian-12.13.tar.gz'
@@ -51,7 +51,48 @@ jobs:
           iverilog -V | head -1
           yosys -V
           nextpnr-ice40 --version
-      - name: Run memory-controller regression first with full diagnostics
+
+      # Keep these as independent steps and run all of them even when one
+      # fails. A mainboard regression must identify the broken boundary
+      # directly rather than collapse into one opaque aggregate failure.
+      - name: Mainboard diagnostic - CPU grant retention
+        run: make -C hardware/mainboard-fpga test-cpu-grant
+
+      - name: Mainboard diagnostic - CPU write/backend
+        if: always()
+        run: make -C hardware/mainboard-fpga test-cpu-write
+
+      - name: Mainboard diagnostic - CPU read/backend
+        if: always()
+        run: make -C hardware/mainboard-fpga test-cpu-read
+
+      - name: Mainboard diagnostic - reset/stale response/recovery
+        if: always()
+        run: make -C hardware/mainboard-fpga test-reset-recovery
+
+      - name: Mainboard diagnostic - PLIO DMA
+        if: always()
+        run: make -C hardware/mainboard-fpga test-plio-dma
+
+      - name: Mainboard diagnostic - physical QDX-B
+        if: always()
+        run: make -C hardware/mainboard-fpga test-qdx-b
+
+      - name: Upload mainboard diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mainboard-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            hardware/mainboard-fpga/build/**/compile.log
+            hardware/mainboard-fpga/build/**/run.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Run full mainboard FPGA regression
+        run: make -C hardware test-mainboard-fpga
+
+      - name: Run memory-controller regression with full diagnostics
         env:
           MEMORY_CONTROLLER_DEBUG_DIR: ${{ runner.temp }}/memory-controller-debug
         run: |
