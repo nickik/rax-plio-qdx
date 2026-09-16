@@ -3,6 +3,7 @@ package TbMainboardP0Response;
 import Vector::*;
 import QLITypes::*;
 import QICInterfaces::*;
+import PLIOTx::*;
 import PLIOWorkerHost::*;
 import LightingMemoryBusCompat::*;
 import MainboardFPGA::*;
