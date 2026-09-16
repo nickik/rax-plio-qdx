@@ -52,10 +52,12 @@ jobs:
           yosys -V
           nextpnr-ice40 --version
 
-      # P0 response-lifecycle witness intentionally runs first and fails at the
-      # first lost completion instead of waiting for the broader diagnostics.
       - name: P0 minimal - CPU response lifecycle
         run: make -C hardware/mainboard-fpga -f Makefile.p0 test-cpu-response
+
+      - name: P0 minimal - PLIO response lifecycle
+        if: always()
+        run: make -C hardware/mainboard-fpga -f Makefile.p0 test-plio-response
 
       # Each boundary has an independent executable and an explicit PASS
       # marker check. Bluesim does not reliably propagate $finish(1) through
