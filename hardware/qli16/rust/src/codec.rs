@@ -119,7 +119,7 @@ impl LinkCodec {
         }
     }
 
-    fn d2q_start(&mut self, device: &DeviceToQic) {
+    fn d2q_start(&mut self, qic: &QicToDevice, device: &DeviceToQic) {
         if self.d2q.is_some() { return; }
 
         if let Some(resp) = device.mmio_response {
@@ -130,11 +130,20 @@ impl LinkCodec {
                 Err(_) => self.protocol_fault = true,
             }
         } else if let Some(word) = device.dma_write {
-            self.d2q = Some(Tx {
-                tokens: encode_dma_word(word, Direction::DeviceToQic).to_vec(),
-                index: 0,
-                tag: DTag::DmaWrite(word),
-            });
+            // QLI-16 is half duplex and direction changes are only legal
+            // between complete messages. Do not put the first DMA_DATA token
+            // on the wire until QIC can accept the complete semantic word;
+            // otherwise its final token can stall the D2Q direction and block
+            // an intervening worker MMIO request in the reverse direction.
+            if qic.dma_write_ready {
+                self.d2q = Some(Tx {
+                    tokens: encode_dma_word(word, Direction::DeviceToQic).to_vec(),
+                    index: 0,
+                    tag: DTag::DmaWrite(word),
+                });
+            }
+            // DMA data retains its priority while valid. In particular, do not
+            // bypass a blocked data word with a lower-priority notification.
         } else if self.notification_to_qic.is_none() && self.notification_completion_pending.is_none() {
             if let Some(req) = device.notification_request {
                 match encode_notification(req) {
@@ -298,7 +307,7 @@ impl LinkCodec {
         }
 
         self.q2d_start(&qic);
-        self.d2q_start(&device);
+        self.d2q_start(&qic, &device);
 
         let mut result = CycleResult {
             to_qic: DeviceToQic::default(),
@@ -380,6 +389,32 @@ mod tests {
         assert!(!c.slots[0].valid, "turnaround must consume one idle slot");
         assert!(c.slots[1].valid);
         assert_eq!(c.slots[1].token.direction, Direction::DeviceToQic);
+    }
+
+    #[test]
+    fn unready_device_dma_word_does_not_block_reverse_mmio() {
+        let mut link = LinkCodec::new();
+        let word = DmaWord { data: 0x1234_5678 };
+        let req = MmioRequest { address: 0x134, write: false, byte_enable: 0xf, write_data: 0 };
+        let device = DeviceToQic { dma_write: Some(word), mmio_ready: true, ..Default::default() };
+        let qic = QicToDevice { mmio_request: Some(req), dma_write_ready: false, ..Default::default() };
+
+        let mut saw_mmio = false;
+        for _ in 0..4 {
+            let cycle = link.cycle(false, qic, device);
+            assert!(cycle.slots.iter().all(|slot| !slot.valid || slot.token.direction != Direction::DeviceToQic),
+                "unready DMA_DATA must not claim the D2Q wire");
+            saw_mmio |= cycle.to_device.mmio_request == Some(req);
+        }
+        assert!(saw_mmio, "reverse MMIO must make progress while DMA data waits for QIC readiness");
+
+        let ready_qic = QicToDevice { dma_write_ready: true, ..Default::default() };
+        let mut saw_dma = false;
+        for _ in 0..3 {
+            let cycle = link.cycle(false, ready_qic, DeviceToQic { dma_write: Some(word), ..Default::default() });
+            saw_dma |= cycle.to_qic.dma_write == Some(word);
+        }
+        assert!(saw_dma, "DMA_DATA must cross once QIC advertises readiness");
     }
 
     #[test]

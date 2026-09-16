@@ -48,10 +48,12 @@ module mkPLIOQIC(PLIOQICIfc);
     Reg#(Bit#(32)) bufferData <- mkReg(0);
     Reg#(NotificationRequest) notification <- mkReg(NotificationRequest { channel: 0 });
 
-    // PLIO grants are single-transaction capabilities.  Once a manager
-    // transaction consumes BG, another transaction may not start until BG has
-    // been observed low and a fresh grant is subsequently issued.
     Reg#(Bool) grantUsed <- mkReg(False);
+    Reg#(Bool) workerResumeDma <- mkReg(False);
+    Reg#(Bool) workerResumeNotification <- mkReg(False);
+    Reg#(Bool) workerResumeDmaTail <- mkReg(False);
+    Reg#(Bool) workerResumeDmaComplete <- mkReg(False);
+    Reg#(Bit#(9)) workerResumeTailWait <- mkReg(0);
 
     function Bool timedOut();
         return waitCount >= 255;
@@ -71,6 +73,10 @@ module mkPLIOQIC(PLIOQICIfc);
             && completed == burstWordCount(dmaReq.words);
     endfunction
 
+    function Bool workerCanPreemptDmaTail();
+        return (state == UDmaData && finalReadBuffer()) || state == UDmaComplete;
+    endfunction
+
     function Bool managerSlotAvailable(PlioIn bus);
         return !grantUsed || !bus.grant;
     endfunction
@@ -79,133 +85,159 @@ module mkPLIOQIC(PLIOQICIfc);
         PlioOut out = plioOutDefault();
 
         if (!bus.reset) begin
-            case (state)
-                UIdle: begin
-                    if (workerAddressCycleP2(bus)) begin
-                        if (workerAddressValidP2(bus))
-                            out.ack = True;
-                        else
+            Bool tailWorker = workerCanPreemptDmaTail() && workerAddressCycleP2(bus);
+
+            if (tailWorker) begin
+                if (workerAddressValidP2(bus))
+                    out.ack = True;
+                else
+                    out.err = True;
+            end
+            else begin
+                if (workerResumeDma || workerResumeNotification)
+                    out.request = True;
+
+                case (state)
+                    UIdle: begin
+                        if (workerAddressCycleP2(bus)) begin
+                            if (workerAddressValidP2(bus))
+                                out.ack = True;
+                            else
+                                out.err = True;
+                        end
+                    end
+
+                    UWorkerReadData: begin
+                        if (timedOut())
                             out.err = True;
                     end
-                end
 
-                UWorkerReadData: begin
-                    if (timedOut())
-                        out.err = True;
-                end
+                    UWorkerWriteData: begin
+                        if (timedOut())
+                            out.err = True;
+                        else if (bus.dataStrobe
+                            && (!bus.adValid
+                                || !bus.parValid
+                                || ((oddParity32P2(bus.ad) & heldBe)
+                                    != (bus.parity & heldBe))))
+                            out.err = True;
+                    end
 
-                UWorkerWriteData: begin
-                    if (timedOut())
-                        out.err = True;
-                    else if (bus.dataStrobe
-                        && (!bus.adValid
-                            || !bus.parValid
-                            || ((oddParity32P2(bus.ad) & heldBe)
-                                != (bus.parity & heldBe))))
-                        out.err = True;
-                end
+                    UWorkerOffer: begin
+                        if (timedOut())
+                            out.err = True;
+                    end
 
-                UWorkerOffer: begin
-                    if (timedOut())
-                        out.err = True;
-                end
-
-                UWorkerResponse: begin
-                    if (timedOut())
-                        out.err = True;
-                    else if (bus.dataStrobe && qli.mmioResponseValid) begin
-                        case (qli.mmioResponse.status)
-                            MmioReadOk: begin
-                                if (!heldWrite) begin
-                                    out.adValid = True;
-                                    out.ad = qli.mmioResponse.data;
-                                    out.parValid = True;
-                                    out.parity = oddParity32P2(qli.mmioResponse.data);
-                                    out.ack = True;
+                    UWorkerResponse: begin
+                        if (timedOut())
+                            out.err = True;
+                        else if (bus.dataStrobe && qli.mmioResponseValid) begin
+                            case (qli.mmioResponse.status)
+                                MmioReadOk: begin
+                                    if (!heldWrite) begin
+                                        out.adValid = True;
+                                        out.ad = qli.mmioResponse.data;
+                                        out.parValid = True;
+                                        out.parity = oddParity32P2(qli.mmioResponse.data);
+                                        out.ack = True;
+                                    end
+                                    else
+                                        out.err = True;
                                 end
-                                else
-                                    out.err = True;
-                            end
-                            MmioWriteOk: begin
-                                if (heldWrite)
-                                    out.ack = True;
-                                else
-                                    out.err = True;
-                            end
-                            MmioError: out.err = True;
-                        endcase
-                    end
-                end
-
-                URequestDma,
-                URequestNotification: out.request = True;
-
-                UDmaAddress: begin
-                    out.request = True;
-                    if (bus.grant && !timedOut()) begin
-                        out.adValid = True;
-                        out.ad = dmaReq.address;
-                        out.parValid = True;
-                        out.parity = oddParity32P1(dmaReq.address);
-                        out.spaceValid = True;
-                        out.space = PlioHostDma;
-                        out.addressStrobe = True;
-                        out.read = dmaReq.direction == HostToDevice;
-                        out.byteEnable = 4'hf;
-                        out.burst = dmaReq.words;
-                    end
-                end
-
-                UDmaData: begin
-                    Bool finalBuf = finalReadBuffer();
-                    out.request = !finalBuf;
-                    if (!timedOut() && (finalBuf || bus.grant)) begin
-                        if (dmaReq.direction == HostToDevice) begin
-                            if (!bufferValid && completed < burstWordCount(dmaReq.words))
-                                out.dataStrobe = True;
+                                MmioWriteOk: begin
+                                    if (heldWrite)
+                                        out.ack = True;
+                                    else
+                                        out.err = True;
+                                end
+                                MmioError: out.err = True;
+                            endcase
                         end
-                        else if (bufferValid) begin
-                            // Hold the complete write beat stable through the ACK/ERR
-                            // sampling cycle just like the Phase-5 reference fixture.
+                    end
+
+                    URequestDma,
+                    URequestNotification: begin
+                        out.request = True;
+                        if (workerAddressCycleP2(bus)) begin
+                            if (workerAddressValidP2(bus))
+                                out.ack = True;
+                            else
+                                out.err = True;
+                        end
+                    end
+
+                    UDmaAddress: begin
+                        out.request = True;
+                        if (bus.grant && !timedOut()) begin
                             out.adValid = True;
-                            out.ad = bufferData;
+                            out.ad = dmaReq.address;
                             out.parValid = True;
-                            out.parity = oddParity32P1(bufferData);
+                            out.parity = oddParity32P1(dmaReq.address);
+                            out.spaceValid = True;
+                            out.space = PlioHostDma;
+                            out.addressStrobe = True;
+                            out.read = dmaReq.direction == HostToDevice;
+                            out.byteEnable = 4'hf;
+                            out.burst = dmaReq.words;
+                        end
+                    end
+
+                    UDmaData: begin
+                        Bool finalBuf = finalReadBuffer();
+                        // The final HOST->device word has already completed its
+                        // physical PLIO beat.  Only local QLI delivery remains,
+                        // so BR must no longer describe active bus work.
+                        out.request = !finalBuf;
+                        if (!timedOut() && (finalBuf || bus.grant)) begin
+                            if (dmaReq.direction == HostToDevice) begin
+                                if (!bufferValid && completed < burstWordCount(dmaReq.words))
+                                    out.dataStrobe = True;
+                            end
+                            else if (bufferValid) begin
+                                out.adValid = True;
+                                out.ad = bufferData;
+                                out.parValid = True;
+                                out.parity = oddParity32P1(bufferData);
+                                out.dataStrobe = True;
+                            end
+                        end
+                    end
+
+                    // DMA completion is a QLI-local handshake.  The PLIO
+                    // transaction has already ended, regardless of BG level.
+                    UDmaComplete: begin end
+
+                    UNotificationAddress: begin
+                        out.request = True;
+                        if (bus.grant && !timedOut()) begin
+                            Bit#(32) address = zeroExtend(notification.channel) << 2;
+                            out.adValid = True;
+                            out.ad = address;
+                            out.parValid = True;
+                            out.parity = oddParity32P1(address);
+                            out.spaceValid = True;
+                            out.space = PlioController;
+                            out.addressStrobe = True;
+                            out.read = False;
+                            out.byteEnable = 4'hf;
+                            out.burst = BurstOne;
+                        end
+                    end
+
+                    UNotificationData: begin
+                        out.request = True;
+                        if (bus.grant && !timedOut()) begin
+                            out.adValid = True;
+                            out.ad = 0;
+                            out.parValid = True;
+                            out.parity = oddParity32P1(0);
                             out.dataStrobe = True;
                         end
                     end
-                end
 
-                UNotificationAddress: begin
-                    out.request = True;
-                    if (bus.grant && !timedOut()) begin
-                        Bit#(32) address = zeroExtend(notification.channel) << 2;
-                        out.adValid = True;
-                        out.ad = address;
-                        out.parValid = True;
-                        out.parity = oddParity32P1(address);
-                        out.spaceValid = True;
-                        out.space = PlioController;
-                        out.addressStrobe = True;
-                        out.read = False;
-                        out.byteEnable = 4'hf;
-                        out.burst = BurstOne;
-                    end
-                end
-
-                UNotificationData: begin
-                    out.request = True;
-                    if (bus.grant && !timedOut()) begin
-                        out.adValid = True;
-                        out.ad = 0;
-                        out.parValid = True;
-                        out.parity = oddParity32P1(0);
-                        out.dataStrobe = True;
-                    end
-                end
-
-                default: begin end
-            endcase
+                    default: begin end
+                endcase
+            end
         end
 
         return out;
@@ -216,63 +248,67 @@ module mkPLIOQIC(PLIOQICIfc);
         out.reset = bus.reset;
 
         if (!bus.reset) begin
-            case (state)
-                UIdle: begin
-                    if (managerSlotAvailable(bus)
-                        && !qli.notificationValid
-                        && qli.dmaRequestValid
-                        && validDma(qli.dmaRequest))
-                        out.dmaRequestReady = True;
-                end
+            Bool tailWorker = workerCanPreemptDmaTail() && workerAddressCycleP2(bus);
 
-                UWorkerOffer: begin
-                    if (!timedOut()) begin
-                        out.mmioRequestValid = True;
-                        out.mmioRequest = MmioRequest {
-                            address: heldAddress,
-                            write: heldWrite,
-                            byteEnable: heldBe,
-                            writeData: heldWriteData
-                        };
+            if (!tailWorker) begin
+                case (state)
+                    UIdle: begin
+                        if (managerSlotAvailable(bus)
+                            && !qli.notificationValid
+                            && qli.dmaRequestValid
+                            && validDma(qli.dmaRequest))
+                            out.dmaRequestReady = True;
                     end
-                end
 
-                UWorkerResponse: begin
-                    if (timedOut())
-                        out.mmioCancel = True;
-                    else
-                        out.mmioResponseReady = bus.dataStrobe;
-                end
-
-                UDmaData: begin
-                    if (!timedOut() && (finalReadBuffer() || bus.grant)) begin
-                        if (dmaReq.direction == HostToDevice && bufferValid) begin
-                            out.dmaReadValid = True;
-                            out.dmaRead = DmaWord { data: bufferData };
+                    UWorkerOffer: begin
+                        if (!timedOut()) begin
+                            out.mmioRequestValid = True;
+                            out.mmioRequest = MmioRequest {
+                                address: heldAddress,
+                                write: heldWrite,
+                                byteEnable: heldBe,
+                                writeData: heldWriteData
+                            };
                         end
-                        else if (dmaReq.direction == DeviceToHost
-                            && !bufferValid
-                            && completed < burstWordCount(dmaReq.words))
-                            out.dmaWriteReady = True;
                     end
-                end
 
-                UDmaComplete: begin
-                    out.dmaCompletionValid = True;
-                    out.dmaCompletion = completion;
-                end
+                    UWorkerResponse: begin
+                        if (timedOut())
+                            out.mmioCancel = True;
+                        else
+                            out.mmioResponseReady = bus.dataStrobe;
+                    end
 
-                UNotificationData: begin
-                    if (bus.grant
-                        && !timedOut()
-                        && bus.ack
-                        && qli.notificationValid
-                        && qli.notification == notification)
-                        out.notificationReady = True;
-                end
+                    UDmaData: begin
+                        if (!timedOut() && (finalReadBuffer() || bus.grant)) begin
+                            if (dmaReq.direction == HostToDevice && bufferValid) begin
+                                out.dmaReadValid = True;
+                                out.dmaRead = DmaWord { data: bufferData };
+                            end
+                            else if (dmaReq.direction == DeviceToHost
+                                && !bufferValid
+                                && completed < burstWordCount(dmaReq.words))
+                                out.dmaWriteReady = True;
+                        end
+                    end
 
-                default: begin end
-            endcase
+                    UDmaComplete: begin
+                        out.dmaCompletionValid = True;
+                        out.dmaCompletion = completion;
+                    end
+
+                    UNotificationData: begin
+                        if (bus.grant
+                            && !timedOut()
+                            && bus.ack
+                            && qli.notificationValid
+                            && qli.notification == notification)
+                            out.notificationReady = True;
+                    end
+
+                    default: begin end
+                endcase
+            end
         end
 
         return out;
@@ -286,214 +322,321 @@ module mkPLIOQIC(PLIOQICIfc);
                 completed <= 0;
                 bufferValid <= False;
                 grantUsed <= False;
+                workerResumeDma <= False;
+                workerResumeNotification <= False;
+                workerResumeDmaTail <= False;
+                workerResumeDmaComplete <= False;
+                workerResumeTailWait <= 0;
             end
             else begin
-                // Merely observing BG low rearms the next manager transaction.
                 if (!bus.grant)
                     grantUsed <= False;
 
-                case (state)
-                    UIdle: begin
+                Bool tailWorker = workerCanPreemptDmaTail() && workerAddressCycleP2(bus);
+
+                if (tailWorker) begin
+                    if (workerAddressValidP2(bus)) begin
+                        heldAddress <= bus.ad;
+                        heldBe <= bus.byteEnable;
+                        heldWrite <= !bus.read;
+                        heldWriteData <= 0;
+                        workerResumeTailWait <= waitCount;
+                        workerResumeDmaTail <= state == UDmaData;
+                        workerResumeDmaComplete <= state == UDmaComplete;
                         waitCount <= 0;
-                        completed <= 0;
-                        bufferValid <= False;
-
-                        if (workerAddressCycleP2(bus) && workerAddressValidP2(bus)) begin
-                            heldAddress <= bus.ad;
-                            heldBe <= bus.byteEnable;
-                            heldWrite <= !bus.read;
-                            heldWriteData <= 0;
-                            state <= bus.read ? UWorkerReadData : UWorkerWriteData;
-                        end
-                        else if (managerSlotAvailable(bus) && qli.notificationValid) begin
-                            if (validNotification(qli.notification)) begin
-                                notification <= qli.notification;
-                                state <= URequestNotification;
-                            end
-                        end
-                        else if (managerSlotAvailable(bus)
-                            && qli.dmaRequestValid
-                            && validDma(qli.dmaRequest)) begin
-                            dmaReq <= qli.dmaRequest;
-                            state <= URequestDma;
-                        end
+                        state <= bus.read ? UWorkerReadData : UWorkerWriteData;
                     end
-
-                    UWorkerReadData: begin
-                        if (timedOut()) begin
-                            state <= UIdle;
+                end
+                else begin
+                    case (state)
+                        UIdle: begin
                             waitCount <= 0;
-                        end
-                        else if (bus.dataStrobe) begin
-                            heldWrite <= False;
-                            heldWriteData <= 0;
-                            state <= UWorkerOffer;
-                        end
-                        else
-                            waitCount <= waitCount + 1;
-                    end
-
-                    UWorkerWriteData: begin
-                        if (timedOut()) begin
-                            state <= UIdle;
-                            waitCount <= 0;
-                        end
-                        else if (bus.dataStrobe) begin
-                            if (bus.adValid
-                                && bus.parValid
-                                && ((oddParity32P2(bus.ad) & heldBe)
-                                    == (bus.parity & heldBe))) begin
-                                heldWrite <= True;
-                                heldWriteData <= bus.ad;
-                                waitCount <= 0;
-                                state <= UWorkerOffer;
-                            end
-                            else begin
-                                state <= UIdle;
-                                waitCount <= 0;
-                            end
-                        end
-                        else
-                            waitCount <= waitCount + 1;
-                    end
-
-                    UWorkerOffer: begin
-                        if (timedOut()) begin
-                            state <= UIdle;
-                            waitCount <= 0;
-                        end
-                        else if (qli.mmioReady)
-                            state <= UWorkerResponse;
-                        else
-                            waitCount <= waitCount + 1;
-                    end
-
-                    UWorkerResponse: begin
-                        if (timedOut()) begin
-                            state <= UIdle;
-                            waitCount <= 0;
-                        end
-                        else if (bus.dataStrobe && qli.mmioResponseValid) begin
-                            state <= UIdle;
-                            waitCount <= 0;
-                        end
-                        else
-                            waitCount <= waitCount + 1;
-                    end
-
-                    URequestDma: begin
-                        if (bus.grant) begin
-                            grantUsed <= True;
-                            waitCount <= 0;
-                            state <= UDmaAddress;
-                        end
-                    end
-
-                    UDmaAddress: begin
-                        if (!bus.grant) begin
-                            completion <= DmaCompletion {
-                                status: DmaProtocolError,
-                                wordsCompleted: 0
-                            };
-                            state <= UDmaComplete;
-                            waitCount <= 0;
-                        end
-                        else if (timedOut()) begin
-                            completion <= DmaCompletion {
-                                status: DmaTimeout,
-                                wordsCompleted: 0
-                            };
-                            state <= UDmaComplete;
-                            waitCount <= 0;
-                        end
-                        else if (bus.err) begin
-                            completion <= DmaCompletion {
-                                status: DmaBusError,
-                                wordsCompleted: 0
-                            };
-                            state <= UDmaComplete;
-                            waitCount <= 0;
-                        end
-                        else if (bus.ack) begin
                             completed <= 0;
                             bufferValid <= False;
-                            waitCount <= 0;
-                            state <= UDmaData;
-                        end
-                        else
-                            waitCount <= waitCount + 1;
-                    end
+                            workerResumeDma <= False;
+                            workerResumeNotification <= False;
+                            workerResumeDmaTail <= False;
+                            workerResumeDmaComplete <= False;
+                            workerResumeTailWait <= 0;
 
-                    UDmaData: begin
-                        Bool finalBuf = finalReadBuffer();
+                            if (workerAddressCycleP2(bus) && workerAddressValidP2(bus)) begin
+                                heldAddress <= bus.ad;
+                                heldBe <= bus.byteEnable;
+                                heldWrite <= !bus.read;
+                                heldWriteData <= 0;
+                                state <= bus.read ? UWorkerReadData : UWorkerWriteData;
+                            end
+                            else if (managerSlotAvailable(bus) && qli.notificationValid) begin
+                                if (validNotification(qli.notification)) begin
+                                    notification <= qli.notification;
+                                    state <= URequestNotification;
+                                end
+                            end
+                            else if (managerSlotAvailable(bus)
+                                && qli.dmaRequestValid
+                                && validDma(qli.dmaRequest)) begin
+                                dmaReq <= qli.dmaRequest;
+                                state <= URequestDma;
+                            end
+                        end
 
-                        if (!finalBuf && !bus.grant) begin
-                            completion <= DmaCompletion {
-                                status: DmaProtocolError,
-                                wordsCompleted: completed
-                            };
-                            state <= UDmaComplete;
-                            waitCount <= 0;
+                        UWorkerReadData: begin
+                            if (timedOut()) begin
+                                if (workerResumeDmaTail) begin
+                                    waitCount <= workerResumeTailWait;
+                                    workerResumeDmaTail <= False;
+                                    state <= UDmaData;
+                                end
+                                else if (workerResumeDmaComplete) begin
+                                    waitCount <= workerResumeTailWait;
+                                    workerResumeDmaComplete <= False;
+                                    state <= UDmaComplete;
+                                end
+                                else begin
+                                    waitCount <= 0;
+                                    if (workerResumeDma) begin
+                                        workerResumeDma <= False;
+                                        state <= URequestDma;
+                                    end
+                                    else if (workerResumeNotification) begin
+                                        workerResumeNotification <= False;
+                                        state <= URequestNotification;
+                                    end
+                                    else
+                                        state <= UIdle;
+                                end
+                            end
+                            else if (bus.dataStrobe) begin
+                                heldWrite <= False;
+                                heldWriteData <= 0;
+                                state <= UWorkerOffer;
+                            end
+                            else
+                                waitCount <= waitCount + 1;
                         end
-                        else if (timedOut()) begin
-                            completion <= DmaCompletion {
-                                status: DmaTimeout,
-                                wordsCompleted: completed
-                            };
-                            state <= UDmaComplete;
-                            waitCount <= 0;
-                        end
-                        else if (dmaReq.direction == HostToDevice) begin
-                            if (bufferValid) begin
-                                if (qli.dmaReadReady) begin
-                                    if (completed == burstWordCount(dmaReq.words)) begin
-                                        completion <= DmaCompletion {
-                                            status: DmaOk,
-                                            wordsCompleted: completed
-                                        };
-                                        bufferValid <= False;
+
+                        UWorkerWriteData: begin
+                            if (timedOut()) begin
+                                if (workerResumeDmaTail) begin
+                                    waitCount <= workerResumeTailWait;
+                                    workerResumeDmaTail <= False;
+                                    state <= UDmaData;
+                                end
+                                else if (workerResumeDmaComplete) begin
+                                    waitCount <= workerResumeTailWait;
+                                    workerResumeDmaComplete <= False;
+                                    state <= UDmaComplete;
+                                end
+                                else begin
+                                    waitCount <= 0;
+                                    if (workerResumeDma) begin
+                                        workerResumeDma <= False;
+                                        state <= URequestDma;
+                                    end
+                                    else if (workerResumeNotification) begin
+                                        workerResumeNotification <= False;
+                                        state <= URequestNotification;
+                                    end
+                                    else
+                                        state <= UIdle;
+                                end
+                            end
+                            else if (bus.dataStrobe) begin
+                                if (bus.adValid
+                                    && bus.parValid
+                                    && ((oddParity32P2(bus.ad) & heldBe)
+                                        == (bus.parity & heldBe))) begin
+                                    heldWrite <= True;
+                                    heldWriteData <= bus.ad;
+                                    waitCount <= 0;
+                                    state <= UWorkerOffer;
+                                end
+                                else begin
+                                    if (workerResumeDmaTail) begin
+                                        waitCount <= workerResumeTailWait;
+                                        workerResumeDmaTail <= False;
+                                        state <= UDmaData;
+                                    end
+                                    else if (workerResumeDmaComplete) begin
+                                        waitCount <= workerResumeTailWait;
+                                        workerResumeDmaComplete <= False;
                                         state <= UDmaComplete;
                                     end
                                     else begin
-                                        bufferValid <= False;
                                         waitCount <= 0;
+                                        if (workerResumeDma) begin
+                                            workerResumeDma <= False;
+                                            state <= URequestDma;
+                                        end
+                                        else if (workerResumeNotification) begin
+                                            workerResumeNotification <= False;
+                                            state <= URequestNotification;
+                                        end
+                                        else
+                                            state <= UIdle;
                                     end
-                                end
-                                else
-                                    waitCount <= waitCount + 1;
-                            end
-                            else if (bus.err) begin
-                                completion <= DmaCompletion {
-                                    status: DmaBusError,
-                                    wordsCompleted: completed
-                                };
-                                state <= UDmaComplete;
-                                waitCount <= 0;
-                            end
-                            else if (bus.ack) begin
-                                if (bus.adValid
-                                    && bus.parValid
-                                    && oddParity32P1(bus.ad) == bus.parity) begin
-                                    bufferData <= bus.ad;
-                                    bufferValid <= True;
-                                    completed <= completed + 1;
-                                    waitCount <= 0;
-                                end
-                                else begin
-                                    completion <= DmaCompletion {
-                                        status: DmaParityError,
-                                        wordsCompleted: completed
-                                    };
-                                    state <= UDmaComplete;
-                                    waitCount <= 0;
                                 end
                             end
                             else
                                 waitCount <= waitCount + 1;
                         end
-                        else begin
-                            if (bufferValid) begin
-                                if (bus.err) begin
+
+                        UWorkerOffer: begin
+                            if (timedOut()) begin
+                                if (workerResumeDmaTail) begin
+                                    waitCount <= workerResumeTailWait;
+                                    workerResumeDmaTail <= False;
+                                    state <= UDmaData;
+                                end
+                                else if (workerResumeDmaComplete) begin
+                                    waitCount <= workerResumeTailWait;
+                                    workerResumeDmaComplete <= False;
+                                    state <= UDmaComplete;
+                                end
+                                else begin
+                                    waitCount <= 0;
+                                    if (workerResumeDma) begin
+                                        workerResumeDma <= False;
+                                        state <= URequestDma;
+                                    end
+                                    else if (workerResumeNotification) begin
+                                        workerResumeNotification <= False;
+                                        state <= URequestNotification;
+                                    end
+                                    else
+                                        state <= UIdle;
+                                end
+                            end
+                            else if (qli.mmioReady)
+                                state <= UWorkerResponse;
+                            else
+                                waitCount <= waitCount + 1;
+                        end
+
+                        UWorkerResponse: begin
+                            if (timedOut() || (bus.dataStrobe && qli.mmioResponseValid)) begin
+                                if (workerResumeDmaTail) begin
+                                    waitCount <= workerResumeTailWait;
+                                    workerResumeDmaTail <= False;
+                                    state <= UDmaData;
+                                end
+                                else if (workerResumeDmaComplete) begin
+                                    waitCount <= workerResumeTailWait;
+                                    workerResumeDmaComplete <= False;
+                                    state <= UDmaComplete;
+                                end
+                                else begin
+                                    waitCount <= 0;
+                                    if (workerResumeDma) begin
+                                        workerResumeDma <= False;
+                                        state <= URequestDma;
+                                    end
+                                    else if (workerResumeNotification) begin
+                                        workerResumeNotification <= False;
+                                        state <= URequestNotification;
+                                    end
+                                    else
+                                        state <= UIdle;
+                                end
+                            end
+                            else
+                                waitCount <= waitCount + 1;
+                        end
+
+                        URequestDma: begin
+                            if (workerAddressCycleP2(bus)) begin
+                                if (workerAddressValidP2(bus)) begin
+                                    heldAddress <= bus.ad;
+                                    heldBe <= bus.byteEnable;
+                                    heldWrite <= !bus.read;
+                                    heldWriteData <= 0;
+                                    workerResumeDma <= True;
+                                    workerResumeNotification <= False;
+                                    waitCount <= 0;
+                                    state <= bus.read ? UWorkerReadData : UWorkerWriteData;
+                                end
+                            end
+                            else if (bus.grant) begin
+                                grantUsed <= True;
+                                waitCount <= 0;
+                                state <= UDmaAddress;
+                            end
+                        end
+
+                        UDmaAddress: begin
+                            if (!bus.grant) begin
+                                completion <= DmaCompletion {
+                                    status: DmaProtocolError,
+                                    wordsCompleted: 0
+                                };
+                                state <= UDmaComplete;
+                                waitCount <= 0;
+                            end
+                            else if (timedOut()) begin
+                                completion <= DmaCompletion {
+                                    status: DmaTimeout,
+                                    wordsCompleted: 0
+                                };
+                                state <= UDmaComplete;
+                                waitCount <= 0;
+                            end
+                            else if (bus.err) begin
+                                completion <= DmaCompletion {
+                                    status: DmaBusError,
+                                    wordsCompleted: 0
+                                };
+                                state <= UDmaComplete;
+                                waitCount <= 0;
+                            end
+                            else if (bus.ack) begin
+                                completed <= 0;
+                                bufferValid <= False;
+                                waitCount <= 0;
+                                state <= UDmaData;
+                            end
+                            else
+                                waitCount <= waitCount + 1;
+                        end
+
+                        UDmaData: begin
+                            Bool finalBuf = finalReadBuffer();
+
+                            if (!finalBuf && !bus.grant) begin
+                                completion <= DmaCompletion {
+                                    status: DmaProtocolError,
+                                    wordsCompleted: completed
+                                };
+                                state <= UDmaComplete;
+                                waitCount <= 0;
+                            end
+                            else if (timedOut()) begin
+                                completion <= DmaCompletion {
+                                    status: DmaTimeout,
+                                    wordsCompleted: completed
+                                };
+                                state <= UDmaComplete;
+                                waitCount <= 0;
+                            end
+                            else if (dmaReq.direction == HostToDevice) begin
+                                if (bufferValid) begin
+                                    if (qli.dmaReadReady) begin
+                                        if (completed == burstWordCount(dmaReq.words)) begin
+                                            completion <= DmaCompletion {
+                                                status: DmaOk,
+                                                wordsCompleted: completed
+                                            };
+                                            bufferValid <= False;
+                                            state <= UDmaComplete;
+                                        end
+                                        else begin
+                                            bufferValid <= False;
+                                            waitCount <= 0;
+                                        end
+                                    end
+                                    else
+                                        waitCount <= waitCount + 1;
+                                end
+                                else if (bus.err) begin
                                     completion <= DmaCompletion {
                                         status: DmaBusError,
                                         wordsCompleted: completed
@@ -502,66 +645,110 @@ module mkPLIOQIC(PLIOQICIfc);
                                     waitCount <= 0;
                                 end
                                 else if (bus.ack) begin
-                                    Bit#(5) n = completed + 1;
-                                    completed <= n;
-                                    bufferValid <= False;
-                                    waitCount <= 0;
-                                    if (n == burstWordCount(dmaReq.words)) begin
+                                    if (bus.adValid
+                                        && bus.parValid
+                                        && oddParity32P1(bus.ad) == bus.parity) begin
+                                        bufferData <= bus.ad;
+                                        bufferValid <= True;
+                                        completed <= completed + 1;
+                                        waitCount <= 0;
+                                    end
+                                    else begin
                                         completion <= DmaCompletion {
-                                            status: DmaOk,
-                                            wordsCompleted: n
+                                            status: DmaParityError,
+                                            wordsCompleted: completed
                                         };
                                         state <= UDmaComplete;
+                                        waitCount <= 0;
                                     end
                                 end
                                 else
                                     waitCount <= waitCount + 1;
                             end
-                            else if (qli.dmaWriteValid) begin
-                                bufferData <= qli.dmaWrite.data;
-                                bufferValid <= True;
+                            else begin
+                                if (bufferValid) begin
+                                    if (bus.err) begin
+                                        completion <= DmaCompletion {
+                                            status: DmaBusError,
+                                            wordsCompleted: completed
+                                        };
+                                        state <= UDmaComplete;
+                                        waitCount <= 0;
+                                    end
+                                    else if (bus.ack) begin
+                                        Bit#(5) n = completed + 1;
+                                        completed <= n;
+                                        bufferValid <= False;
+                                        waitCount <= 0;
+                                        if (n == burstWordCount(dmaReq.words)) begin
+                                            completion <= DmaCompletion {
+                                                status: DmaOk,
+                                                wordsCompleted: n
+                                            };
+                                            state <= UDmaComplete;
+                                        end
+                                    end
+                                    else
+                                        waitCount <= waitCount + 1;
+                                end
+                                else if (qli.dmaWriteValid) begin
+                                    bufferData <= qli.dmaWrite.data;
+                                    bufferValid <= True;
+                                    waitCount <= 0;
+                                end
+                                else
+                                    waitCount <= waitCount + 1;
+                            end
+                        end
+
+                        UDmaComplete: begin
+                            if (qli.dmaCompletionReady)
+                                state <= UIdle;
+                        end
+
+                        URequestNotification: begin
+                            if (workerAddressCycleP2(bus)) begin
+                                if (workerAddressValidP2(bus)) begin
+                                    heldAddress <= bus.ad;
+                                    heldBe <= bus.byteEnable;
+                                    heldWrite <= !bus.read;
+                                    heldWriteData <= 0;
+                                    workerResumeDma <= False;
+                                    workerResumeNotification <= True;
+                                    waitCount <= 0;
+                                    state <= bus.read ? UWorkerReadData : UWorkerWriteData;
+                                end
+                            end
+                            else if (bus.grant) begin
+                                grantUsed <= True;
                                 waitCount <= 0;
+                                state <= UNotificationAddress;
+                            end
+                        end
+
+                        UNotificationAddress: begin
+                            if (!bus.grant || timedOut() || bus.err) begin
+                                waitCount <= 0;
+                                state <= UIdle;
+                            end
+                            else if (bus.ack) begin
+                                waitCount <= 0;
+                                state <= UNotificationData;
                             end
                             else
                                 waitCount <= waitCount + 1;
                         end
-                    end
 
-                    UDmaComplete: begin
-                        if (qli.dmaCompletionReady)
-                            state <= UIdle;
-                    end
-
-                    URequestNotification: begin
-                        if (bus.grant) begin
-                            grantUsed <= True;
-                            waitCount <= 0;
-                            state <= UNotificationAddress;
+                        UNotificationData: begin
+                            if (!bus.grant || timedOut() || bus.err || bus.ack) begin
+                                waitCount <= 0;
+                                state <= UIdle;
+                            end
+                            else
+                                waitCount <= waitCount + 1;
                         end
-                    end
-
-                    UNotificationAddress: begin
-                        if (!bus.grant || timedOut() || bus.err) begin
-                            waitCount <= 0;
-                            state <= UIdle;
-                        end
-                        else if (bus.ack) begin
-                            waitCount <= 0;
-                            state <= UNotificationData;
-                        end
-                        else
-                            waitCount <= waitCount + 1;
-                    end
-
-                    UNotificationData: begin
-                        if (!bus.grant || timedOut() || bus.err || bus.ack) begin
-                            waitCount <= 0;
-                            state <= UIdle;
-                        end
-                        else
-                            waitCount <= waitCount + 1;
-                    end
-                endcase
+                    endcase
+                end
             end
         endaction
     endmethod

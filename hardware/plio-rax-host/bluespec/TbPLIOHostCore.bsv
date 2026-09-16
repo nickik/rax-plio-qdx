@@ -102,13 +102,25 @@ module mkTbPLIOHostCore(Empty);
                 core.advance(cards,False,dummyWorker,False,False,False,False,0,False); phase<=16;
             end
             16: begin
+                cards[1]=reqOnly(); outs=core.drive(cards,False);
                 if (!core.dmaCompletionValid || core.dmaCompletionStatus!=DmaOk || core.dmaCompletionBeats!=1) begin $display("FAIL M4 DMA completion"); $finish(1); end
-                core.clearDmaCompletion; phase<=17;
+                if (core.debugRole != CoreIdle || outs[1].grant) begin $display("FAIL M4 grant not withdrawn after successful DMA"); $finish(1); end
+                core.clearDmaCompletion;
+                phase<=17;
             end
             17: begin
-                core.advance(cards,False,dummyWorker,False,False,False,False,0,True); phase<=18;
+                cards[1]=reqOnly(); outs=core.drive(cards,False);
+                if (core.debugRole != CoreIdle || outs[1].grant) begin $display("FAIL M4 expected BG-low arbitration boundary"); $finish(1); end
+                core.advance(cards,False,dummyWorker,False,False,False,False,0,False);
+                phase<=18;
             end
             18: begin
+                cards[1]=reqOnly(); outs=core.drive(cards,False);
+                if (core.debugRole != CoreGrant || !outs[1].grant) begin $display("FAIL M4 continuous BR did not receive fresh grant"); $finish(1); end
+                core.advance(cards,False,dummyWorker,False,False,False,False,0,True);
+                phase<=19;
+            end
+            19: begin
                 outs=core.drive(cards,True);
                 for (Integer i=0;i<8;i=i+1) if (!outs[i].reset || outs[i].grant || outs[i].selected) begin $display("FAIL M4 reset drive"); $finish(1); end
                 $display("PLIOHOSTCORETRACE|v1|case=worker_read|status=ok|slot=2|value=12345678");
@@ -117,6 +129,7 @@ module mkTbPLIOHostCore(Empty);
                 $display("PLIOHOSTCORETRACE|v1|case=round_robin|grants=5,2|one_hot=1");
                 $display("PLIOHOSTCORETRACE|v1|case=notification|slot=5|channel=2|payload=feedbeef");
                 $display("PLIOHOSTCORETRACE|v1|case=dma_write4|status=ok|beats=4|first=20000040|last=2000004c");
+                $display("PLIOHOSTCORETRACE|v1|case=continuous_br_fresh_bg|status=ok|bg_low_cycles=1");
                 $display("PLIOHOSTCORETRACE|v1|case=dma_read4|status=ok|beats=4|first=20000080|last=2000008c");
                 $display("PLIOHOSTCORETRACE|v1|case=memory_backpressure|request_wait=3|response_wait=2|ack_early=0");
                 $display("PLIOHOSTCORETRACE|v1|case=notification_then_dma|slot=1|serialized=1");

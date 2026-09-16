@@ -38,6 +38,8 @@ enum State {
 #[derive(Debug, Clone, Copy)]
 pub struct Qic {
     state: State,
+    suspended: Option<ManagerWork>,
+    suspended_tail: Option<State>,
     grant_used: bool,
 }
 
@@ -46,9 +48,18 @@ impl Default for Qic {
 }
 
 impl Qic {
-    pub const fn new() -> Self { Self { state: State::Idle, grant_used: false } }
+    pub const fn new() -> Self {
+        Self {
+            state: State::Idle,
+            suspended: None,
+            suspended_tail: None,
+            grant_used: false,
+        }
+    }
 
-    pub fn is_idle(&self) -> bool { self.state == State::Idle }
+    pub fn is_idle(&self) -> bool {
+        self.state == State::Idle && self.suspended.is_none() && self.suspended_tail.is_none()
+    }
 
     fn manager_slot_available(&self, bus: &BusToCard) -> bool {
         !self.grant_used || !bus.grant
@@ -60,6 +71,22 @@ impl Qic {
 
         if bus.reset {
             qli.reset = true;
+            return (card, qli);
+        }
+
+        // A manager request remains asserted while the card is temporarily
+        // servicing a selected worker transaction before bus grant. No
+        // manager address/data is driven until the host actually grants BG.
+        if self.suspended.is_some() {
+            card.request = true;
+        }
+
+        // Once the PLIO DMA beats are over, only local QLI delivery/completion
+        // remains. A CPU worker access may use the physical PLIO bus in that
+        // window. Suspend the exact local tail and resume it after the worker
+        // transaction instead of making the worker time out.
+        if worker_can_preempt_dma_tail(self.state) && worker_address_cycle(bus) {
+            if worker_address_valid(bus) { card.ack = true; } else { card.err = true; }
             return (card, qli);
         }
 
@@ -119,7 +146,12 @@ impl Qic {
                     }
                 }
             }
-            State::RequestBus(_) => card.request = true,
+            State::RequestBus(_) => {
+                card.request = true;
+                if worker_address_cycle(bus) {
+                    if worker_address_valid(bus) { card.ack = true; } else { card.err = true; }
+                }
+            }
             State::DmaAddress { request, wait } => {
                 card.request = true;
                 if bus.grant && !timed_out(wait) {
@@ -158,7 +190,9 @@ impl Qic {
                     }
                 }
             }
-            State::DmaComplete { completion } => qli.dma_completion = Some(completion),
+            State::DmaComplete { completion } => {
+                qli.dma_completion = Some(completion);
+            }
             State::NotificationAddress { request, wait } => {
                 card.request = true;
                 if bus.grant && !timed_out(wait) {
@@ -191,12 +225,49 @@ impl Qic {
     pub fn clock(&mut self, bus: &BusToCard, device: &DeviceToQic) {
         if bus.reset {
             self.state = State::Idle;
+            self.suspended = None;
+            self.suspended_tail = None;
             self.grant_used = false;
             return;
         }
 
         if !bus.grant {
             self.grant_used = false;
+        }
+
+        // BR does not make the card bus manager; BG does. A host may still
+        // select this card as a worker while its accepted manager work waits
+        // for grant. Suspend that arbitration state, service the worker
+        // transaction, then resume the exact accepted manager request.
+        if let State::RequestBus(work) = self.state {
+            if worker_address_cycle(bus) {
+                if worker_address_valid(bus) {
+                    let address = bus.ad.unwrap_or(0);
+                    self.suspended = Some(work);
+                    self.state = if bus.read {
+                        State::WorkerReadData { address, byte_enable: bus.byte_enable, wait: 0 }
+                    } else {
+                        State::WorkerWriteData { address, byte_enable: bus.byte_enable, wait: 0 }
+                    };
+                }
+                return;
+            }
+        }
+
+        // The PLIO DMA transfer may be complete while a final host->device
+        // word or the local completion handshake is still pending on QLI.
+        // Worker MMIO owns PLIO at that point, so suspend only the local tail.
+        if worker_can_preempt_dma_tail(self.state) && worker_address_cycle(bus) {
+            if worker_address_valid(bus) {
+                let address = bus.ad.unwrap_or(0);
+                self.suspended_tail = Some(self.state);
+                self.state = if bus.read {
+                    State::WorkerReadData { address, byte_enable: bus.byte_enable, wait: 0 }
+                } else {
+                    State::WorkerWriteData { address, byte_enable: bus.byte_enable, wait: 0 }
+                };
+            }
+            return;
         }
 
         // BG is authority to drive manager-side PLIO. The one exception is
@@ -445,6 +516,14 @@ impl Qic {
                 }
             }
         };
+
+        if self.state == State::Idle {
+            if let Some(tail) = self.suspended_tail.take() {
+                self.state = tail;
+            } else if let Some(work) = self.suspended.take() {
+                self.state = State::RequestBus(work);
+            }
+        }
     }
 }
 
@@ -452,6 +531,14 @@ fn is_final_read_buffer(request: DmaRequest, completed: u8, buffer: Option<DmaWo
     request.direction == DmaDirection::HostToDevice
         && buffer.is_some()
         && completed == request.words.words()
+}
+
+fn worker_can_preempt_dma_tail(state: State) -> bool {
+    match state {
+        State::DmaData { request, completed, buffer, .. } => is_final_read_buffer(request, completed, buffer),
+        State::DmaComplete { .. } => true,
+        _ => false,
+    }
 }
 
 fn worker_address_cycle(bus: &BusToCard) -> bool {
@@ -471,6 +558,45 @@ fn timed_out(wait: u16) -> bool { wait >= PLIO_TIMEOUT_CYCLES - 1 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn worker_read_address(address: u32) -> BusToCard {
+        BusToCard {
+            selected: true,
+            ad: Some(address),
+            par: Some(odd_parity_32(address)),
+            space: Some(Space::Worker),
+            address_strobe: true,
+            read: true,
+            byte_enable: 0xf,
+            burst: BurstWords::One,
+            ..BusToCard::default()
+        }
+    }
+
+    fn complete_worker_read(qic: &mut Qic, address: u32, value: u32) {
+        let address_cycle = worker_read_address(address);
+        qic.clock(&address_cycle, &DeviceToQic::default());
+
+        let data = BusToCard { selected: true, read: true, data_strobe: true, ..BusToCard::default() };
+        qic.clock(&data, &DeviceToQic::default());
+
+        let ready = DeviceToQic { mmio_ready: true, ..DeviceToQic::default() };
+        let (_, local) = qic.drive(&data, &ready);
+        assert_eq!(
+            local.mmio_request,
+            Some(MmioRequest { address, write: false, byte_enable: 0xf, write_data: 0 })
+        );
+        qic.clock(&data, &ready);
+
+        let response = DeviceToQic {
+            mmio_response: Some(MmioResponse::ReadOk(value)),
+            ..DeviceToQic::default()
+        };
+        let (card, _) = qic.drive(&data, &response);
+        assert!(card.ack);
+        assert_eq!(card.ad, Some(value));
+        qic.clock(&data, &response);
+    }
 
     #[test]
     fn invalid_worker_address_parity_is_rejected_immediately() {
@@ -621,6 +747,157 @@ mod tests {
         assert!(card.ad.is_none());
         assert!(card.par.is_none());
         assert!(card.space.is_none());
+    }
+
+    #[test]
+    fn worker_read_does_not_drop_pending_notification_before_grant() {
+        let mut qic = Qic::new();
+        let notification = NotificationRequest { channel: 2 };
+        qic.clock(
+            &BusToCard::default(),
+            &DeviceToQic { notification_request: Some(notification), ..DeviceToQic::default() },
+        );
+
+        let address_cycle = worker_read_address(0x134);
+        let (card, _) = qic.drive(&address_cycle, &DeviceToQic::default());
+        assert!(card.request);
+        assert!(card.ack);
+
+        complete_worker_read(&mut qic, 0x134, 0xfeed_beef);
+
+        let (requesting, _) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
+        assert!(requesting.request);
+        assert!(!requesting.address_strobe);
+
+        qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &DeviceToQic::default());
+        let (address, _) = qic.drive(
+            &BusToCard { grant: true, ..BusToCard::default() },
+            &DeviceToQic::default(),
+        );
+        assert!(address.request);
+        assert!(address.address_strobe);
+        assert_eq!(address.space, Some(Space::Controller));
+        assert_eq!(address.ad, Some(8));
+    }
+
+    #[test]
+    fn accepted_dma_survives_worker_read_before_grant() {
+        let mut qic = Qic::new();
+        let request = DmaRequest {
+            direction: DmaDirection::HostToDevice,
+            address: 0x2468,
+            words: BurstWords::Four,
+        };
+        qic.clock(
+            &BusToCard::default(),
+            &DeviceToQic { dma_request: Some(request), ..DeviceToQic::default() },
+        );
+
+        let address_cycle = worker_read_address(0x138);
+        let (card, _) = qic.drive(&address_cycle, &DeviceToQic::default());
+        assert!(card.request);
+        assert!(card.ack);
+
+        complete_worker_read(&mut qic, 0x138, 0x1234_5678);
+
+        qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &DeviceToQic::default());
+        let (address, _) = qic.drive(
+            &BusToCard { grant: true, ..BusToCard::default() },
+            &DeviceToQic::default(),
+        );
+        assert!(address.request);
+        assert!(address.address_strobe);
+        assert_eq!(address.space, Some(Space::HostDma));
+        assert_eq!(address.ad, Some(request.address));
+        assert!(address.read);
+        assert_eq!(address.burst, request.words);
+    }
+
+    #[test]
+    fn worker_read_preempts_final_dma_tail_and_resumes_exact_word() {
+        let mut qic = Qic::new();
+        let request = DmaRequest {
+            direction: DmaDirection::HostToDevice,
+            address: 0x2000,
+            words: BurstWords::One,
+        };
+        let word = DmaWord { data: 0x1234_5678 };
+        qic.state = State::DmaData { request, completed: 1, wait: 0, buffer: Some(word) };
+
+        let address_cycle = worker_read_address(0x13c);
+        let (card, local) = qic.drive(&address_cycle, &DeviceToQic::default());
+        assert!(card.ack);
+        assert!(!card.request);
+        assert!(local.dma_read.is_none());
+
+        complete_worker_read(&mut qic, 0x13c, 0xcafe_babe);
+
+        let (_, local) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
+        assert_eq!(local.dma_read, Some(word));
+        qic.clock(
+            &BusToCard::default(),
+            &DeviceToQic { dma_read_ready: true, ..DeviceToQic::default() },
+        );
+        let (_, local) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
+        assert_eq!(
+            local.dma_completion,
+            Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 1 })
+        );
+    }
+
+    #[test]
+    fn worker_read_preempts_pending_dma_completion_and_resumes_it() {
+        let mut qic = Qic::new();
+        let completion = DmaCompletion { status: DmaStatus::Ok, words_completed: 4 };
+        qic.state = State::DmaComplete { completion };
+
+        let address_cycle = worker_read_address(0x140);
+        let (card, local) = qic.drive(&address_cycle, &DeviceToQic::default());
+        assert!(card.ack);
+        assert!(local.dma_completion.is_none());
+
+        complete_worker_read(&mut qic, 0x140, 0xfeed_face);
+        let (_, local) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
+        assert_eq!(local.dma_completion, Some(completion));
+    }
+
+    #[test]
+    fn dma_releases_bus_request_after_final_plio_beat() {
+        let mut qic = Qic::new();
+        let request = DmaRequest {
+            direction: DmaDirection::HostToDevice,
+            address: 0x2000,
+            words: BurstWords::One,
+        };
+        let word = DmaWord { data: 0x1234_5678 };
+        qic.state = State::DmaData {
+            request,
+            completed: 1,
+            wait: 0,
+            buffer: Some(word),
+        };
+
+        let released = BusToCard::default();
+        let (card, local) = qic.drive(&released, &DeviceToQic::default());
+        assert!(!card.request);
+        assert_eq!(local.dma_read, Some(word));
+
+        qic.clock(
+            &released,
+            &DeviceToQic { dma_read_ready: true, ..DeviceToQic::default() },
+        );
+        let (card, local) = qic.drive(&released, &DeviceToQic::default());
+        assert!(!card.request);
+        assert_eq!(
+            local.dma_completion,
+            Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 1 })
+        );
+
+        qic.clock(
+            &released,
+            &DeviceToQic { dma_completion_ready: true, ..DeviceToQic::default() },
+        );
+        assert!(qic.is_idle());
     }
 
     #[test]

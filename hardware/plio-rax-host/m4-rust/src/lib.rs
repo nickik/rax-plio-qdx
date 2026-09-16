@@ -81,7 +81,8 @@ impl PLIOHostCore {
         Self {
             worker:WorkerMmioEngine::new(), dma:DmaHostM3::new(), role:CoreRole::Idle, active_slot:None,
             notification_channel:0, cursor:0, wait_cycles:0, queued_worker:None, worker_completion:None,
-            dma_completion:None, dma_direction:None, dma_address_pending:None, write_ack_pending:false, last_fault:None,
+            dma_completion:None, dma_direction:None, dma_address_pending:None, write_ack_pending:false,
+            last_fault:None,
             notification_pending:[[false;NOTIFICATION_CHANNELS];SLOT_COUNT], notification_payload:[[0;NOTIFICATION_CHANNELS];SLOT_COUNT],
             notification_config:[[DEFAULT_NOTIFICATION_CONFIG;NOTIFICATION_CHANNELS];SLOT_COUNT],
         }
@@ -99,6 +100,7 @@ impl PLIOHostCore {
     fn choose_request(&self,cards:&[CardToBus;SLOT_COUNT])->Option<u8>{for o in 0..SLOT_COUNT{let s=((self.cursor as usize+o)&7)as u8;if cards[s as usize].request{return Some(s);}}None}
     fn selected_card(&self,cards:&[CardToBus;SLOT_COUNT])->CardToBus{self.active_slot.map(|s|cards[s as usize]).unwrap_or_default()}
     fn finish_card_transaction(&mut self){if let Some(s)=self.active_slot{self.cursor=(s+1)&7;}self.role=CoreRole::Idle;self.active_slot=None;self.wait_cycles=0;self.dma_direction=None;self.dma_address_pending=None;self.write_ack_pending=false;}
+    fn finish_successful_dma(&mut self,c:Result<u8,DmaError>){self.dma_completion=Some(c);self.finish_card_transaction();}
     fn fault_from_dma(e:DmaError)->CoreFault{match e{DmaError::Protection=>CoreFault::DmaProtection,DmaError::MemoryFault=>CoreFault::DmaMemory,DmaError::Parity=>CoreFault::DmaParity,DmaError::Timeout=>CoreFault::Timeout,DmaError::Reset=>CoreFault::DmaReset,DmaError::Revoked=>CoreFault::DmaRevoked}}
     fn decode_notification(card:CardToBus)->Result<u8,CoreFault>{let ad=card.ad.ok_or(CoreFault::BadManagerAddress)?;let par=card.par.ok_or(CoreFault::AddressParity)?;if !parity_matches(ad,par,0xf){return Err(CoreFault::AddressParity);}if card.space!=Some(Space::Controller)||card.read||card.byte_enable!=0xf||card.burst.words()!=1||ad&3!=0||ad>12{return Err(CoreFault::BadManagerAddress);}Ok((ad/4)as u8)}
     fn decode_dma(card:CardToBus)->Result<(u32,u8,DmaDirection),CoreFault>{let ad=card.ad.ok_or(CoreFault::BadManagerAddress)?;let par=card.par.ok_or(CoreFault::AddressParity)?;if !parity_matches(ad,par,0xf){return Err(CoreFault::AddressParity);}if card.space!=Some(Space::HostDma)||card.byte_enable!=0xf||ad&3!=0{return Err(CoreFault::BadManagerAddress);}Ok((ad,card.burst.words(),if card.read{DmaDirection::DeviceRead}else{DmaDirection::DeviceWrite}))}
@@ -130,14 +132,17 @@ impl PLIOHostCore {
                 else if self.wait_cycles+1>=PLIO_TIMEOUT_CYCLES{buses[s as usize].err=true;self.last_fault=Some(CoreFault::Timeout);self.finish_card_transaction();}else{self.wait_cycles+=1;}
             },
             CoreRole::Notification=>{let s=self.active_slot.unwrap();let card=input.cards[s as usize];buses[s as usize].grant=true;if !card.request{self.last_fault=Some(CoreFault::RequestDropped);self.finish_card_transaction();}else if card.data_strobe{match(card.ad,card.par){(Some(data),Some(par))if card.byte_enable==0xf&&parity_matches(data,par,0xf)=>{buses[s as usize].ack=true;self.notification_pending[s as usize][self.notification_channel as usize]=true;self.notification_payload[s as usize][self.notification_channel as usize]=data;self.finish_card_transaction();}_=>{buses[s as usize].err=true;self.last_fault=Some(CoreFault::DataParity);self.finish_card_transaction();}}}else if self.wait_cycles+1>=PLIO_TIMEOUT_CYCLES{buses[s as usize].err=true;self.last_fault=Some(CoreFault::Timeout);self.finish_card_transaction();}else{self.wait_cycles+=1;}},
-            CoreRole::Dma=>{let s=self.active_slot.unwrap();let card=input.cards[s as usize];buses[s as usize].grant=true;if !card.request{self.last_fault=Some(CoreFault::RequestDropped);self.dma.reset();self.dma_completion=self.dma.take_completion();self.finish_card_transaction();}else if self.write_ack_pending{buses[s as usize].ack=true;self.write_ack_pending=false;if let Some(c)=self.dma.take_completion(){self.dma_completion=Some(c);self.finish_card_transaction();}}else{match self.dma.debug().state{
-                DmaState::AwaitDeviceWrite=>{if card.data_strobe{match(card.ad,card.par){(Some(data),Some(par))=>if let Err(e)=self.dma.offer_device_write(data,par){self.last_fault=Some(Self::fault_from_dma(e));},_=>self.last_fault=Some(CoreFault::DmaParity)}}else{self.dma.wait_cycle();}},
-                DmaState::MemRequest=>{memory_request=self.dma.memory_request();if input.memory.request_ready{self.dma.memory_request_accepted();}else{self.dma.wait_cycle();}},
-                DmaState::MemResponse=>{if let Some(resp)=input.memory.response{let write=self.dma_direction==Some(DmaDirection::DeviceWrite);self.dma.memory_response(resp);if write&&resp==MemoryResponse::WriteDone{self.write_ack_pending=true;}}else{self.dma.wait_cycle();}},
-                DmaState::DeviceReadReady=>{if card.data_strobe{if let Some((data,par))=self.dma.device_read_data(){buses[s as usize].ack=true;buses[s as usize].ad=Some(data);buses[s as usize].par=Some(par);self.dma.acknowledge_device_read();if let Some(c)=self.dma.take_completion(){self.dma_completion=Some(c);self.finish_card_transaction();}}}else{self.dma.wait_cycle();}},
-                DmaState::Idle=>{if let Some(c)=self.dma.take_completion(){match c{Ok(_)=>self.dma_completion=Some(c),Err(e)=>{self.last_fault=Some(Self::fault_from_dma(e));self.dma_completion=Some(c);buses[s as usize].err=true;}}self.finish_card_transaction();}}
-            }
-            if self.role==CoreRole::Dma{if let Some(Err(e))=self.dma.completion(){self.last_fault=Some(Self::fault_from_dma(e));buses[s as usize].err=true;self.dma_completion=self.dma.take_completion();self.finish_card_transaction();}}
+            CoreRole::Dma=>{let s=self.active_slot.unwrap();let card=input.cards[s as usize];buses[s as usize].grant=true;
+                if !card.request{self.last_fault=Some(CoreFault::RequestDropped);self.dma.reset();self.dma_completion=self.dma.take_completion();self.finish_card_transaction();}
+                else if self.write_ack_pending{buses[s as usize].ack=true;self.write_ack_pending=false;if let Some(c)=self.dma.take_completion(){match c{Ok(_)=>self.finish_successful_dma(c),Err(e)=>{self.last_fault=Some(Self::fault_from_dma(e));self.dma_completion=Some(c);buses[s as usize].err=true;self.finish_card_transaction();}}}}
+                else{match self.dma.debug().state{
+                    DmaState::AwaitDeviceWrite=>{if card.data_strobe{match(card.ad,card.par){(Some(data),Some(par))=>if let Err(e)=self.dma.offer_device_write(data,par){self.last_fault=Some(Self::fault_from_dma(e));},_=>self.last_fault=Some(CoreFault::DmaParity)}}else{self.dma.wait_cycle();}},
+                    DmaState::MemRequest=>{memory_request=self.dma.memory_request();if input.memory.request_ready{self.dma.memory_request_accepted();}else{self.dma.wait_cycle();}},
+                    DmaState::MemResponse=>{if let Some(resp)=input.memory.response{let write=self.dma_direction==Some(DmaDirection::DeviceWrite);self.dma.memory_response(resp);if write&&resp==MemoryResponse::WriteDone{self.write_ack_pending=true;}}else{self.dma.wait_cycle();}},
+                    DmaState::DeviceReadReady=>{if card.data_strobe{if let Some((data,par))=self.dma.device_read_data(){buses[s as usize].ack=true;buses[s as usize].ad=Some(data);buses[s as usize].par=Some(par);self.dma.acknowledge_device_read();if let Some(c)=self.dma.take_completion(){match c{Ok(_)=>self.finish_successful_dma(c),Err(e)=>{self.last_fault=Some(Self::fault_from_dma(e));self.dma_completion=Some(c);buses[s as usize].err=true;self.finish_card_transaction();}}}}}else{self.dma.wait_cycle();}},
+                    DmaState::Idle=>{if let Some(c)=self.dma.take_completion(){match c{Ok(_)=>self.finish_successful_dma(c),Err(e)=>{self.last_fault=Some(Self::fault_from_dma(e));self.dma_completion=Some(c);buses[s as usize].err=true;self.finish_card_transaction();}}}}
+                }
+                if self.role==CoreRole::Dma{if let Some(Err(e))=self.dma.completion(){self.last_fault=Some(Self::fault_from_dma(e));buses[s as usize].err=true;self.dma_completion=self.dma.take_completion();self.finish_card_transaction();}}
             }}
         }
         self.output(buses,memory_request)
@@ -151,4 +156,5 @@ impl PLIOHostCore {
 #[cfg(test)] mod tests{
     use super::*;use plio_host_model::{WorkerResult,WorkerWidth};use plio_logical_model::odd_parity_32;
     #[test]fn worker_owns_bus_until_completion(){let mut c=PLIOHostCore::new();let r=WorkerRequest::read(2,0x100,WorkerWidth::U32).unwrap();c.step(CoreInput{worker_request:Some(r),..Default::default()});let mut i=CoreInput::default();i.cards[5].request=true;let o=c.step(i);assert!(o.buses[2].selected);assert!(!o.buses[5].grant);i.cards[2]=CardToBus{ack:true,..Default::default()};c.step(i);let v=0x12345678;i.cards[2]=CardToBus{ack:true,ad:Some(v),par:Some(odd_parity_32(v)),..Default::default()};c.step(i);assert_eq!(c.take_worker_completion(),Some(Ok(WorkerResult::Read(v))));}
+    #[test]fn successful_dma_ends_grant_even_if_request_stays_high(){let mut c=PLIOHostCore::new();c.role=CoreRole::Dma;c.active_slot=Some(2);c.finish_successful_dma(Ok(1));assert_eq!(c.debug().role,CoreRole::Idle);assert_eq!(c.take_dma_completion(),Some(Ok(1)));let mut i=CoreInput::default();i.cards[2].request=true;let gap=c.step(i);assert!(!gap.buses[2].grant);assert_eq!(gap.debug.role,CoreRole::Grant);let next=c.step(i);assert!(next.buses[2].grant);assert_eq!(next.debug.role,CoreRole::Grant);}
 }

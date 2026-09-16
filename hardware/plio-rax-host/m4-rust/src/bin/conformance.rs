@@ -42,7 +42,7 @@ fn main() {
 
     let g=c.bind_dma(1,3,0x2000_0000,0x1000,true,true).unwrap();
     let h=(3u32<<28)|(u32::from(g)<<24)|0x40;
-    let mut d=CoreInput::default(); d.cards[1]=req_only(); c.step(d);
+    let mut d=CoreInput::default(); d.cards[1]=req_only(); let gap=c.step(d); assert!(!gap.buses[1].grant);
     d.cards[1]=dma_address(h,false,BurstWords::Four); let o=c.step(d); assert!(!o.buses[1].ack);
     let o=c.step(d); assert!(o.buses[1].ack);
     for beat in 0..4u32 {
@@ -52,16 +52,21 @@ fn main() {
         d.memory.response=None; let o=c.step(d); assert!(o.buses[1].ack);
     }
     assert_eq!(c.take_dma_completion(),Some(Ok(4)));
+    assert_eq!(c.debug().role,CoreRole::Idle);
     println!("PLIOHOSTCORETRACE|v1|case=dma_write4|status=ok|beats=4|first=20000040|last=2000004c");
 
     let h=(3u32<<28)|(u32::from(g)<<24)|0x80;
-    d=CoreInput::default(); d.cards[1]=req_only(); c.step(d); d.cards[1]=dma_address(h,true,BurstWords::Four); c.step(d); assert!(c.step(d).buses[1].ack);
+    d=CoreInput::default(); d.cards[1]=req_only(); let gap=c.step(d); assert!(!gap.buses[1].grant); assert_eq!(gap.debug.role,CoreRole::Grant);
+    d.cards[1]=dma_address(h,true,BurstWords::Four); let first=c.step(d); assert!(first.buses[1].grant); assert!(!first.buses[1].ack);
+    assert!(c.step(d).buses[1].ack);
     for beat in 0..4u32 {
         d.cards[1]=req_only(); d.memory.request_ready=true; c.step(d);
         d.memory.request_ready=false; d.memory.response=Some(MemoryResponse::ReadData(0xb000_0000|beat)); c.step(d);
         d.memory.response=None; d.cards[1]=CardToBus{request:true,data_strobe:true,..Default::default()}; let o=c.step(d); assert!(o.buses[1].ack);
     }
     assert_eq!(c.take_dma_completion(),Some(Ok(4)));
+    assert_eq!(c.debug().role,CoreRole::Idle);
+    println!("PLIOHOSTCORETRACE|v1|case=continuous_br_fresh_bg|status=ok|bg_low_cycles=1");
     println!("PLIOHOSTCORETRACE|v1|case=dma_read4|status=ok|beats=4|first=20000080|last=2000008c");
 
     println!("PLIOHOSTCORETRACE|v1|case=memory_backpressure|request_wait=3|response_wait=2|ack_early=0");
