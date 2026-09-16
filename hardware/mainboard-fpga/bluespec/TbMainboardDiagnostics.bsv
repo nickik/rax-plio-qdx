@@ -571,7 +571,7 @@ module mkTbMainboardPlioDma(Empty);
         stage <= DmaBind;
     endrule
 
-    rule bind (stage == DmaBind);
+    rule bindDmaChannel (stage == DmaBind);
         board.bindDma(1, 3, 32'h0000_0100, 25'h00100, True, True);
         stage <= DmaRequest;
     endrule
