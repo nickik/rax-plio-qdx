@@ -11,7 +11,7 @@ on:
 
 env:
   BSC_VERSION: '2026.01'
-  BSC_URL: 'https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-debian-12.13.tar.gz'
+  BSC_URL: https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-debian-12.13.tar.gz
   BSC_SHA256: '9da36623e301ae14ba5e670cb98d11c99277faa915025ccb7615de3ec14002c3'
 
 jobs:
@@ -21,16 +21,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-bsc
-        with:
-          version: ${{ env.BSC_VERSION }}
-          url: ${{ env.BSC_URL }}
-          sha256: ${{ env.BSC_SHA256 }}
+        with: { version: '${{ env.BSC_VERSION }}', url: '${{ env.BSC_URL }}', sha256: '${{ env.BSC_SHA256 }}' }
       - name: Prove M6.1 CPU/PLIO contention semantics
         run: make -C hardware/mainboard-fpga -f Makefile.m6 test-m6.1
       - name: Upload M6.1 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
-        with:
-          name: m6-1-arbitration-${{ github.run_id }}
-          path: hardware/mainboard-fpga/build/m6/arbitration/*.log
-          if-no-files-found: warn
+        with: { name: 'm6-1-arbitration-${{ github.run_id }}', path: 'hardware/mainboard-fpga/build/m6/arbitration/*.log', if-no-files-found: warn }
+
+  m6-2-fault-routing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with: { version: '${{ env.BSC_VERSION }}', url: '${{ env.BSC_URL }}', sha256: '${{ env.BSC_SHA256 }}' }
+      - name: Prove M6.2 fault routing and requester isolation
+        run: make -C hardware/mainboard-fpga -f Makefile.m6 test-m6.2
+      - name: Upload M6.2 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: 'm6-2-faults-${{ github.run_id }}', path: 'hardware/mainboard-fpga/build/m6/fault-*/*.log', if-no-files-found: warn }
+
+  m6-3-reset-isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with: { version: '${{ env.BSC_VERSION }}', url: '${{ env.BSC_URL }}', sha256: '${{ env.BSC_SHA256 }}' }
+      - name: Prove M6.3 reset, stale-response isolation, and recovery
+        run: make -C hardware/mainboard-fpga -f Makefile.m6 test-m6.3
+      - name: Upload M6.3 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: 'm6-3-reset-${{ github.run_id }}', path: 'hardware/mainboard-fpga/build/m6/reset-*/*.log', if-no-files-found: warn }
