@@ -52,7 +52,9 @@ module mkTbPLIOHostMemory(Empty);
     Reg#(Bit#(8)) watchdog <- mkReg(0);
     HostWorkerRequest dummyWorker = HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 };
 
-    // Keep mutually exclusive MemoryController actions in separate rules.
+    // The backend is an independent device.  It may accept a controller
+    // request or return a response whenever the corresponding handshake is
+    // ready, regardless of the PLIO stimulus phase.
     rule forwardBackendRequest (mc.backendRequestValid && ram.requestReady);
         ram.acceptRequest(mc.backendWrite, mc.backendAddress, mc.backendWriteData);
         mc.backendRequestAccepted;
@@ -63,18 +65,110 @@ module mkTbPLIOHostMemory(Empty);
         ram.responseConsumed;
     endrule
 
-    rule acceptHostMemoryRequest (core.memoryRequestValid && mc.hostRequestReady);
+    // Initialization is deliberately isolated from all later phases.  In the
+    // old single run rule, setRequestHoldoff conflicted with the fake backend's
+    // internal countdown rule and could starve backend progress.
+    rule phase0Init (phase == 0);
+        ram.preload(32'h00000100, 32'h55667788);
+        ram.setRequestHoldoff(8'd3);
+        core.bindDma(1, 3, 32'h00000100, 25'h00100, True, True);
+        phase <= 1;
+    endrule
+
+    rule phase1Request (phase == 1);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        phase <= 2;
+    endrule
+
+    rule phase2ReadAddress (phase == 2);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = dmaAddr(32'h30000000, True);
+        Vector#(8, PlioIn) outs = core.drive(cards, False);
+        if (outs[1].ack) begin
+            $display("FAIL memory integration read address accepted early");
+            $finish(1);
+        end
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        phase <= 3;
+    endrule
+
+    rule phase3ReadAddressAck (phase == 3);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = dmaAddr(32'h30000000, True);
+        Vector#(8, PlioIn) outs = core.drive(cards, False);
+        if (!outs[1].ack) begin
+            $display("FAIL memory integration read address ACK");
+            $finish(1);
+        end
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= 0;
+        phase <= 4;
+    endrule
+
+    // A memory request is accepted atomically with the core observing ready.
+    // This prevents the core from advancing to DmaMemResponse without the
+    // controller actually capturing the request.
+    rule phase4ReadMemRequestReady (phase == 4 && core.debugDmaState == DmaMemRequest && mc.hostRequestReady);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
         mc.hostRequest(core.memoryWrite, core.memoryAddress, core.memoryWriteData);
+        core.advance(cards, False, dummyWorker, True, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration read watchdog"); $finish(1); end
     endrule
 
-    rule consumeHostMemoryResponse (mc.hostResponseValid && core.debugDmaState == DmaMemResponse);
+    rule phase4ReadMemRequestStall (phase == 4 && core.debugDmaState == DmaMemRequest && !mc.hostRequestReady);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration read watchdog"); $finish(1); end
+    endrule
+
+    rule phase4ReadMemResponseReady (phase == 4 && core.debugDmaState == DmaMemResponse && mc.hostResponseValid);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        Bool fault = mc.hostResponseFault;
+        Bool readValid = mc.hostReadDataValid;
+        Bit#(32) readData = mc.hostReadData;
+        core.advance(cards, False, dummyWorker, False, True, fault, readValid, readData, False);
         mc.hostResponseConsumed;
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration read watchdog"); $finish(1); end
     endrule
 
-    // clearDmaCompletion and advance both touch the core completion state. Keep
-    // completion handling out of the stimulus rule so BSC never has to place
-    // both actions in one atomic rule.
-    rule completeRead (phase == 5);
+    rule phase4ReadMemResponseWait (phase == 4 && core.debugDmaState == DmaMemResponse && !mc.hostResponseValid);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration read watchdog"); $finish(1); end
+    endrule
+
+    rule phase4ReadReady (phase == 4 && core.debugDmaState == DmaReadReady);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        cards[1].dataStrobe = True;
+        Vector#(8, PlioIn) outs = core.drive(cards, False);
+        if (!outs[1].ack || !outs[1].adValid || outs[1].ad != 32'h55667788) begin
+            $display("FAIL memory integration read data");
+            $finish(1);
+        end
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        phase <= 5;
+    endrule
+
+    rule phase4ReadUnexpected (phase == 4 && core.debugDmaState != DmaMemRequest && core.debugDmaState != DmaMemResponse && core.debugDmaState != DmaReadReady);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration read watchdog"); $finish(1); end
+    endrule
+
+    rule phase5ReadCompletion (phase == 5);
         if (!core.dmaCompletionValid || core.dmaCompletionStatus != DmaOk || core.dmaCompletionBeats != 1) begin
             $display("FAIL memory integration read completion");
             $finish(1);
@@ -84,7 +178,92 @@ module mkTbPLIOHostMemory(Empty);
         phase <= 6;
     endrule
 
-    rule completeWrite (phase == 11);
+    rule phase6WriteRequest (phase == 6);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        phase <= 7;
+    endrule
+
+    rule phase7WriteAddress (phase == 7);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = dmaAddr(32'h30000004, False);
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        phase <= 8;
+    endrule
+
+    rule phase8WriteAddressAck (phase == 8);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = dmaAddr(32'h30000004, False);
+        Vector#(8, PlioIn) outs = core.drive(cards, False);
+        if (!outs[1].ack) begin
+            $display("FAIL memory integration write address ACK");
+            $finish(1);
+        end
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        phase <= 9;
+    endrule
+
+    rule phase9WriteData (phase == 9);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = dmaData(32'hcafebabe);
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= 0;
+        phase <= 10;
+    endrule
+
+    rule phase10WriteMemRequestReady (phase == 10 && core.debugDmaState == DmaMemRequest && mc.hostRequestReady);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        mc.hostRequest(core.memoryWrite, core.memoryAddress, core.memoryWriteData);
+        core.advance(cards, False, dummyWorker, True, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration write watchdog"); $finish(1); end
+    endrule
+
+    rule phase10WriteMemRequestStall (phase == 10 && core.debugDmaState == DmaMemRequest && !mc.hostRequestReady);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration write watchdog"); $finish(1); end
+    endrule
+
+    rule phase10WriteMemResponseReady (phase == 10 && core.debugDmaState == DmaMemResponse && mc.hostResponseValid);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        Bool fault = mc.hostResponseFault;
+        Bool readValid = mc.hostReadDataValid;
+        Bit#(32) readData = mc.hostReadData;
+        core.advance(cards, False, dummyWorker, False, True, fault, readValid, readData, False);
+        mc.hostResponseConsumed;
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration write watchdog"); $finish(1); end
+    endrule
+
+    rule phase10WriteMemResponseWait (phase == 10 && core.debugDmaState == DmaMemResponse && !mc.hostResponseValid);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration write watchdog"); $finish(1); end
+    endrule
+
+    rule phase10WriteAck (phase == 10 && core.debugDmaState != DmaMemRequest && core.debugDmaState != DmaMemResponse);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        Vector#(8, PlioIn) outs = core.drive(cards, False);
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        if (outs[1].ack) begin
+            phase <= 11;
+        end
+        else begin
+            watchdog <= watchdog + 1;
+            if (watchdog == 40) begin $display("FAIL memory integration write watchdog"); $finish(1); end
+        end
+    endrule
+
+    rule phase11WriteCompletion (phase == 11);
         if (ram.peek(32'h00000104) != 32'hcafebabe) begin
             $display("FAIL memory integration write memory");
             $finish(1);
@@ -98,135 +277,97 @@ module mkTbPLIOHostMemory(Empty);
         phase <= 12;
     endrule
 
-    rule run;
+    rule phase12FaultBind (phase == 12);
+        core.bindDma(1, 4, 32'h00004000, 25'h00100, True, False);
+        phase <= 13;
+    endrule
+
+    rule phase13FaultRequest (phase == 13);
         Vector#(8, PlioOut) cards = replicate(plioOutDefault());
-        Vector#(8, PlioIn) outs = replicate(plioInDefault());
-        Bool advanceCore = True;
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        phase <= 14;
+    endrule
 
-        case (phase)
-            0: begin
-                ram.preload(32'h00000100, 32'h55667788);
-                ram.setRequestHoldoff(8'd3);
-                core.bindDma(1, 3, 32'h00000100, 25'h00100, True, True);
-                advanceCore = False;
-                phase <= 1;
-            end
-            1: begin
-                cards[1] = reqOnly();
-                phase <= 2;
-            end
-            2: begin
-                cards[1] = dmaAddr(32'h30000000, True);
-                outs = core.drive(cards, False);
-                if (outs[1].ack) begin $display("FAIL memory integration read address accepted early"); $finish(1); end
-                phase <= 3;
-            end
-            3: begin
-                cards[1] = dmaAddr(32'h30000000, True);
-                outs = core.drive(cards, False);
-                if (!outs[1].ack) begin $display("FAIL memory integration read address ACK"); $finish(1); end
-                phase <= 4;
-                watchdog <= 0;
-            end
-            4: begin
-                cards[1] = reqOnly();
-                if (core.debugDmaState == DmaReadReady) begin
-                    cards[1].dataStrobe = True;
-                    outs = core.drive(cards, False);
-                    if (!outs[1].ack || !outs[1].adValid || outs[1].ad != 32'h55667788) begin
-                        $display("FAIL memory integration read data");
-                        $finish(1);
-                    end
-                    phase <= 5;
-                end
-                else begin
-                    watchdog <= watchdog + 1;
-                    if (watchdog == 40) begin $display("FAIL memory integration read watchdog"); $finish(1); end
-                end
-            end
-            5: begin
-                advanceCore = False;
-            end
-            6: begin
-                cards[1] = reqOnly();
-                phase <= 7;
-            end
-            7: begin
-                cards[1] = dmaAddr(32'h30000004, False);
-                phase <= 8;
-            end
-            8: begin
-                cards[1] = dmaAddr(32'h30000004, False);
-                outs = core.drive(cards, False);
-                if (!outs[1].ack) begin $display("FAIL memory integration write address ACK"); $finish(1); end
-                phase <= 9;
-            end
-            9: begin
-                cards[1] = dmaData(32'hcafebabe);
-                phase <= 10;
-                watchdog <= 0;
-            end
-            10: begin
-                cards[1] = reqOnly();
-                outs = core.drive(cards, False);
-                if (outs[1].ack) begin
-                    phase <= 11;
-                end
-                else begin
-                    watchdog <= watchdog + 1;
-                    if (watchdog == 40) begin $display("FAIL memory integration write watchdog"); $finish(1); end
-                end
-            end
-            11: begin
-                advanceCore = False;
-            end
-            12: begin
-                core.bindDma(1, 4, 32'h00004000, 25'h00100, True, False);
-                advanceCore = False;
-                phase <= 13;
-            end
-            13: begin cards[1] = reqOnly(); phase <= 14; end
-            14: begin cards[1] = dmaAddr(32'h40000000, True); phase <= 15; end
-            15: begin
-                cards[1] = dmaAddr(32'h40000000, True);
-                outs = core.drive(cards, False);
-                if (!outs[1].ack) begin $display("FAIL memory integration fault address ACK"); $finish(1); end
-                phase <= 16;
-                watchdog <= 0;
-            end
-            16: begin
-                cards[1] = reqOnly();
-                outs = core.drive(cards, False);
-                if (outs[1].err) begin
-                    phase <= 17;
-                end
-                else begin
-                    watchdog <= watchdog + 1;
-                    if (watchdog == 40) begin $display("FAIL memory integration fault watchdog"); $finish(1); end
-                end
-            end
-            17: begin
-                advanceCore = False;
-                if (!core.dmaCompletionValid || core.dmaCompletionStatus != DmaMemoryFault) begin
-                    $display("FAIL memory integration fault completion");
-                    $finish(1);
-                end
-                $display("MEMHOSTTRACE|v1|case=backend_fault|status=memory_fault|backend=fake");
-                $display("PASS memory controller Bluespec + PLIO host integration");
-                $finish(0);
-            end
-        endcase
+    rule phase14FaultAddress (phase == 14);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = dmaAddr(32'h40000000, True);
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        phase <= 15;
+    endrule
 
-        if (advanceCore) begin
-            Bool requestReady = mc.hostRequestReady;
-            Bool responseValid = mc.hostResponseValid;
-            Bool responseFault = mc.hostResponseFault;
-            Bool readDataValid = mc.hostReadDataValid;
-            Bit#(32) readData = mc.hostReadData;
-
-            core.advance(cards, False, dummyWorker,
-                requestReady, responseValid, responseFault, readDataValid, readData, False);
+    rule phase15FaultAddressAck (phase == 15);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = dmaAddr(32'h40000000, True);
+        Vector#(8, PlioIn) outs = core.drive(cards, False);
+        if (!outs[1].ack) begin
+            $display("FAIL memory integration fault address ACK");
+            $finish(1);
         end
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= 0;
+        phase <= 16;
+    endrule
+
+    rule phase16FaultMemRequestReady (phase == 16 && core.debugDmaState == DmaMemRequest && mc.hostRequestReady);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        mc.hostRequest(core.memoryWrite, core.memoryAddress, core.memoryWriteData);
+        core.advance(cards, False, dummyWorker, True, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration fault watchdog"); $finish(1); end
+    endrule
+
+    rule phase16FaultMemRequestStall (phase == 16 && core.debugDmaState == DmaMemRequest && !mc.hostRequestReady);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration fault watchdog"); $finish(1); end
+    endrule
+
+    rule phase16FaultMemResponseReady (phase == 16 && core.debugDmaState == DmaMemResponse && mc.hostResponseValid);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        Bool fault = mc.hostResponseFault;
+        Bool readValid = mc.hostReadDataValid;
+        Bit#(32) readData = mc.hostReadData;
+        core.advance(cards, False, dummyWorker, False, True, fault, readValid, readData, False);
+        mc.hostResponseConsumed;
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration fault watchdog"); $finish(1); end
+    endrule
+
+    rule phase16FaultMemResponseWait (phase == 16 && core.debugDmaState == DmaMemResponse && !mc.hostResponseValid);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        watchdog <= watchdog + 1;
+        if (watchdog == 40) begin $display("FAIL memory integration fault watchdog"); $finish(1); end
+    endrule
+
+    rule phase16FaultErr (phase == 16 && core.debugDmaState != DmaMemRequest && core.debugDmaState != DmaMemResponse);
+        Vector#(8, PlioOut) cards = replicate(plioOutDefault());
+        cards[1] = reqOnly();
+        Vector#(8, PlioIn) outs = core.drive(cards, False);
+        core.advance(cards, False, dummyWorker, False, False, False, False, 0, False);
+        if (outs[1].err) begin
+            phase <= 17;
+        end
+        else begin
+            watchdog <= watchdog + 1;
+            if (watchdog == 40) begin $display("FAIL memory integration fault watchdog"); $finish(1); end
+        end
+    endrule
+
+    rule phase17FaultCompletion (phase == 17);
+        if (!core.dmaCompletionValid || core.dmaCompletionStatus != DmaMemoryFault) begin
+            $display("FAIL memory integration fault completion");
+            $finish(1);
+        end
+        $display("MEMHOSTTRACE|v1|case=backend_fault|status=memory_fault|backend=fake");
+        $display("PASS memory controller Bluespec + PLIO host integration");
+        $finish(0);
     endrule
 endmodule
 
