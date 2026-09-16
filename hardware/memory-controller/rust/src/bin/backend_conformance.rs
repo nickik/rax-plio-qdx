@@ -1,5 +1,7 @@
-use memory_controller_model::{ControllerState, FakeMemory, MemoryBackend, MemoryController};
-use plio_host_dma_model::{MemoryRequest, MemoryResponse};
+use memory_controller_model::{
+    ControllerState, FakeMemory, MemoryBackend, MemoryController, MemoryRequest,
+};
+use plio_host_dma_model::MemoryResponse;
 
 fn transact(
     controller: &mut MemoryController,
@@ -25,7 +27,7 @@ fn main() {
         transact(
             &mut controller,
             &mut memory,
-            MemoryRequest::Write32 { physical_address: 0x100, value: 0x1111_1111 },
+            MemoryRequest::write(0x100, 0xf, 0x1111_1111),
         ),
         MemoryResponse::WriteDone
     );
@@ -33,7 +35,7 @@ fn main() {
         transact(
             &mut controller,
             &mut memory,
-            MemoryRequest::Write32 { physical_address: 0x104, value: 0x2222_2222 },
+            MemoryRequest::write(0x104, 0xf, 0x2222_2222),
         ),
         MemoryResponse::WriteDone
     );
@@ -43,7 +45,7 @@ fn main() {
         transact(
             &mut controller,
             &mut memory,
-            MemoryRequest::Read32 { physical_address: 0x100 },
+            MemoryRequest::read(0x100, 0xf),
         ),
         MemoryResponse::ReadData(0x1111_1111)
     );
@@ -51,13 +53,26 @@ fn main() {
         transact(
             &mut controller,
             &mut memory,
-            MemoryRequest::Read32 { physical_address: 0x104 },
+            MemoryRequest::read(0x104, 0xf),
         ),
         MemoryResponse::ReadData(0x2222_2222)
     );
     println!("MEMBACKENDTRACE|v1|case=raw_multi_address|status=ok|a=11111111|b=22222222");
 
-    assert!(controller.accept_host_request(MemoryRequest::Read32 { physical_address: 0x100 }));
+    // Exercise the shared backend's masked-write semantics in the conformance
+    // executable as well as the unit tests. BE=0101 updates lanes 0 and 2.
+    assert_eq!(
+        transact(
+            &mut controller,
+            &mut memory,
+            MemoryRequest::write(0x100, 0x5, 0xaabb_ccdd),
+        ),
+        MemoryResponse::WriteDone
+    );
+    assert_eq!(memory.peek_word(0x100), Some(0x11bb_11dd));
+    println!("MEMBACKENDTRACE|v2|case=masked_write|be=5|value=11bb11dd|status=ok");
+
+    assert!(controller.accept_host_request(MemoryRequest::read(0x100, 0xf)));
     controller.tick_backend(&mut memory);
     assert_eq!(controller.debug().state, ControllerState::BackendResponse);
     assert_eq!(memory.response(), None);
@@ -82,10 +97,10 @@ fn main() {
         transact(
             &mut controller,
             &mut memory,
-            MemoryRequest::Read32 { physical_address: 0x100 },
+            MemoryRequest::read(0x100, 0xf),
         ),
-        MemoryResponse::ReadData(0x1111_1111)
+        MemoryResponse::ReadData(0x11bb_11dd)
     );
-    println!("MEMBACKENDTRACE|v1|case=reset_recovery|status=ok|value=11111111");
+    println!("MEMBACKENDTRACE|v2|case=reset_recovery|status=ok|value=11bb11dd");
     println!("PASS memory controller backend sequence semantics");
 }
