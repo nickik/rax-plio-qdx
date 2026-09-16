@@ -6,11 +6,11 @@ BUILD := $(abspath build)
 BASE_SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
 QDXB_SEARCH := $(BASE_SEARCH):$(ROOT)/qli16/bluespec:$(ROOT)/testbench/bluespec:$(ROOT)/qdx-a/bluespec:$(ROOT)/qdx-b/bluespec:$(ROOT)/qdx-b-card/bluespec
 
-.PHONY: test test-isolated test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-core test-qdx-b verilog-sanity clean
+.PHONY: test test-isolated test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-core test-qdx-b verilog-sanity clean
 
 test: test-isolated test-core test-qdx-b verilog-sanity
 
-test-isolated: test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma
+test-isolated: test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage
 
 test-memory-semantics:
 	rm -rf $(BUILD)/diag-memory-semantics
@@ -150,6 +150,29 @@ test-plio-dma:
 	else \
 		set -o pipefail; $(BUILD)/diag-plio-dma/tb 2>&1 | tee $(BUILD)/diag-plio-dma/run.log; \
 	fi
+
+test-lifecycle-coverage:
+	rm -rf $(BUILD)/diag-lifecycle-coverage
+	mkdir -p $(BUILD)/diag-lifecycle-coverage
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/diag-lifecycle-coverage -simdir $(BUILD)/diag-lifecycle-coverage -info-dir $(BUILD)/diag-lifecycle-coverage \
+		-g mkTbMainboardLifecycleCoverage bluespec/TbMainboardLifecycleCoverage.bsv 2>&1 | tee $(BUILD)/diag-lifecycle-coverage/compile.log
+	@if grep -q '(G0023)' $(BUILD)/diag-lifecycle-coverage/compile.log; then \
+		echo 'FAIL lifecycle coverage contains a BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/diag-lifecycle-coverage -simdir $(BUILD)/diag-lifecycle-coverage \
+		-e mkTbMainboardLifecycleCoverage -o $(BUILD)/diag-lifecycle-coverage/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 45s $(BUILD)/diag-lifecycle-coverage/tb 2>&1 | tee $(BUILD)/diag-lifecycle-coverage/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/diag-lifecycle-coverage/tb 2>&1 | tee $(BUILD)/diag-lifecycle-coverage/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/diag-lifecycle-coverage/run.log; then exit 1; fi
+	@grep -Fq 'MAINBOARDLIFECYCLE|reset_outstanding=ok|stale_internal_state=ok' $(BUILD)/diag-lifecycle-coverage/run.log
+	@grep -Fq 'MAINBOARDLIFECYCLE|fresh_recovery=ok' $(BUILD)/diag-lifecycle-coverage/run.log
+	@grep -Fq 'MAINBOARDLIFECYCLE|plio_memory_path=ok|plio_be=1111|status=ok' $(BUILD)/diag-lifecycle-coverage/run.log
+	@grep -Fq 'PASS|lifecycle-coverage|reset stale-state isolation, fresh recovery, and PLIO full-word memory path' $(BUILD)/diag-lifecycle-coverage/run.log
 
 test-core:
 	rm -rf $(BUILD)/core
