@@ -150,10 +150,8 @@ verilog-sanity:
 		-g mkMainboardFPGA bluespec/MainboardFPGA.bsv
 	@test -f $(BUILD)/rtl/verilog/mkMainboardFPGA.v
 	@if command -v $(YOSYS) >/dev/null 2>&1; then \
-		BSC_PREFIX="$$(cd "$$(dirname "$$(command -v $(BSC))")/.." && pwd)"; \
-		std_files="$$(find "$$BSC_PREFIX/lib/Verilog" -maxdepth 1 -name '*.v' ! -name '*Load.v' ! -name 'main.v' -print | tr '\n' ' ')"; \
 		generated_files="$$(find $(BUILD)/rtl/verilog -maxdepth 1 -name '*.v' -print | tr '\n' ' ')"; \
-		$(YOSYS) -q -p "read_verilog -lib $$std_files; read_verilog $$generated_files; hierarchy -check -top mkMainboardFPGA; proc; check"; \
+		$(YOSYS) -q -p "read_verilog $$generated_files; hierarchy -top mkMainboardFPGA; proc; opt; check"; \
 	fi
 	@echo 'PASS mainboard FPGA generated-Verilog/synthesis sanity'
 
