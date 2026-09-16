@@ -65,12 +65,17 @@ module mkTbMainboardM6ArbitrationV2(Empty);
     endrule
     rule cpuRetire(s==10 && b.debugAdvanceReady); b.advance(plioCards(),lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False); s<=11; endrule
 
-    // The queued retire cycle must be consumed before observing host state. Wait rather than
-    // assuming a zero-latency debug transition. The original M6.1 bench exposed this distinction.
-    rule plioWins(s==11 && b.debugAdvanceReady && !b.debugCpuResponsePending && b.debugPlioMemoryRequestValid);
+    // After the CPU response retires, the queued PLIO request may already have been
+    // atomically accepted into MemoryController. Observe the recorded owner, not the
+    // pre-accept host request-valid signal. This is the hardware-visible arbitration
+    // boundary we care about: CPU is requesting, PLIO owns memory, CPU gets no grant.
+    rule plioWins(s==11 && b.debugAdvanceReady
+        && !b.debugCpuResponsePending
+        && b.debugMemoryOwner==MainMemPlio
+        && b.memoryBackendRequestValid);
         if(b.debugPreferCpu) begin $display("FAIL|m6.1|plio-policy");$finish(1);end
         LightingBusInputs x=b.lightingMemory(plioCards(),cpuBR(),False);
-        if(x.busGrant) begin $display("FAIL|m6.1|cpu-granted-while-plio-preferred");$finish(1);end
+        if(x.busGrant) begin $display("FAIL|m6.1|cpu-granted-while-plio-owner");$finish(1);end
         b.advance(plioCards(),cpuBR(),False,noWorkerRequest(),False,False,False,False,0,False); stalls<=0; s<=12;
     endrule
     rule plioStall(s==12 && b.debugAdvanceReady && b.memoryBackendRequestValid && stalls<4);
