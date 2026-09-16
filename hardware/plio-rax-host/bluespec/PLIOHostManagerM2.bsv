@@ -97,7 +97,10 @@ function NotificationDataCheck checkNotificationData(PlioOut card);
     NotificationDataCheck result = NotificationDataCheck {
         valid: False, payload: 0, fault: M2BadNotificationData
     };
-    if (card.adValid && card.parValid && card.byteEnable == 4'hf) begin
+    // BE is an address-phase control signal. Notification data is always one
+    // full 32-bit payload beat, so validate the full AD/parity image here and
+    // do not require the manager to continue driving address-phase BE values.
+    if (card.adValid && card.parValid) begin
         if (m2ParityMatches(card.ad, card.parity, 4'hf)) begin
             result.valid = True;
             result.payload = card.ad;
