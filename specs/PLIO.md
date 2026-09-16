@@ -59,6 +59,7 @@ A future host may contain multiple CPUs behind one PLIO controller, but that is 
 - **PLIO Notification** — one bus-local `SPACE=CONTROLLER` write by a granted peripheral that sets controller-owned pending state for one notification channel.
 - **notification channel** — one of four controller-owned pending sources per slot used by PLIO Notification.
 - **transaction space** — interpretation of `AD[31:0]` selected by `SPACE[1:0]` during the address phase.
+- **grant epoch** — one continuous assertion of `BG[n]*` to a slot. One grant epoch authorizes at most one bus-manager transaction.
 
 The device-to-host mechanism defined by this specification is called **PLIO Notification**. Normative PLIO text does not use PCI-derived MSI/MSI-X terminology for it.
 
@@ -186,8 +187,8 @@ For each slot `n`:
 | Signal | Direction | Meaning |
 |---:|---|---|
 | `SEL[n]*` | controller -> slot | slot selected as worker |
-| `BR[n]*` | slot -> controller | request bus-manager ownership |
-| `BG[n]*` | controller -> slot | bus-manager grant |
+| `BR[n]*` | slot -> controller | request future bus-manager ownership |
+| `BG[n]*` | controller -> slot | active bus-manager grant epoch; at most one transaction |
 
 **There is no `IRQ[n]` signal.**
 
@@ -277,12 +278,18 @@ The PLIO controller MUST provide fair arbitration. The baseline algorithm is rot
 
 A grant is communicated by `BG[n]*`. Only one slot may own a grant at a time.
 
-A grant covers exactly one PLIO transaction:
+One continuous assertion of `BG[n]*` is one **grant epoch**. A grant epoch authorizes at most one PLIO transaction, and a manager MUST originate at most one address phase during that grant epoch:
 
 - one single-beat controller-local transaction, including PLIO Notification, or
 - one host-memory DMA burst of 1, 4, 8, or 16 longwords.
 
-At the end of the transaction the controller MUST withdraw the grant and arbitrate again. A manager with additional work MAY keep `BR[n]*` asserted.
+A manager transaction ends when its final successful data beat is acknowledged, or when the transaction terminates by `ERR*`, timeout, reset, protection failure, or another abort condition.
+
+At the end of the transaction the controller MUST deassert `BG[n]*` regardless of the state of `BR[n]*`. `BG[n]*` MUST be observed deasserted for at least one PLIO clock before that same slot may receive another grant epoch. The controller then arbitrates again from the current request levels.
+
+A manager with additional work MAY keep `BR[n]*` asserted continuously across this grant boundary. Continuous `BR[n]*` requests consideration in subsequent arbitration; it does not extend the completed grant epoch and is not an end-of-transaction acknowledgement.
+
+Host-originated WORKER transactions MUST NOT overlap an active bus-manager grant epoch. A pending `BR[n]*` MAY remain asserted while the controller services a WORKER transaction, provided no `BG[n]*` is asserted during that WORKER transaction.
 
 The controller derives the trusted source slot from the active grant. A device cannot claim to be another slot.
 
@@ -466,7 +473,9 @@ To notify the host a device:
 2. asserts `BR[n]*`,
 3. receives `BG[n]*`,
 4. performs one parity-protected `SPACE=CONTROLLER` 32-bit write to the chosen PLIO Notification channel offset,
-5. releases the bus.
+5. completes that transaction; the controller then withdraws `BG[n]*` for the mandatory grant boundary.
+
+If the device has more manager work, it MAY keep `BR[n]*` asserted while `BG[n]*` is withdrawn and the controller rearbitrates.
 
 The controller derives the source slot from the active grant. The device does not provide a trusted slot ID, host vector, privilege, CPU target, or priority.
 
