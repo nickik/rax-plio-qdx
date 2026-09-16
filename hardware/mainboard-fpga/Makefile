@@ -6,11 +6,35 @@ BUILD := $(abspath build)
 BASE_SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
 QDXB_SEARCH := $(BASE_SEARCH):$(ROOT)/qli16/bluespec:$(ROOT)/testbench/bluespec:$(ROOT)/qdx-a/bluespec:$(ROOT)/qdx-b/bluespec:$(ROOT)/qdx-b-card/bluespec
 
-.PHONY: test test-isolated test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-core test-qdx-b verilog-sanity clean
+.PHONY: test test-isolated test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-core test-qdx-b verilog-sanity clean
 
 test: test-isolated test-core test-qdx-b verilog-sanity
 
-test-isolated: test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma
+test-isolated: test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma
+
+test-byte-enable:
+	rm -rf $(BUILD)/diag-byte-enable
+	mkdir -p $(BUILD)/diag-byte-enable
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/diag-byte-enable -simdir $(BUILD)/diag-byte-enable -info-dir $(BUILD)/diag-byte-enable \
+		-g mkTbMainboardByteEnable bluespec/TbMainboardByteEnable.bsv 2>&1 | tee $(BUILD)/diag-byte-enable/compile.log
+	@if grep -q '(G0023)' $(BUILD)/diag-byte-enable/compile.log; then \
+		echo 'FAIL byte-enable diagnostic contains a BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/diag-byte-enable -simdir $(BUILD)/diag-byte-enable \
+		-e mkTbMainboardByteEnable -o $(BUILD)/diag-byte-enable/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 30s $(BUILD)/diag-byte-enable/tb 2>&1 | tee $(BUILD)/diag-byte-enable/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/diag-byte-enable/tb 2>&1 | tee $(BUILD)/diag-byte-enable/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/diag-byte-enable/run.log; then exit 1; fi
+	@test "$$(grep -c '^MAINBOARDBETRACE|mask=' $(BUILD)/diag-byte-enable/run.log)" -eq 10
+	@for mask in 0001 0010 0100 1000 0011 1100 0101 1010 0000 1111; do \
+		grep -Fq "MAINBOARDBETRACE|mask=$$mask|status=ok" $(BUILD)/diag-byte-enable/run.log || exit 1; \
+	done
+	@grep -Fq 'PASS|byte-enable|CPU to Mainboard to MemoryController propagation and backpressure stability' $(BUILD)/diag-byte-enable/run.log
 
 test-cpu-grant:
 	rm -rf $(BUILD)/diag-cpu-grant
