@@ -90,6 +90,10 @@ fn dma(core:&mut PLIOHostCore, epoch:u32, r:u32, read:bool) {
         let mut i=CoreInput::default(); i.cards[slot as usize]=req(); let out=core.step(i); assert!(out.buses[slot as usize].ack && one_hot_owner(&out));
     }
     let c=core.take_dma_completion().expect("dma completion"); assert_eq!(c,Ok(1));
+    // A successful PLIO DMA keeps BG asserted until the card retires its local
+    // completion and drops BR. Model that final card-side cycle explicitly.
+    let out=core.step(CoreInput::default()); assert!(one_hot_owner(&out));
+    assert_eq!(core.debug().role,plio_host_core_model::CoreRole::Idle);
     println!("PLIOHOSTSTRESS|v1|seed={SEED0:08x}|epoch={epoch}|kind={}|slot={slot}|aw={aw}|dw={dw}|mw={mw}|rw={rw}|cursor={}|ok=1",if read{"dma_read"}else{"dma_write"},core.debug().arbitration_cursor);
 }
 
