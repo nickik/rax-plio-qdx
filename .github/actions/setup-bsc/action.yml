@@ -1,0 +1,43 @@
+name: Setup pinned Bluespec compiler
+description: Restore or install a verified BSC release and add it to PATH
+
+inputs:
+  version:
+    description: Bluespec compiler version
+    required: true
+  url:
+    description: Release archive URL
+    required: true
+  sha256:
+    description: SHA-256 of the release archive
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache Bluespec compiler
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/bsc/${{ inputs.version }}
+        key: bsc-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ inputs.sha256 }}
+
+    - name: Install pinned Bluespec compiler
+      shell: bash
+      env:
+        BSC_VERSION: ${{ inputs.version }}
+        BSC_URL: ${{ inputs.url }}
+        BSC_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        prefix="$HOME/.cache/bsc/$BSC_VERSION"
+        if [[ ! -x "$prefix/bin/bsc" ]]; then
+          archive="$RUNNER_TEMP/bsc-$BSC_VERSION.tar.gz"
+          rm -rf "$prefix"
+          mkdir -p "$prefix"
+          curl -L --fail --retry 5 --retry-delay 2 "$BSC_URL" -o "$archive"
+          echo "$BSC_SHA256  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$prefix" --strip-components=1
+        fi
+        test -x "$prefix/bin/bsc"
+        echo "$prefix/bin" >> "$GITHUB_PATH"
+        "$prefix/bin/bsc" -help >/dev/null

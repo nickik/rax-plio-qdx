@@ -1,0 +1,50 @@
+SHELL := /bin/bash
+BSC ?= bsc
+ROOT := $(abspath ..)
+BUILD := $(abspath build/p0)
+BASE_SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
+
+.PHONY: test-cpu-response test-plio-response clean
+
+test-cpu-response:
+	rm -rf $(BUILD)/cpu-response
+	mkdir -p $(BUILD)/cpu-response
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/cpu-response -simdir $(BUILD)/cpu-response -info-dir $(BUILD)/cpu-response \
+		-g mkTbP0CpuResponse bluespec/TbMainboardP0Response.bsv 2>&1 | tee $(BUILD)/cpu-response/compile.log
+	@if grep -q '(G0023)' $(BUILD)/cpu-response/compile.log; then \
+		echo 'FAIL|p0-cpu-response|BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/cpu-response -simdir $(BUILD)/cpu-response \
+		-e mkTbP0CpuResponse -o $(BUILD)/cpu-response/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 15s $(BUILD)/cpu-response/tb 2>&1 | tee $(BUILD)/cpu-response/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/cpu-response/tb 2>&1 | tee $(BUILD)/cpu-response/run.log; \
+	fi
+	! grep -q '^FAIL|' $(BUILD)/cpu-response/run.log
+	grep -Fq 'PASS|p0-cpu-response|' $(BUILD)/cpu-response/run.log
+
+test-plio-response:
+	rm -rf $(BUILD)/plio-response
+	mkdir -p $(BUILD)/plio-response
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/plio-response -simdir $(BUILD)/plio-response -info-dir $(BUILD)/plio-response \
+		-g mkTbP0PlioResponse bluespec/TbMainboardP0PlioResponse.bsv 2>&1 | tee $(BUILD)/plio-response/compile.log
+	@if grep -q '(G0023)' $(BUILD)/plio-response/compile.log; then \
+		echo 'FAIL|p0-plio-response|BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/plio-response -simdir $(BUILD)/plio-response \
+		-e mkTbP0PlioResponse -o $(BUILD)/plio-response/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 15s $(BUILD)/plio-response/tb 2>&1 | tee $(BUILD)/plio-response/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/plio-response/tb 2>&1 | tee $(BUILD)/plio-response/run.log; \
+	fi
+	! grep -q '^FAIL|' $(BUILD)/plio-response/run.log
+	grep -Fq 'PASS|p0-plio-response|' $(BUILD)/plio-response/run.log
+
+clean:
+	rm -rf $(BUILD)
