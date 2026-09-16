@@ -59,8 +59,9 @@ dump_diagnostics() {
         echo
         echo "--- Bluespec sources ---"
         print_file "$ROOT/memory-controller/bluespec/MemoryController.bsv"
+        print_file "$ROOT/memory-controller/bluespec/BlockRamBackend.bsv"
         print_file "$ROOT/memory-controller/bluespec/TbMemoryController.bsv"
-        print_file "$ROOT/memory-controller/bluespec/TbPLIOHostMemory.bsv"
+        print_file "$ROOT/memory-controller/bluespec/TbPLIOHostBlockRam.bsv"
         echo
         echo "--- source directory ---"
         find "$ROOT/memory-controller/bluespec" -maxdepth 1 -type f -printf '%f\t%s bytes\n' | sort || true
@@ -137,19 +138,24 @@ grep -q '^PASS memory controller Bluespec deterministic semantics$' "$BUILD/cont
 echo "== Exact Rust / Bluesim memory-controller trace =="
 diff -u "$BUILD/rust-controller.trace" "$BUILD/bsv-controller.trace" 2>&1 | tee "$BUILD/controller-diff.log"
 
-echo "== PLIOHostCore -> MemoryController -> fake RAM Bluesim integration =="
+echo "== PLIOHostCore -> MemoryController -> default 1 MiB integrated BRAM Bluesim integration =="
 run_bsc bsc-host-compile "${BSC_STACK[@]}" -u -sim -p "$SEARCH" \
     -bdir "$BUILD/host-sim" -simdir "$BUILD/host-sim" -info-dir "$BUILD/host-sim" \
-    -g mkTbPLIOHostMemory "$ROOT/memory-controller/bluespec/TbPLIOHostMemory.bsv"
+    -g mkTbPLIOHostBlockRam "$ROOT/memory-controller/bluespec/TbPLIOHostBlockRam.bsv"
 run_bsc bsc-host-link "${BSC_STACK[@]}" -sim -p "$SEARCH" \
     -bdir "$BUILD/host-sim" -simdir "$BUILD/host-sim" \
-    -e mkTbPLIOHostMemory -o "$BUILD/tb-plio-host-memory"
+    -e mkTbPLIOHostBlockRam -o "$BUILD/tb-plio-host-memory"
 "$BUILD/tb-plio-host-memory" 2>&1 | tee "$BUILD/host-bsv.log"
-grep '^MEMHOSTTRACE|' "$BUILD/host-bsv.log" > "$BUILD/bsv-host.trace"
-test "$(wc -l < "$BUILD/bsv-host.trace")" -eq 3
-grep -q '^PASS memory controller Bluespec + PLIO host integration$' "$BUILD/host-bsv.log"
+grep '^MEMHOSTTRACE|' "$BUILD/host-bsv.log" > "$BUILD/bsv-host-bram.trace"
+test "$(wc -l < "$BUILD/bsv-host-bram.trace")" -eq 3
+grep -q '^PASS block RAM PLIO host integration$' "$BUILD/host-bsv.log"
 
-echo "== Exact Rust / Bluesim PLIO-host memory integration =="
+# Rust remains the independent semantic reference model.  Backend identity is
+# the only expected textual difference now that integrated BRAM is the default
+# Bluesim memory implementation.
+sed 's/backend=bram/backend=fake/' "$BUILD/bsv-host-bram.trace" > "$BUILD/bsv-host.trace"
+
+echo "== Exact Rust / Bluesim default-memory integration =="
 diff -u "$BUILD/rust-host.trace" "$BUILD/bsv-host.trace" 2>&1 | tee "$BUILD/host-diff.log"
 
 echo "== Generate and synthesize memory-free controller RTL =="
@@ -165,4 +171,4 @@ grep -Eq 'Number of memories:[[:space:]]+0' "$BUILD/yosys.log"
 grep -Eq 'Number of memory bits:[[:space:]]+0' "$BUILD/yosys.log"
 ! grep -Eiq '\$mem(rd|wr|init)|RAMB|SB_RAM' "$VERILOG"
 
-echo "PASS memory controller Rust/Bluespec/PLIO integration and synthesis gate"
+echo "PASS memory controller Rust/Bluespec/default-BRAM PLIO integration and synthesis gate"
