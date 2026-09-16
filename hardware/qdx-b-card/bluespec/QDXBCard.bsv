@@ -24,6 +24,9 @@ typedef enum {
     CardExpose
 } QdxBCardPhase deriving (Bits,Eq,FShow);
 
+// Detailed card interface retained for card-level conformance and debugging.
+// System integration must use QDXBCardFpgaIfc instead so the internal
+// QIC/QLI-16/QDX-A/QDX-B partition remains opaque outside the card.
 interface QDXBCardIfc;
     method Bool ready;
     method Action startCycle(PlioIn image);
@@ -43,11 +46,25 @@ interface QDXBCardIfc;
     method Bit#(32) fakeFlushCount;
 endinterface
 
-module mkQDXBCard(QDXBCardIfc);
+// Opaque simulator/FPGA boundary. Clock and reset are the enclosing Bluespec
+// clock/reset and the sampled PLIO reset respectively; the storage-side backend
+// is supplied as a module parameter to mkQDXBCardFpga. No internal chip state
+// is visible across this interface.
+interface QDXBCardFpgaIfc;
+    method Bool ready;
+    method Action startCycle(PlioIn image);
+    method Bool cycleDone;
+    method BackplaneDrive backplane;
+    method Action finishCycle;
+endinterface
+
+// Chip-faithful implementation with an injected media backend. PLIO-TX, QIC,
+// QLI-16, QDX-A and QDX-B remain distinct internal modules, but they elaborate
+// as one card design and may synthesize into one FPGA.
+module mkQDXBCardWithMedia#(QDXBMediaIfc media)(QDXBCardIfc);
     PLIOQICIfc qic <- mkPLIOQIC;
     QLI16CodecIfc codec <- mkQLI16Codec;
     QDXAIfc qdx <- mkQDXA;
-    QDXBMediaIfc media <- mkQDXBFakeMedia;
     QDXBEndpointIfc qdxb <- mkQDXBEndpoint(media);
     PLIOTxCardHarnessIfc phy <- mkPLIOTxCardHarness;
 
@@ -138,6 +155,42 @@ module mkQDXBCard(QDXBCardIfc);
     method QdxBState qdxbState=qdxb.debugState;
     method Bit#(16) qdxbLastStatus=qdxb.debugLastStatus;
     method Bit#(32) fakeFlushCount=qdxb.debugFlushCount;
+endmodule
+
+// Backwards-compatible validation constructor using the existing fake media.
+module mkQDXBCard(QDXBCardIfc);
+    QDXBMediaIfc media <- mkQDXBFakeMedia;
+    QDXBCardIfc card <- mkQDXBCardWithMedia(media);
+
+    method Bool ready=card.ready;
+    method Action startCycle(PlioIn image); card.startCycle(image); endmethod
+    method Bool cycleDone=card.cycleDone;
+    method BackplaneDrive backplane=card.backplane;
+    method Action finishCycle; card.finishCycle; endmethod
+    method Bool protocolFault=card.protocolFault;
+    method UnifiedQicState qicState=card.qicState;
+    method QdxAState qdxState=card.qdxState;
+    method QdxAError qdxError=card.qdxError;
+    method Bit#(16) sqHead=card.sqHead;
+    method Bit#(16) sqTail=card.sqTail;
+    method Bit#(16) cqHead=card.cqHead;
+    method Bit#(16) cqTail=card.cqTail;
+    method QdxBState qdxbState=card.qdxbState;
+    method Bit#(16) qdxbLastStatus=card.qdxbLastStatus;
+    method Bit#(32) fakeFlushCount=card.fakeFlushCount;
+endmodule
+
+// Production/system-integration constructor. The media implementation is the
+// only storage-side plug-in point and the card internals are deliberately not
+// exposed to the caller.
+module mkQDXBCardFpga#(QDXBMediaIfc media)(QDXBCardFpgaIfc);
+    QDXBCardIfc card <- mkQDXBCardWithMedia(media);
+
+    method Bool ready=card.ready;
+    method Action startCycle(PlioIn image); card.startCycle(image); endmethod
+    method Bool cycleDone=card.cycleDone;
+    method BackplaneDrive backplane=card.backplane;
+    method Action finishCycle; card.finishCycle; endmethod
 endmodule
 
 endpackage
