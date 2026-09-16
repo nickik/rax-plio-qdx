@@ -52,19 +52,32 @@ module mkTbPLIOHostMemory(Empty);
     Reg#(Bit#(8)) watchdog <- mkReg(0);
     HostWorkerRequest dummyWorker = HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 };
 
+    // Keep the four mutually exclusive MemoryController actions in separate
+    // rules.  Putting hostRequest/backendRequestAccepted/backendRespond/
+    // hostResponseConsumed into the phase rule makes BSC conjoin their
+    // readiness conditions and remove the whole rule as unsatisfiable.
+    rule forwardBackendRequest (mc.backendRequestValid && ram.requestReady);
+        ram.acceptRequest(mc.backendWrite, mc.backendAddress, mc.backendWriteData);
+        mc.backendRequestAccepted;
+    endrule
+
+    rule forwardBackendResponse (mc.backendResponseReady && ram.responseValid);
+        mc.backendRespond(ram.responseFault, ram.responseReadDataValid, ram.responseReadData);
+        ram.responseConsumed;
+    endrule
+
+    rule acceptHostMemoryRequest (core.memoryRequestValid && mc.hostRequestReady);
+        mc.hostRequest(core.memoryWrite, core.memoryAddress, core.memoryWriteData);
+    endrule
+
+    rule consumeHostMemoryResponse (mc.hostResponseValid && core.debugDmaState == DmaMemResponse);
+        mc.hostResponseConsumed;
+    endrule
+
     rule run;
         Vector#(8, PlioOut) cards = replicate(plioOutDefault());
         Vector#(8, PlioIn) outs = replicate(plioInDefault());
         Bool advanceCore = True;
-
-        if (mc.backendRequestValid && ram.requestReady) begin
-            ram.acceptRequest(mc.backendWrite, mc.backendAddress, mc.backendWriteData);
-            mc.backendRequestAccepted;
-        end
-        if (mc.backendResponseReady && ram.responseValid) begin
-            mc.backendRespond(ram.responseFault, ram.responseReadDataValid, ram.responseReadData);
-            ram.responseConsumed;
-        end
 
         case (phase)
             0: begin
@@ -200,12 +213,6 @@ module mkTbPLIOHostMemory(Empty);
             Bool readDataValid = mc.hostReadDataValid;
             Bit#(32) readData = mc.hostReadData;
 
-            if (core.memoryRequestValid && requestReady) begin
-                mc.hostRequest(core.memoryWrite, core.memoryAddress, core.memoryWriteData);
-            end
-            if (responseValid && core.debugDmaState == DmaMemResponse) begin
-                mc.hostResponseConsumed;
-            end
             core.advance(cards, False, dummyWorker,
                 requestReady, responseValid, responseFault, readDataValid, readData, False);
         end
