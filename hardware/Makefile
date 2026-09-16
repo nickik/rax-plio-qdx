@@ -1,4 +1,4 @@
-.PHONY: test test-rust conformance-rust test-bluespec test-qic-phase4-6 test-qic-phase7-9 test-memory-controller
+.PHONY: test test-rust conformance-rust test-bluespec test-qic-phase4-6 test-qic-phase7-9 test-memory-controller test-memory-controller-bram
 
 test: test-rust test-bluespec
 
@@ -26,3 +26,6 @@ test-qic-phase7-9:
 
 test-memory-controller:
 	bash scripts/test-memory-controller.sh
+
+test-memory-controller-bram:
+	bash scripts/test-memory-controller-bram.sh

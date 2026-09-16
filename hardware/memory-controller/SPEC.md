@@ -13,8 +13,11 @@ PLIOHostCore
 MemoryController
     |
     | Backend request/response
-    +---- FakeMemoryBackend (simulation / Rust)
-    +---- FPGA external-memory backend (later)
+    +---- FakeMemoryBackend       (simulation/reference)
+    +---- BlockRamBackend         (synthesizable FPGA BRAM; default hardware backend)
+    +---- SRAM backend            (later)
+    +---- SDR/SDRAM backend       (later)
+    +---- DDR3/DDR4 adapter       (later)
 ```
 
 ## Host-side contract
@@ -31,30 +34,55 @@ Requirements:
 - a request remains stable until the backend accepts it;
 - a response remains stable until the host consumes it;
 - malformed/mismatched backend responses become a memory fault;
-- reset discards every in-flight request/response;
+- controller reset isolates any stale backend response;
+- coordinated controller/backend reset cancels an in-flight hardware transaction;
 - memory-range and device-specific errors are backend policy and return `Fault`.
 
 The controller itself contains no memory array and must synthesize without inferred RAM.
 
 ## Backend-side contract
 
-The backend sees the same semantic operation but has independent backpressure:
+All physical backends use the same semantic handshake:
 
 - `request_ready`
 - request `{ write, address, write_data }`
 - response `{ fault, read_data_valid, read_data }`
+- `response_consumed`
+- backend reset
 
-This is intentionally small enough to bind to:
+The backend owns latency, capacity, physical-device timing and range faults. `MemoryController` does not change when the physical memory implementation changes.
 
-- the Rust fake-memory model;
-- a Bluespec fake-memory model for Bluesim;
-- an FPGA SRAM/SDRAM/DDR controller later;
-- a board-specific bridge without changing PLIOHostCore or the memory controller.
+## FPGA block RAM backend
+
+`BlockRamBackend.bsv` is the first real synthesizable memory backend.
+
+- 32-bit words;
+- synchronous one-cycle BRAM read latency;
+- one outstanding transaction with real ready/response backpressure;
+- aligned in-range accesses only; out-of-range requests return `Fault`;
+- reset cancels protocol state but does not erase RAM contents;
+- uses BSC `BRAMCore`, whose generated `BRAM1` storage is mapped by Yosys to native FPGA block-RAM cells.
+
+Hardware sizing is an elaboration-time choice:
+
+- `mkDefaultBlockRamBackend` — **64 KiB** (default);
+- `mkBlockRamBackend64KiB` — explicit 64 KiB;
+- `mkBlockRamBackend128KiB` — 128 KiB;
+- `mkBlockRamBackend(bytes)` — underlying constructor, currently intended for capacities up to 128 KiB.
+
+The default is deliberately a hardware build choice rather than a runtime mux: only the selected memory implementation should consume FPGA resources.
+
+## External-memory path
+
+SRAM, SDR/SDRAM and DDR3/DDR4 should be separate backend modules implementing the same request/response contract. Their PHY/device-specific state machines remain below this boundary; PLIO and `MemoryController` must not learn device timing details.
 
 ## Acceptance
 
 1. Rust controller + fake backend unit tests.
 2. Bluespec controller + fake backend tests.
-3. Exact Rust/Bluesim controller trace equivalence.
-4. Real PLIOHostCore DMA read and write through the controller into fake RAM in both Rust and Bluespec.
-5. Generated `mkMemoryController` Verilog passes Yosys and reports zero inferred memories.
+3. Exact Rust/Bluesim controller and backend-sequence equivalence.
+4. Real `PLIOHostCore` DMA read/write/fault integration through the controller.
+5. Generated `mkMemoryController` Verilog passes Yosys with zero inferred memories.
+6. FPGA BRAM backend passes write/read, RAW, multiple-address, reset/recovery and range-fault tests.
+7. 64 KiB and 128 KiB configurations elaborate to the expected memory capacity.
+8. Yosys maps the default backend to native FPGA BRAM cells while the standalone controller remains memory-free.
