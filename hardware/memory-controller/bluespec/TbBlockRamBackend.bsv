@@ -130,8 +130,8 @@ module mkTbBlockRamBackend(Empty);
     endrule
 
     rule phase14FaultIssue (phase == 14);
-        // 0x10000 is exactly one byte past the 64 KiB default backend.
-        mc.hostRequest(False, 32'h00010000, 0);
+        // 0x00100000 is exactly one byte past the 1 MiB default backend.
+        mc.hostRequest(False, 32'h00100000, 0);
         phase <= 15;
     endrule
 

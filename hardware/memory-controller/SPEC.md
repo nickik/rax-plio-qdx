@@ -13,8 +13,8 @@ PLIOHostCore
 MemoryController
     |
     | Backend request/response
-    +---- FakeMemoryBackend       (simulation/reference)
-    +---- BlockRamBackend         (synthesizable FPGA BRAM; default hardware backend)
+    +---- BlockRamBackend         (default system + simulation backend, 1 MiB)
+    +---- FakeMemoryBackend       (reference/differential testing only)
     +---- SRAM backend            (later)
     +---- SDR/SDRAM backend       (later)
     +---- DDR3/DDR4 adapter       (later)
@@ -54,9 +54,10 @@ The backend owns latency, capacity, physical-device timing and range faults. `Me
 
 ## FPGA block RAM backend
 
-`BlockRamBackend.bsv` is the first real synthesizable memory backend.
+`BlockRamBackend.bsv` is the default system memory backend and the default Bluesim memory implementation.
 
 - 32-bit words;
+- **1 MiB default capacity** (262144 words);
 - synchronous one-cycle BRAM read latency;
 - one outstanding transaction with real ready/response backpressure;
 - aligned in-range accesses only; out-of-range requests return `Fault`;
@@ -65,12 +66,23 @@ The backend owns latency, capacity, physical-device timing and range faults. `Me
 
 Hardware sizing is an elaboration-time choice:
 
-- `mkDefaultBlockRamBackend` — **64 KiB** (default);
+- `mkDefaultBlockRamBackend` — **1 MiB** (system and simulation default);
+- `mkBlockRamBackend1MiB` — explicit 1 MiB;
+- `mkBlockRamBackend128KiB` — explicit 128 KiB;
 - `mkBlockRamBackend64KiB` — explicit 64 KiB;
-- `mkBlockRamBackend128KiB` — 128 KiB;
-- `mkBlockRamBackend(bytes)` — underlying constructor, currently intended for capacities up to 128 KiB.
+- `mkBlockRamBackend(bytes)` — underlying constructor, intended for capacities up to 1 MiB with the current 18-bit word address.
 
-The default is deliberately a hardware build choice rather than a runtime mux: only the selected memory implementation should consume FPGA resources.
+The default is a build/elaboration choice rather than a runtime mux: only the selected memory implementation consumes FPGA resources. A physical FPGA selected for the 1 MiB configuration therefore needs at least 8 Mbit of usable embedded RAM. The CI iCE40 synthesis step proves native block-RAM mapping; it is not a device-capacity/place-and-route guarantee for a specific iCE40 part.
+
+## Simulation policy
+
+Normal Bluesim integration uses the same 1 MiB `BlockRamBackend` that is intended for FPGA hardware:
+
+```text
+PLIOHostCore -> MemoryController -> mkDefaultBlockRamBackend (1 MiB)
+```
+
+The Rust `FakeMemory` and Bluespec `FakeMemoryBackend` remain independent semantic/reference implementations for differential testing. They are not the default simulated machine memory.
 
 ## External-memory path
 
@@ -78,11 +90,11 @@ SRAM, SDR/SDRAM and DDR3/DDR4 should be separate backend modules implementing th
 
 ## Acceptance
 
-1. Rust controller + fake backend unit tests.
-2. Bluespec controller + fake backend tests.
+1. Rust controller + fake backend reference tests.
+2. Bluespec controller + fake backend differential tests.
 3. Exact Rust/Bluesim controller and backend-sequence equivalence.
-4. Real `PLIOHostCore` DMA read/write/fault integration through the controller.
+4. Normal `PLIOHostCore` DMA read/write/fault simulation through the **1 MiB integrated BRAM backend**.
 5. Generated `mkMemoryController` Verilog passes Yosys with zero inferred memories.
 6. FPGA BRAM backend passes write/read, RAW, multiple-address, reset/recovery and range-fault tests.
-7. 64 KiB and 128 KiB configurations elaborate to the expected memory capacity.
-8. Yosys maps the default backend to native FPGA BRAM cells while the standalone controller remains memory-free.
+7. Default 1 MiB and alternative 128 KiB configurations elaborate to the expected memory capacities.
+8. Yosys maps the integrated backend to native FPGA BRAM cells while the standalone controller remains memory-free.

@@ -282,8 +282,8 @@ module mkTbPLIOHostBlockRam(Empty);
     endrule
 
     rule phase12FaultBind (phase == 12);
-        // Default BRAM is 64 KiB; 0x10000 is the first invalid byte address.
-        core.bindDma(1, 4, 32'h00010000, 25'h00100, True, False);
+        // Default integrated RAM is 1 MiB; 0x00100000 is the first invalid byte address.
+        core.bindDma(1, 4, 32'h00100000, 25'h00100, True, False);
         phase <= 13;
     endrule
 
