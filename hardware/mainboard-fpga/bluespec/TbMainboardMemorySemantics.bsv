@@ -67,6 +67,18 @@ function BackplaneDrive dmaWriteBeat(Bit#(32) data);
     return d;
 endfunction
 
+function Vector#(8, BackplaneDrive) plioReadCards();
+    Vector#(8, BackplaneDrive) cards = idleCards();
+    cards[1] = dmaReadBeat();
+    return cards;
+endfunction
+
+function Vector#(8, BackplaneDrive) plioWriteCards(Bit#(32) data);
+    Vector#(8, BackplaneDrive) cards = idleCards();
+    cards[1] = dmaWriteBeat(data);
+    return cards;
+endfunction
+
 function LightingBusMasterDrive cpuBusRequest();
     LightingBusMasterDrive d = lightingBusMasterDriveDefault();
     d.busRequest = True;
@@ -122,7 +134,6 @@ module mkTbMainboardMemorySemantics(Empty);
 
     Reg#(Bit#(6)) stage <- mkReg(0);
     Reg#(Bit#(4)) maskIndex <- mkReg(0);
-    Reg#(Bit#(16)) cycles <- mkReg(0);
     Reg#(Bit#(16)) watchdog <- mkReg(0);
 
     rule globalWatchdog;
@@ -146,7 +157,6 @@ module mkTbMainboardMemorySemantics(Empty);
 
     rule seedCase (stage == 2);
         ram.preload(testAddress, initialValue);
-        cycles <= 0;
         stage <= 3;
     endrule
 
@@ -172,56 +182,64 @@ module mkTbMainboardMemorySemantics(Empty);
         end
         board.advance(idleCards(), cpu, False, noWorkerRequest(),
             False, False, False, False, 0, False);
-        cycles <= 0;
         stage <= 5;
     endrule
 
-    rule cpuWriteWait (stage == 5 && board.debugAdvanceReady);
+    rule cpuWriteBackendAccept (stage == 5 && board.debugAdvanceReady
+        && board.memoryBackendRequestValid && ram.requestReady);
         Bit#(4) be = maskForIndex(maskIndex);
-        LightingBusMasterDrive cpu = cpuRequest(testAddress, True, be, writeValue);
-        LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
-        if (bus.error) begin
-            $display("FAIL|memory-semantics|cpu-write-error|mask=%04b", be);
-            $finish(1);
-        end
-        if (board.memoryBackendRequestValid
-            && (!board.memoryBackendWrite
-                || board.memoryBackendAddress != testAddress
-                || board.memoryBackendByteEnable != be
-                || board.memoryBackendWriteData != writeValue)) begin
+        if (!board.memoryBackendWrite || board.memoryBackendAddress != testAddress
+            || board.memoryBackendByteEnable != be
+            || board.memoryBackendWriteData != writeValue) begin
             $display("FAIL|memory-semantics|cpu-write-request|mask=%04b|write=%0d|addr=%08x|be=%04b|data=%08x",
                 be, pack(board.memoryBackendWrite), board.memoryBackendAddress,
                 board.memoryBackendByteEnable, board.memoryBackendWriteData);
             $finish(1);
         end
+        ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
+            board.memoryBackendByteEnable, board.memoryBackendWriteData);
+        board.advance(idleCards(), cpuRequest(testAddress, True, be, writeValue),
+            False, noWorkerRequest(), True, False, False, False, 0, False);
+    endrule
 
-        if (bus.ready) begin
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, False, False, False, 0, False);
-            stage <= 6;
-        end
-        else if (board.memoryBackendRequestValid && ram.requestReady) begin
-            ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
-                board.memoryBackendByteEnable, board.memoryBackendWriteData);
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                True, False, False, False, 0, False);
-        end
-        else if (board.memoryBackendResponseReady && ram.responseValid) begin
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, True, ram.responseFault, ram.responseReadDataValid,
-                ram.responseReadData, False);
-            ram.responseConsumed;
-        end
-        else begin
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, False, False, False, 0, False);
-        end
+    rule cpuWriteBackendRespond (stage == 5 && board.debugAdvanceReady
+        && board.memoryBackendResponseReady && ram.responseValid);
+        Bit#(4) be = maskForIndex(maskIndex);
+        board.advance(idleCards(), cpuRequest(testAddress, True, be, writeValue),
+            False, noWorkerRequest(), False, True, ram.responseFault,
+            ram.responseReadDataValid, ram.responseReadData, False);
+        ram.responseConsumed;
+    endrule
 
-        cycles <= cycles + 1;
-        if (cycles == 100) begin
-            $display("FAIL|memory-semantics|cpu-write-watchdog|mask=%04b", be);
+    rule cpuWriteComplete (stage == 5 && board.debugAdvanceReady
+        && board.debugCpuResponsePending);
+        Bit#(4) be = maskForIndex(maskIndex);
+        LightingBusMasterDrive cpu = cpuRequest(testAddress, True, be, writeValue);
+        LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
+        if (!bus.ready || bus.error) begin
+            $display("FAIL|memory-semantics|cpu-write-completion|mask=%04b|ready=%0d|error=%0d",
+                be, pack(bus.ready), pack(bus.error));
             $finish(1);
         end
+        board.advance(idleCards(), cpu, False, noWorkerRequest(),
+            False, False, False, False, 0, False);
+        stage <= 6;
+    endrule
+
+    rule cpuWriteWait (stage == 5 && board.debugAdvanceReady
+        && !board.debugCpuResponsePending
+        && !(board.memoryBackendRequestValid && ram.requestReady)
+        && !(board.memoryBackendResponseReady && ram.responseValid));
+        Bit#(4) be = maskForIndex(maskIndex);
+        LightingBusMasterDrive cpu = cpuRequest(testAddress, True, be, writeValue);
+        LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
+        if (!bus.busGrant || bus.error) begin
+            $display("FAIL|memory-semantics|cpu-write-wait|mask=%04b|grant=%0d|error=%0d",
+                be, pack(bus.busGrant), pack(bus.error));
+            $finish(1);
+        end
+        board.advance(idleCards(), cpu, False, noWorkerRequest(),
+            False, False, False, False, 0, False);
     endrule
 
     rule cpuWriteRetire (stage == 6 && board.debugAdvanceReady);
@@ -256,62 +274,63 @@ module mkTbMainboardMemorySemantics(Empty);
         end
         board.advance(idleCards(), cpu, False, noWorkerRequest(),
             False, False, False, False, 0, False);
-        cycles <= 0;
         stage <= 10;
     endrule
 
-    rule cpuReadWait (stage == 10 && board.debugAdvanceReady);
+    rule cpuReadBackendAccept (stage == 10 && board.debugAdvanceReady
+        && board.memoryBackendRequestValid && ram.requestReady);
+        if (board.memoryBackendWrite || board.memoryBackendAddress != testAddress) begin
+            $display("FAIL|memory-semantics|cpu-read-request|write=%0d|addr=%08x",
+                pack(board.memoryBackendWrite), board.memoryBackendAddress);
+            $finish(1);
+        end
+        ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
+            board.memoryBackendByteEnable, board.memoryBackendWriteData);
+        board.advance(idleCards(), cpuRequest(testAddress, False, 4'hf, 0),
+            False, noWorkerRequest(), True, False, False, False, 0, False);
+    endrule
+
+    rule cpuReadBackendRespond (stage == 10 && board.debugAdvanceReady
+        && board.memoryBackendResponseReady && ram.responseValid);
+        board.advance(idleCards(), cpuRequest(testAddress, False, 4'hf, 0),
+            False, noWorkerRequest(), False, True, ram.responseFault,
+            ram.responseReadDataValid, ram.responseReadData, False);
+        ram.responseConsumed;
+    endrule
+
+    rule cpuReadComplete (stage == 10 && board.debugAdvanceReady
+        && board.debugCpuResponsePending);
         Bit#(4) be = maskForIndex(maskIndex);
         Bit#(32) expected = expectedMasked(initialValue, writeValue, be);
         LightingBusMasterDrive cpu = cpuRequest(testAddress, False, 4'hf, 0);
         LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
-        if (bus.error) begin
-            $display("FAIL|memory-semantics|cpu-read-error|mask=%04b", be);
+        Bit#(32) backendValue = ram.peek(testAddress);
+        if (!bus.ready || bus.error || bus.readData != expected
+            || backendValue != expected) begin
+            $display("FAIL|memory-semantics|value|mask=%04b|initial=%08x|write=%08x|expected=%08x|observed=%08x|backend=%08x|ready=%0d|error=%0d",
+                be, initialValue, writeValue, expected, bus.readData, backendValue,
+                pack(bus.ready), pack(bus.error));
             $finish(1);
         end
-        if (board.memoryBackendRequestValid
-            && (board.memoryBackendWrite
-                || board.memoryBackendAddress != testAddress)) begin
-            $display("FAIL|memory-semantics|cpu-read-request|mask=%04b|write=%0d|addr=%08x",
-                be, pack(board.memoryBackendWrite), board.memoryBackendAddress);
-            $finish(1);
-        end
+        $display("MAINBOARDMEMTRACE|mask=%04b|initial=%08x|write=%08x|expected=%08x|observed=%08x|status=ok",
+            be, initialValue, writeValue, expected, bus.readData);
+        board.advance(idleCards(), cpu, False, noWorkerRequest(),
+            False, False, False, False, 0, False);
+        stage <= 11;
+    endrule
 
-        if (bus.ready) begin
-            Bit#(32) backendValue = ram.peek(testAddress);
-            if (bus.readData != expected || backendValue != expected) begin
-                $display("FAIL|memory-semantics|value|mask=%04b|initial=%08x|write=%08x|expected=%08x|observed=%08x|backend=%08x",
-                    be, initialValue, writeValue, expected, bus.readData, backendValue);
-                $finish(1);
-            end
-            $display("MAINBOARDMEMTRACE|mask=%04b|initial=%08x|write=%08x|expected=%08x|observed=%08x|status=ok",
-                be, initialValue, writeValue, expected, bus.readData);
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, False, False, False, 0, False);
-            stage <= 11;
-        end
-        else if (board.memoryBackendRequestValid && ram.requestReady) begin
-            ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
-                board.memoryBackendByteEnable, board.memoryBackendWriteData);
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                True, False, False, False, 0, False);
-        end
-        else if (board.memoryBackendResponseReady && ram.responseValid) begin
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, True, ram.responseFault, ram.responseReadDataValid,
-                ram.responseReadData, False);
-            ram.responseConsumed;
-        end
-        else begin
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, False, False, False, 0, False);
-        end
-
-        cycles <= cycles + 1;
-        if (cycles == 100) begin
-            $display("FAIL|memory-semantics|cpu-read-watchdog|mask=%04b", be);
+    rule cpuReadWait (stage == 10 && board.debugAdvanceReady
+        && !board.debugCpuResponsePending
+        && !(board.memoryBackendRequestValid && ram.requestReady)
+        && !(board.memoryBackendResponseReady && ram.responseValid));
+        LightingBusMasterDrive cpu = cpuRequest(testAddress, False, 4'hf, 0);
+        LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
+        if (!bus.busGrant || bus.error) begin
+            $display("FAIL|memory-semantics|cpu-read-wait|mask=%04b", maskForIndex(maskIndex));
             $finish(1);
         end
+        board.advance(idleCards(), cpu, False, noWorkerRequest(),
+            False, False, False, False, 0, False);
     endrule
 
     rule cpuReadRetire (stage == 11 && board.debugAdvanceReady);
@@ -322,16 +341,13 @@ module mkTbMainboardMemorySemantics(Empty);
 
     rule cpuReadRetireDrain (stage == 12 && !board.debugCpuResponsePending
         && board.debugAdvanceReady);
-        if (maskIndex == 9) begin
-            stage <= 13;
-        end
+        if (maskIndex == 9) stage <= 13;
         else begin
             maskIndex <= maskIndex + 1;
             stage <= 2;
         end
     endrule
 
-    // The final CPU case is BE=1111, so testAddress contains writeValue here.
     rule bindPlio (stage == 13);
         board.bindDma(1, 3, testAddress, 25'h00100, True, True);
         stage <= 14;
@@ -369,60 +385,51 @@ module mkTbMainboardMemorySemantics(Empty);
         end
         board.advance(cards, lightingBusMasterDriveDefault(), False,
             noWorkerRequest(), False, False, False, False, 0, False);
-        cycles <= 0;
         stage <= 17;
     endrule
 
-    rule plioReadBeatRule (stage == 17 && board.debugAdvanceReady);
-        Vector#(8, BackplaneDrive) cards = idleCards();
-        cards[1] = dmaReadBeat();
-        Vector#(8, PlioIn) slotInputs = board.plioSlots(cards, False);
-        if (slotInputs[1].err) begin
-            $display("FAIL|memory-semantics|plio-read-bus-error");
-            $finish(1);
-        end
-        if (board.memoryBackendRequestValid
-            && (board.memoryBackendWrite
-                || board.memoryBackendAddress != testAddress
-                || board.memoryBackendByteEnable != 4'hf)) begin
+    rule plioReadBackendAccept (stage == 17 && board.debugAdvanceReady
+        && board.memoryBackendRequestValid && ram.requestReady);
+        if (board.memoryBackendWrite || board.memoryBackendAddress != testAddress
+            || board.memoryBackendByteEnable != 4'hf) begin
             $display("FAIL|memory-semantics|plio-read-request|write=%0d|addr=%08x|be=%04b",
                 pack(board.memoryBackendWrite), board.memoryBackendAddress,
                 board.memoryBackendByteEnable);
             $finish(1);
         end
+        ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
+            board.memoryBackendByteEnable, board.memoryBackendWriteData);
+        board.advance(plioReadCards(), lightingBusMasterDriveDefault(), False,
+            noWorkerRequest(), True, False, False, False, 0, False);
+    endrule
 
+    rule plioReadBackendRespond (stage == 17 && board.debugAdvanceReady
+        && board.memoryBackendResponseReady && ram.responseValid);
+        board.advance(plioReadCards(), lightingBusMasterDriveDefault(), False,
+            noWorkerRequest(), False, True, ram.responseFault,
+            ram.responseReadDataValid, ram.responseReadData, False);
+        ram.responseConsumed;
+    endrule
+
+    rule plioReadDrive (stage == 17 && board.debugAdvanceReady
+        && !(board.memoryBackendRequestValid && ram.requestReady)
+        && !(board.memoryBackendResponseReady && ram.responseValid));
+        Vector#(8, BackplaneDrive) cards = plioReadCards();
+        Vector#(8, PlioIn) slotInputs = board.plioSlots(cards, False);
+        if (slotInputs[1].err) begin
+            $display("FAIL|memory-semantics|plio-read-bus-error");
+            $finish(1);
+        end
         if (slotInputs[1].ack) begin
             if (!slotInputs[1].adValid || slotInputs[1].ad != writeValue) begin
                 $display("FAIL|memory-semantics|plio-read-data|valid=%0d|actual=%08x|expected=%08x",
                     pack(slotInputs[1].adValid), slotInputs[1].ad, writeValue);
                 $finish(1);
             end
-            board.advance(cards, lightingBusMasterDriveDefault(), False,
-                noWorkerRequest(), False, False, False, False, 0, False);
             stage <= 18;
         end
-        else if (board.memoryBackendRequestValid && ram.requestReady) begin
-            ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
-                board.memoryBackendByteEnable, board.memoryBackendWriteData);
-            board.advance(cards, lightingBusMasterDriveDefault(), False,
-                noWorkerRequest(), True, False, False, False, 0, False);
-        end
-        else if (board.memoryBackendResponseReady && ram.responseValid) begin
-            board.advance(cards, lightingBusMasterDriveDefault(), False,
-                noWorkerRequest(), False, True, ram.responseFault,
-                ram.responseReadDataValid, ram.responseReadData, False);
-            ram.responseConsumed;
-        end
-        else begin
-            board.advance(cards, lightingBusMasterDriveDefault(), False,
-                noWorkerRequest(), False, False, False, False, 0, False);
-        end
-
-        cycles <= cycles + 1;
-        if (cycles == 120) begin
-            $display("FAIL|memory-semantics|plio-read-watchdog");
-            $finish(1);
-        end
+        board.advance(cards, lightingBusMasterDriveDefault(), False,
+            noWorkerRequest(), False, False, False, False, 0, False);
     endrule
 
     rule plioReadCompletion (stage == 18 && board.debugAdvanceReady);
@@ -473,61 +480,52 @@ module mkTbMainboardMemorySemantics(Empty);
         end
         board.advance(cards, lightingBusMasterDriveDefault(), False,
             noWorkerRequest(), False, False, False, False, 0, False);
-        cycles <= 0;
         stage <= 22;
     endrule
 
-    rule plioWriteBeatRule (stage == 22 && board.debugAdvanceReady);
-        Vector#(8, BackplaneDrive) cards = idleCards();
-        cards[1] = dmaWriteBeat(plioWriteValue);
-        Vector#(8, PlioIn) slotInputs = board.plioSlots(cards, False);
-        if (slotInputs[1].err) begin
-            $display("FAIL|memory-semantics|plio-write-bus-error");
-            $finish(1);
-        end
-        if (board.memoryBackendRequestValid
-            && (!board.memoryBackendWrite
-                || board.memoryBackendAddress != testAddress
-                || board.memoryBackendByteEnable != 4'hf
-                || board.memoryBackendWriteData != plioWriteValue)) begin
+    rule plioWriteBackendAccept (stage == 22 && board.debugAdvanceReady
+        && board.memoryBackendRequestValid && ram.requestReady);
+        if (!board.memoryBackendWrite || board.memoryBackendAddress != testAddress
+            || board.memoryBackendByteEnable != 4'hf
+            || board.memoryBackendWriteData != plioWriteValue) begin
             $display("FAIL|memory-semantics|plio-write-request|write=%0d|addr=%08x|be=%04b|data=%08x",
                 pack(board.memoryBackendWrite), board.memoryBackendAddress,
                 board.memoryBackendByteEnable, board.memoryBackendWriteData);
             $finish(1);
         end
+        ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
+            board.memoryBackendByteEnable, board.memoryBackendWriteData);
+        board.advance(plioWriteCards(plioWriteValue), lightingBusMasterDriveDefault(),
+            False, noWorkerRequest(), True, False, False, False, 0, False);
+    endrule
 
+    rule plioWriteBackendRespond (stage == 22 && board.debugAdvanceReady
+        && board.memoryBackendResponseReady && ram.responseValid);
+        board.advance(plioWriteCards(plioWriteValue), lightingBusMasterDriveDefault(),
+            False, noWorkerRequest(), False, True, ram.responseFault,
+            ram.responseReadDataValid, ram.responseReadData, False);
+        ram.responseConsumed;
+    endrule
+
+    rule plioWriteDrive (stage == 22 && board.debugAdvanceReady
+        && !(board.memoryBackendRequestValid && ram.requestReady)
+        && !(board.memoryBackendResponseReady && ram.responseValid));
+        Vector#(8, BackplaneDrive) cards = plioWriteCards(plioWriteValue);
+        Vector#(8, PlioIn) slotInputs = board.plioSlots(cards, False);
+        if (slotInputs[1].err) begin
+            $display("FAIL|memory-semantics|plio-write-bus-error");
+            $finish(1);
+        end
         if (slotInputs[1].ack) begin
             if (ram.peek(testAddress) != plioWriteValue) begin
                 $display("FAIL|memory-semantics|plio-write-backend|actual=%08x|expected=%08x",
                     ram.peek(testAddress), plioWriteValue);
                 $finish(1);
             end
-            board.advance(cards, lightingBusMasterDriveDefault(), False,
-                noWorkerRequest(), False, False, False, False, 0, False);
             stage <= 23;
         end
-        else if (board.memoryBackendRequestValid && ram.requestReady) begin
-            ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
-                board.memoryBackendByteEnable, board.memoryBackendWriteData);
-            board.advance(cards, lightingBusMasterDriveDefault(), False,
-                noWorkerRequest(), True, False, False, False, 0, False);
-        end
-        else if (board.memoryBackendResponseReady && ram.responseValid) begin
-            board.advance(cards, lightingBusMasterDriveDefault(), False,
-                noWorkerRequest(), False, True, ram.responseFault,
-                ram.responseReadDataValid, ram.responseReadData, False);
-            ram.responseConsumed;
-        end
-        else begin
-            board.advance(cards, lightingBusMasterDriveDefault(), False,
-                noWorkerRequest(), False, False, False, False, 0, False);
-        end
-
-        cycles <= cycles + 1;
-        if (cycles == 120) begin
-            $display("FAIL|memory-semantics|plio-write-watchdog");
-            $finish(1);
-        end
+        board.advance(cards, lightingBusMasterDriveDefault(), False,
+            noWorkerRequest(), False, False, False, False, 0, False);
     endrule
 
     rule plioWriteCompletion (stage == 23 && board.debugAdvanceReady);
@@ -567,50 +565,59 @@ module mkTbMainboardMemorySemantics(Empty);
         end
         board.advance(idleCards(), cpu, False, noWorkerRequest(),
             False, False, False, False, 0, False);
-        cycles <= 0;
         stage <= 26;
     endrule
 
-    rule finalCpuReadWait (stage == 26 && board.debugAdvanceReady);
+    rule finalCpuReadBackendAccept (stage == 26 && board.debugAdvanceReady
+        && board.memoryBackendRequestValid && ram.requestReady);
+        if (board.memoryBackendWrite || board.memoryBackendAddress != testAddress) begin
+            $display("FAIL|memory-semantics|final-cpu-read-request|write=%0d|addr=%08x",
+                pack(board.memoryBackendWrite), board.memoryBackendAddress);
+            $finish(1);
+        end
+        ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
+            board.memoryBackendByteEnable, board.memoryBackendWriteData);
+        board.advance(idleCards(), cpuRequest(testAddress, False, 4'hf, 0),
+            False, noWorkerRequest(), True, False, False, False, 0, False);
+    endrule
+
+    rule finalCpuReadBackendRespond (stage == 26 && board.debugAdvanceReady
+        && board.memoryBackendResponseReady && ram.responseValid);
+        board.advance(idleCards(), cpuRequest(testAddress, False, 4'hf, 0),
+            False, noWorkerRequest(), False, True, ram.responseFault,
+            ram.responseReadDataValid, ram.responseReadData, False);
+        ram.responseConsumed;
+    endrule
+
+    rule finalCpuReadComplete (stage == 26 && board.debugAdvanceReady
+        && board.debugCpuResponsePending);
         LightingBusMasterDrive cpu = cpuRequest(testAddress, False, 4'hf, 0);
         LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
-        if (bus.error) begin
-            $display("FAIL|memory-semantics|final-cpu-read-error");
+        if (!bus.ready || bus.error || bus.readData != plioWriteValue
+            || ram.peek(testAddress) != plioWriteValue) begin
+            $display("FAIL|memory-semantics|final-cpu-read-data|observed=%08x|backend=%08x|expected=%08x|ready=%0d|error=%0d",
+                bus.readData, ram.peek(testAddress), plioWriteValue,
+                pack(bus.ready), pack(bus.error));
             $finish(1);
         end
-        if (bus.ready) begin
-            if (bus.readData != plioWriteValue || ram.peek(testAddress) != plioWriteValue) begin
-                $display("FAIL|memory-semantics|final-cpu-read-data|observed=%08x|backend=%08x|expected=%08x",
-                    bus.readData, ram.peek(testAddress), plioWriteValue);
-                $finish(1);
-            end
-            $display("MAINBOARDMEMSHARED|cpu_to_plio=ok|plio_to_cpu=ok|plio_be=1111|status=ok");
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, False, False, False, 0, False);
-            stage <= 27;
-        end
-        else if (board.memoryBackendRequestValid && ram.requestReady) begin
-            ram.acceptRequest(board.memoryBackendWrite, board.memoryBackendAddress,
-                board.memoryBackendByteEnable, board.memoryBackendWriteData);
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                True, False, False, False, 0, False);
-        end
-        else if (board.memoryBackendResponseReady && ram.responseValid) begin
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, True, ram.responseFault, ram.responseReadDataValid,
-                ram.responseReadData, False);
-            ram.responseConsumed;
-        end
-        else begin
-            board.advance(idleCards(), cpu, False, noWorkerRequest(),
-                False, False, False, False, 0, False);
-        end
+        $display("MAINBOARDMEMSHARED|cpu_to_plio=ok|plio_to_cpu=ok|plio_be=1111|status=ok");
+        board.advance(idleCards(), cpu, False, noWorkerRequest(),
+            False, False, False, False, 0, False);
+        stage <= 27;
+    endrule
 
-        cycles <= cycles + 1;
-        if (cycles == 100) begin
-            $display("FAIL|memory-semantics|final-cpu-read-watchdog");
+    rule finalCpuReadWait (stage == 26 && board.debugAdvanceReady
+        && !board.debugCpuResponsePending
+        && !(board.memoryBackendRequestValid && ram.requestReady)
+        && !(board.memoryBackendResponseReady && ram.responseValid));
+        LightingBusMasterDrive cpu = cpuRequest(testAddress, False, 4'hf, 0);
+        LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
+        if (!bus.busGrant || bus.error) begin
+            $display("FAIL|memory-semantics|final-cpu-read-wait");
             $finish(1);
         end
+        board.advance(idleCards(), cpu, False, noWorkerRequest(),
+            False, False, False, False, 0, False);
     endrule
 
     rule finalCpuReadRetire (stage == 27 && board.debugAdvanceReady);
