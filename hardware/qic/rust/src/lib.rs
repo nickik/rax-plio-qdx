@@ -38,6 +38,7 @@ enum State {
 #[derive(Debug, Clone, Copy)]
 pub struct Qic {
     state: State,
+    grant_used: bool,
 }
 
 impl Default for Qic {
@@ -45,9 +46,13 @@ impl Default for Qic {
 }
 
 impl Qic {
-    pub const fn new() -> Self { Self { state: State::Idle } }
+    pub const fn new() -> Self { Self { state: State::Idle, grant_used: false } }
 
     pub fn is_idle(&self) -> bool { self.state == State::Idle }
+
+    fn manager_slot_available(&self, bus: &BusToCard) -> bool {
+        !self.grant_used || !bus.grant
+    }
 
     pub fn drive(&self, bus: &BusToCard, device: &DeviceToQic) -> (CardToBus, QicToDevice) {
         let mut card = CardToBus::default();
@@ -62,11 +67,13 @@ impl Qic {
             State::Idle => {
                 if worker_address_cycle(bus) {
                     if worker_address_valid(bus) { card.ack = true; } else { card.err = true; }
-                } else if let Some(notification) = device.notification_request {
-                    let _ = notification.validate();
-                    // Notification uses completion-based ready, so no early ready.
-                } else if let Some(request) = device.dma_request {
-                    if request.validate().is_ok() { qli.dma_request_ready = true; }
+                } else if self.manager_slot_available(bus) {
+                    if let Some(notification) = device.notification_request {
+                        let _ = notification.validate();
+                        // Notification uses completion-based ready, so no early ready.
+                    } else if let Some(request) = device.dma_request {
+                        if request.validate().is_ok() { qli.dma_request_ready = true; }
+                    }
                 }
             }
             State::WorkerReadData { wait, .. } => {
@@ -184,7 +191,12 @@ impl Qic {
     pub fn clock(&mut self, bus: &BusToCard, device: &DeviceToQic) {
         if bus.reset {
             self.state = State::Idle;
+            self.grant_used = false;
             return;
+        }
+
+        if !bus.grant {
+            self.grant_used = false;
         }
 
         // BG is authority to drive manager-side PLIO. The one exception is
@@ -227,15 +239,19 @@ impl Qic {
                             State::WorkerWriteData { address, byte_enable: bus.byte_enable, wait: 0 }
                         }
                     }
-                } else if let Some(notification) = device.notification_request {
-                    if notification.validate().is_ok() {
-                        State::RequestBus(ManagerWork::Notification(notification))
-                    } else {
-                        State::Idle
-                    }
-                } else if let Some(request) = device.dma_request {
-                    if request.validate().is_ok() {
-                        State::RequestBus(ManagerWork::Dma(request))
+                } else if self.manager_slot_available(bus) {
+                    if let Some(notification) = device.notification_request {
+                        if notification.validate().is_ok() {
+                            State::RequestBus(ManagerWork::Notification(notification))
+                        } else {
+                            State::Idle
+                        }
+                    } else if let Some(request) = device.dma_request {
+                        if request.validate().is_ok() {
+                            State::RequestBus(ManagerWork::Dma(request))
+                        } else {
+                            State::Idle
+                        }
                     } else {
                         State::Idle
                     }
@@ -294,6 +310,7 @@ impl Qic {
             }
             State::RequestBus(work) => {
                 if bus.grant {
+                    self.grant_used = true;
                     match work {
                         ManagerWork::Dma(request) => State::DmaAddress { request, wait: 0 },
                         ManagerWork::Notification(request) => State::NotificationAddress { request, wait: 0 },
@@ -621,5 +638,45 @@ mod tests {
         assert!(!qic.is_idle());
         qic.clock(&BusToCard { reset: true, ..BusToCard::default() }, &DeviceToQic::default());
         assert!(qic.is_idle());
+    }
+
+    #[test]
+    fn completed_manager_transaction_requires_fresh_grant() {
+        let mut qic = Qic::new();
+        let notification = NotificationRequest { channel: 2 };
+        let notification_device = DeviceToQic {
+            notification_request: Some(notification),
+            ..DeviceToQic::default()
+        };
+
+        qic.clock(&BusToCard::default(), &notification_device);
+        qic.clock(&BusToCard { grant: true, ..BusToCard::default() }, &notification_device);
+        qic.clock(
+            &BusToCard { grant: true, ack: true, ..BusToCard::default() },
+            &notification_device,
+        );
+        qic.clock(
+            &BusToCard { grant: true, ack: true, ..BusToCard::default() },
+            &notification_device,
+        );
+        assert!(qic.is_idle());
+
+        let dma = DmaRequest {
+            direction: DmaDirection::HostToDevice,
+            address: 0x2000,
+            words: BurstWords::One,
+        };
+        let dma_device = DeviceToQic { dma_request: Some(dma), ..DeviceToQic::default() };
+        let held_grant = BusToCard { grant: true, ..BusToCard::default() };
+        let (_, local) = qic.drive(&held_grant, &dma_device);
+        assert!(!local.dma_request_ready);
+        qic.clock(&held_grant, &dma_device);
+        assert!(qic.is_idle());
+
+        let dropped_grant = BusToCard::default();
+        let (_, local) = qic.drive(&dropped_grant, &dma_device);
+        assert!(local.dma_request_ready);
+        qic.clock(&dropped_grant, &dma_device);
+        assert!(!qic.is_idle());
     }
 }
