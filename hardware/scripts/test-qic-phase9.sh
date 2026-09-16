@@ -17,9 +17,10 @@ VERILOG="$BUILD/vdir/mkPLIOQIC.v"
 test -s "$VERILOG"
 grep -q '^module mkPLIOQIC' "$VERILOG"
 
-# Current BSC emits SystemVerilog-compatible constructs even for its Verilog
-# backend.  Parse them with Yosys' SystemVerilog frontend, then keep the same
-# strict hierarchy, process, memory, consistency, and statistics checks.
+# Print the parser-failure neighborhood so CI identifies any BSC/Yosys syntax
+# incompatibility without requiring a generated-Verilog artifact.
+nl -ba "$VERILOG" | sed -n '100,116p'
+
 yosys -p "read_verilog -sv '$VERILOG'; hierarchy -check -top mkPLIOQIC; proc; opt; memory; opt; check; stat" \
     | tee "$BUILD/yosys.log"
 
