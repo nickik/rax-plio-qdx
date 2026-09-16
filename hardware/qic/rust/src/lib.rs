@@ -166,7 +166,7 @@ impl Qic {
             }
             State::DmaData { request, completed, wait, buffer } => {
                 let final_read_buffer = is_final_read_buffer(request, completed, buffer);
-                card.request = true;
+                card.request = !final_read_buffer;
 
                 if timed_out(wait) { return (card, qli); }
                 if !final_read_buffer && !bus.grant { return (card, qli); }
@@ -191,7 +191,6 @@ impl Qic {
                 }
             }
             State::DmaComplete { completion } => {
-                card.request = bus.grant && completion.status == DmaStatus::Ok;
                 qli.dma_completion = Some(completion);
             }
             State::NotificationAddress { request, wait } => {
@@ -863,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn dma_holds_bus_request_through_final_local_delivery_and_completion() {
+    fn dma_releases_bus_request_after_final_plio_beat() {
         let mut qic = Qic::new();
         let request = DmaRequest {
             direction: DmaDirection::HostToDevice,
@@ -878,29 +877,27 @@ mod tests {
             buffer: Some(word),
         };
 
-        let granted = BusToCard { grant: true, ..BusToCard::default() };
-        let (card, local) = qic.drive(&granted, &DeviceToQic::default());
-        assert!(card.request);
+        let released = BusToCard::default();
+        let (card, local) = qic.drive(&released, &DeviceToQic::default());
+        assert!(!card.request);
         assert_eq!(local.dma_read, Some(word));
 
         qic.clock(
-            &granted,
+            &released,
             &DeviceToQic { dma_read_ready: true, ..DeviceToQic::default() },
         );
-        let (card, local) = qic.drive(&granted, &DeviceToQic::default());
-        assert!(card.request);
+        let (card, local) = qic.drive(&released, &DeviceToQic::default());
+        assert!(!card.request);
         assert_eq!(
             local.dma_completion,
             Some(DmaCompletion { status: DmaStatus::Ok, words_completed: 1 })
         );
 
         qic.clock(
-            &granted,
+            &released,
             &DeviceToQic { dma_completion_ready: true, ..DeviceToQic::default() },
         );
         assert!(qic.is_idle());
-        let (card, _) = qic.drive(&BusToCard::default(), &DeviceToQic::default());
-        assert!(!card.request);
     }
 
     #[test]
