@@ -1,0 +1,10 @@
+[package]
+name = "memory-controller-model"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+plio-host-dma-model = { path = "../../plio-rax-host/m3-rust" }
+plio-host-core-model = { path = "../../plio-rax-host/m4-rust" }
+plio-logical-model = { path = "../../plio-logical/rust" }
