@@ -180,8 +180,10 @@ module mkFakeMemoryBackend#(Bit#(8) latency)(FakeMemoryBackendIfc);
         responseReadDataReg <= 0;
     endmethod
 
-    method Action preload(Bit#(32) address, Bit#(32) value) if (addressValid(address));
-        memory.upd(address[11:2], value);
+    method Action preload(Bit#(32) address, Bit#(32) value);
+        if (addressValid(address)) begin
+            memory.upd(address[11:2], value);
+        end
     endmethod
 
     method Bit#(32) peek(Bit#(32) address);
