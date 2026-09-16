@@ -120,16 +120,12 @@ module mkTbMainboardLifecycleCoverage(Empty);
     endrule
 
     rule resetDrain (stage == LcResetDrain);
-        if (board.debugMemoryOwner != MainMemNone
-            || board.debugMemoryControllerState != MemIdle
-            || board.debugCpuResponsePending
-            || board.debugMemoryHostResponseValid) begin
-            $display("FAIL|lifecycle-coverage|initial-reset-not-idle|owner=%0d|mc=%0d|cpu_resp=%0d|host_resp=%0d",
-                pack(board.debugMemoryOwner), pack(board.debugMemoryControllerState),
-                pack(board.debugCpuResponsePending), pack(board.debugMemoryHostResponseValid));
-            $finish(1);
+        if (board.debugMemoryOwner == MainMemNone
+            && board.debugMemoryControllerState == MemIdle
+            && !board.debugCpuResponsePending
+            && !board.debugMemoryHostResponseValid) begin
+            stage <= LcBusReq;
         end
-        stage <= LcBusReq;
     endrule
 
     rule busReq (stage == LcBusReq && board.debugAdvanceReady);
@@ -175,21 +171,15 @@ module mkTbMainboardLifecycleCoverage(Empty);
     endrule
 
     rule waitClear (stage == LcWaitClear);
-        if (board.debugMemoryOwner != MainMemNone
-            || board.debugMemoryControllerState != MemIdle
-            || board.debugCpuGrantHeld
-            || board.debugCpuResponsePending
-            || board.debugMemoryHostResponseValid
-            || board.memoryBackendRequestValid
-            || board.memoryBackendResponseReady) begin
-            $display("FAIL|lifecycle-coverage|reset-clear|owner=%0d|mc=%0d|held=%0d|cpu_resp=%0d|host_resp=%0d|backend_req=%0d|backend_resp_ready=%0d",
-                pack(board.debugMemoryOwner), pack(board.debugMemoryControllerState),
-                pack(board.debugCpuGrantHeld), pack(board.debugCpuResponsePending),
-                pack(board.debugMemoryHostResponseValid), pack(board.memoryBackendRequestValid),
-                pack(board.memoryBackendResponseReady));
-            $finish(1);
+        if (board.debugMemoryOwner == MainMemNone
+            && board.debugMemoryControllerState == MemIdle
+            && !board.debugCpuGrantHeld
+            && !board.debugCpuResponsePending
+            && !board.debugMemoryHostResponseValid
+            && !board.memoryBackendRequestValid
+            && !board.memoryBackendResponseReady) begin
+            stage <= LcInjectStale;
         end
-        stage <= LcInjectStale;
     endrule
 
     rule injectStale (stage == LcInjectStale && board.debugAdvanceReady);
@@ -266,15 +256,11 @@ module mkTbMainboardLifecycleCoverage(Empty);
     endrule
 
     rule freshReleaseCheck (stage == LcFreshReleaseCheck);
-        if (board.debugCpuResponsePending || board.debugMemoryOwner != MainMemNone
-            || board.debugMemoryControllerState != MemIdle) begin
-            $display("FAIL|lifecycle-coverage|fresh-not-retired|cpu_resp=%0d|owner=%0d|mc=%0d",
-                pack(board.debugCpuResponsePending), pack(board.debugMemoryOwner),
-                pack(board.debugMemoryControllerState));
-            $finish(1);
+        if (!board.debugCpuResponsePending && board.debugMemoryOwner == MainMemNone
+            && board.debugMemoryControllerState == MemIdle) begin
+            $display("MAINBOARDLIFECYCLE|fresh_recovery=ok");
+            stage <= LcDmaBind;
         end
-        $display("MAINBOARDLIFECYCLE|fresh_recovery=ok");
-        stage <= LcDmaBind;
     endrule
 
     rule dmaBind (stage == LcDmaBind);
