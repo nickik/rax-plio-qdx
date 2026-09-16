@@ -12,6 +12,13 @@ fn dma_address(handle:u32, read:bool, burst:BurstWords)->CardToBus { CardToBus {
 fn dma_data(data:u32)->CardToBus { CardToBus { request:true, ad:Some(data), par:Some(odd_parity_32(data)), data_strobe:true, byte_enable:0xf, ..CardToBus::default() } }
 fn req_only()->CardToBus { CardToBus { request:true, ..CardToBus::default() } }
 
+fn release_successful_dma(c: &mut PLIOHostCore) {
+    assert_eq!(c.debug().role, CoreRole::Dma);
+    let o = c.step(CoreInput::default());
+    assert!(o.buses.iter().any(|b| b.grant));
+    assert_eq!(c.debug().role, CoreRole::Idle);
+}
+
 fn main() {
     let mut c=PLIOHostCore::new();
 
@@ -52,6 +59,7 @@ fn main() {
         d.memory.response=None; let o=c.step(d); assert!(o.buses[1].ack);
     }
     assert_eq!(c.take_dma_completion(),Some(Ok(4)));
+    release_successful_dma(&mut c);
     println!("PLIOHOSTCORETRACE|v1|case=dma_write4|status=ok|beats=4|first=20000040|last=2000004c");
 
     let h=(3u32<<28)|(u32::from(g)<<24)|0x80;
@@ -62,6 +70,7 @@ fn main() {
         d.memory.response=None; d.cards[1]=CardToBus{request:true,data_strobe:true,..Default::default()}; let o=c.step(d); assert!(o.buses[1].ack);
     }
     assert_eq!(c.take_dma_completion(),Some(Ok(4)));
+    release_successful_dma(&mut c);
     println!("PLIOHOSTCORETRACE|v1|case=dma_read4|status=ok|beats=4|first=20000080|last=2000008c");
 
     println!("PLIOHOSTCORETRACE|v1|case=memory_backpressure|request_wait=3|response_wait=2|ack_early=0");
