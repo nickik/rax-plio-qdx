@@ -17,9 +17,10 @@ VERILOG="$BUILD/vdir/mkPLIOQIC.v"
 test -s "$VERILOG"
 grep -q '^module mkPLIOQIC' "$VERILOG"
 
-# Print the parser-failure neighborhood so CI identifies any BSC/Yosys syntax
-# incompatibility without requiring a generated-Verilog artifact.
-nl -ba "$VERILOG" | sed -n '100,116p'
+echo 'Generated Verilog files:'
+find "$BUILD/vdir" -maxdepth 1 -type f -printf '%f\n' | sort
+echo 'Generated RegN/reset/fire references:'
+grep -R -n -E '(^module RegN|RegN #|WILL_FIRE_EN|BSV_RESET_VALUE)' "$BUILD/vdir" | head -100 || true
 
 yosys -p "read_verilog -sv '$VERILOG'; hierarchy -check -top mkPLIOQIC; proc; opt; memory; opt; check; stat" \
     | tee "$BUILD/yosys.log"
