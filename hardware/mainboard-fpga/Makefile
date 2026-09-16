@@ -6,11 +6,36 @@ BUILD := $(abspath build)
 BASE_SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
 QDXB_SEARCH := $(BASE_SEARCH):$(ROOT)/qli16/bluespec:$(ROOT)/testbench/bluespec:$(ROOT)/qdx-a/bluespec:$(ROOT)/qdx-b/bluespec:$(ROOT)/qdx-b-card/bluespec
 
-.PHONY: test test-isolated test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-core test-qdx-b verilog-sanity clean
+.PHONY: test test-isolated test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-core test-qdx-b verilog-sanity clean
 
 test: test-isolated test-core test-qdx-b verilog-sanity
 
-test-isolated: test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma
+test-isolated: test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma
+
+test-memory-semantics:
+	rm -rf $(BUILD)/diag-memory-semantics
+	mkdir -p $(BUILD)/diag-memory-semantics
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/diag-memory-semantics -simdir $(BUILD)/diag-memory-semantics -info-dir $(BUILD)/diag-memory-semantics \
+		-g mkTbMainboardMemorySemantics bluespec/TbMainboardMemorySemantics.bsv 2>&1 | tee $(BUILD)/diag-memory-semantics/compile.log
+	@if grep -q '(G0023)' $(BUILD)/diag-memory-semantics/compile.log; then \
+		echo 'FAIL memory-semantics diagnostic contains a BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/diag-memory-semantics -simdir $(BUILD)/diag-memory-semantics \
+		-e mkTbMainboardMemorySemantics -o $(BUILD)/diag-memory-semantics/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 60s $(BUILD)/diag-memory-semantics/tb 2>&1 | tee $(BUILD)/diag-memory-semantics/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/diag-memory-semantics/tb 2>&1 | tee $(BUILD)/diag-memory-semantics/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/diag-memory-semantics/run.log; then exit 1; fi
+	@test "$$(grep -c '^MAINBOARDMEMTRACE|mask=' $(BUILD)/diag-memory-semantics/run.log)" -eq 10
+	@for mask in 0001 0010 0100 1000 0011 1100 0101 1010 0000 1111; do \
+		grep -q "^MAINBOARDMEMTRACE|mask=$$mask|.*|status=ok$$" $(BUILD)/diag-memory-semantics/run.log || exit 1; \
+	done
+	@grep -Fq 'MAINBOARDMEMSHARED|cpu_to_plio=ok|plio_to_cpu=ok|plio_be=1111|status=ok' $(BUILD)/diag-memory-semantics/run.log
+	@grep -Fq 'PASS|memory-semantics|CPU partial stores, full reads, and CPU/PLIO shared memory semantics' $(BUILD)/diag-memory-semantics/run.log
 
 test-byte-enable:
 	rm -rf $(BUILD)/diag-byte-enable
