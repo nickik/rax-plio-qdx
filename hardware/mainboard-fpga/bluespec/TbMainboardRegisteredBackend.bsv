@@ -48,9 +48,13 @@ typedef enum {
     RbWriteBusReq,
     RbWriteActive,
     RbWriteWait,
+    RbWriteRetire,
+    RbWriteRetireDrain,
     RbReadBusReq,
     RbReadActive,
     RbReadWait,
+    RbReadRetire,
+    RbReadRetireDrain,
     RbDone
 } RbStage deriving (Bits, Eq, FShow);
 
@@ -63,10 +67,10 @@ module mkTbMainboardRegisteredBackend(Empty);
 
     function Action traceWait(String op, LightingBusInputs bus);
         action
-            $display("DBG|registered-backend|op=%s|cycle=%0d|grant=%0d|ready=%0d|error=%0d|owner=%0d|mc=%0d|backend_req=%0d|backend_ready=%0d|backend_resp_ready=%0d|ram_req_ready=%0d|ram_resp_valid=%0d|cpu_resp=%0d",
+            $display("DBG|registered-backend|op=%s|cycle=%0d|grant=%0d|ready=%0d|error=%0d|owner=%0d|mc=%0d|backend_req=%0d|backend_resp_ready=%0d|ram_req_ready=%0d|ram_resp_valid=%0d|cpu_resp=%0d",
                 op, watchdog, pack(bus.busGrant), pack(bus.ready), pack(bus.error),
                 pack(board.debugMemoryOwner), pack(board.debugMemoryControllerState),
-                pack(board.memoryBackendRequestValid), pack(ram.requestReady),
+                pack(board.memoryBackendRequestValid),
                 pack(board.memoryBackendResponseReady), pack(ram.requestReady),
                 pack(ram.responseValid), pack(board.debugCpuResponsePending));
         endaction
@@ -178,7 +182,7 @@ module mkTbMainboardRegisteredBackend(Empty);
                 $display("FAIL|registered-backend|write-data");
                 $finish(1);
             end
-            stage <= RbReadBusReq;
+            stage <= RbWriteRetire;
             watchdog <= 0;
         end
         else begin
@@ -194,12 +198,37 @@ module mkTbMainboardRegisteredBackend(Empty);
         end
     endrule
 
+    // READY/ERROR is deliberately sticky until the CPU drops request. Queue an
+    // explicit request-low board cycle and do not start the next transaction
+    // until retireCpuResponse has consumed it.
+    rule writeRetire (stage == RbWriteRetire);
+        LightingBusMasterDrive cpu = lightingBusMasterDriveDefault();
+        LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
+        $display("DBG|registered-backend|op=write-retire-submit|ready=%0d|cpu_resp=%0d|cycle_pending=%0d",
+            pack(bus.ready), pack(board.debugCpuResponsePending),
+            pack(board.debugCyclePending));
+        if (!board.debugCpuResponsePending || !bus.ready) begin
+            $display("FAIL|registered-backend|write-response-not-latched");
+            $finish(1);
+        end
+        board.advance(idleCards(), cpu, False, noWorkerRequest(),
+            False, False, False, False, 0, False);
+        stage <= RbWriteRetireDrain;
+    endrule
+
+    rule writeRetireDrain (stage == RbWriteRetireDrain
+        && !board.debugCpuResponsePending && board.debugAdvanceReady);
+        $display("DBG|registered-backend|op=write-retired|cpu_resp=0");
+        stage <= RbReadBusReq;
+    endrule
+
     rule readBusReq (stage == RbReadBusReq);
         LightingBusMasterDrive cpu = cpuBusRequest();
         LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
         if (!bus.busGrant || bus.ready || bus.error) begin
-            $display("FAIL|registered-backend|read-bus-req|grant=%0d|ready=%0d|error=%0d",
-                pack(bus.busGrant), pack(bus.ready), pack(bus.error));
+            $display("FAIL|registered-backend|read-bus-req|grant=%0d|ready=%0d|error=%0d|cpu_resp=%0d",
+                pack(bus.busGrant), pack(bus.ready), pack(bus.error),
+                pack(board.debugCpuResponsePending));
             $finish(1);
         end
         board.advance(idleCards(), cpu, False, noWorkerRequest(),
@@ -271,7 +300,8 @@ module mkTbMainboardRegisteredBackend(Empty);
                 $display("FAIL|registered-backend|read-data|got=%08x", bus.readData);
                 $finish(1);
             end
-            stage <= RbDone;
+            stage <= RbReadRetire;
+            watchdog <= 0;
         end
         else begin
             watchdog <= watchdog + 1;
@@ -286,8 +316,29 @@ module mkTbMainboardRegisteredBackend(Empty);
         end
     endrule
 
+    rule readRetire (stage == RbReadRetire);
+        LightingBusMasterDrive cpu = lightingBusMasterDriveDefault();
+        LightingBusInputs bus = board.lightingMemory(idleCards(), cpu, False);
+        $display("DBG|registered-backend|op=read-retire-submit|ready=%0d|data=%08x|cpu_resp=%0d",
+            pack(bus.ready), bus.readData, pack(board.debugCpuResponsePending));
+        if (!board.debugCpuResponsePending || !bus.ready
+            || bus.readData != 32'h1122_3344) begin
+            $display("FAIL|registered-backend|read-response-not-latched");
+            $finish(1);
+        end
+        board.advance(idleCards(), cpu, False, noWorkerRequest(),
+            False, False, False, False, 0, False);
+        stage <= RbReadRetireDrain;
+    endrule
+
+    rule readRetireDrain (stage == RbReadRetireDrain
+        && !board.debugCpuResponsePending && board.debugAdvanceReady);
+        $display("DBG|registered-backend|op=read-retired|cpu_resp=0");
+        stage <= RbDone;
+    endrule
+
     rule done (stage == RbDone);
-        $display("MAINBOARDREGISTEREDBACKENDTRACE|v1|write=ok|read=ok|wait_states=ok|registered_cycle=atomic_backend_handshake");
+        $display("MAINBOARDREGISTEREDBACKENDTRACE|v2|write=ok|read=ok|wait_states=ok|response_retire=ok|registered_cycle=atomic_backend_handshake");
         $display("PASS|registered-backend|mainboard queued cycle matches fake backend handshake");
         $finish(0);
     endrule
