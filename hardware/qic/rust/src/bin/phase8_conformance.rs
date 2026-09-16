@@ -165,9 +165,38 @@ fn emit(c:u16, pi:&BusToCard, qi:&DeviceToQic, po:&CardToBus, qo:&QicToDevice) {
         qo.reset as u8,qomv,qoma,qomw,qombe,qomd,qo.mmio_response_ready as u8,qo.mmio_cancel as u8,qo.dma_request_ready as u8,qorv,qord,qo.dma_write_ready as u8,qocv,qocs,qocw,qo.notification_ready as u8);
 }
 
+fn emit_debug(c: u16, q: &Qic, grant_consumed: bool, pi: &BusToCard, qi: &DeviceToQic, po: &CardToBus) {
+    let qic_debug = format!("{q:?}");
+    let worker_active = qic_debug.contains("Worker");
+    let worker_as = pi.selected && pi.address_strobe && pi.space == Some(Space::Worker);
+    let worker_ds = pi.data_strobe && worker_active;
+    let worker_rsp_out = worker_active && (po.ack || po.err);
+    let dma_as = po.address_strobe && po.space == Some(Space::HostDma);
+    let dma_ds = po.data_strobe && qic_debug.contains("DmaData");
+    let grant_used_eq = grant_consumed || po.address_strobe;
+    println!("QICDBG|model=rust|c={c:08x}|qic={qic_debug}|br={}|bg={}|grant_used_eq={}|grant_consumed={}|worker_as={}|worker_ds={}|mmio_ready={}|worker_rsp_in={}|worker_rsp_out={}|dma_as={}|dma_ds={}",
+        po.request as u8,
+        pi.grant as u8,
+        grant_used_eq as u8,
+        grant_consumed as u8,
+        worker_as as u8,
+        worker_ds as u8,
+        qi.mmio_ready as u8,
+        qi.mmio_response.is_some() as u8,
+        worker_rsp_out as u8,
+        dma_as as u8,
+        dma_ds as u8);
+}
+
 fn main() {
     let mut q=Qic::new();
+    let mut grant_consumed=false;
     for c in 0u16..=1027 {
-        let pi=pi_for(c); let qi=qi_for(c); let (po,qo)=q.drive(&pi,&qi); emit(c,&pi,&qi,&po,&qo); q.clock(&pi,&qi);
+        let pi=pi_for(c); let qi=qi_for(c); let (po,qo)=q.drive(&pi,&qi);
+        emit(c,&pi,&qi,&po,&qo);
+        emit_debug(c,&q,grant_consumed,&pi,&qi,&po);
+        q.clock(&pi,&qi);
+        if pi.reset || !pi.grant { grant_consumed=false; }
+        else if po.address_strobe { grant_consumed=true; }
     }
 }

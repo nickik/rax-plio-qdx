@@ -51,6 +51,9 @@ jobs:
           iverilog -V | head -1
           yosys -V
           nextpnr-ice40 --version
+      - name: Run focused QIC Phase8 differential diagnostics
+        run: |
+          bash hardware/scripts/test-qic-phase8.sh
       - name: Run memory-controller regression first with full diagnostics
         env:
           MEMORY_CONTROLLER_DEBUG_DIR: ${{ runner.temp }}/memory-controller-debug

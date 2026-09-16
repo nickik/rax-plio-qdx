@@ -160,11 +160,32 @@ function Action emitTrace(Bit#(16) c, PlioIn pi, QliIn qi, PlioOut po, QliOut qo
  endaction
 endfunction
 
+function Action emitDebug(Bit#(16) c, UnifiedQicState s, Bool grantConsumed, PlioIn pi, QliIn qi, PlioOut po);
+ action
+    Bit#(32) cc=zeroExtend(c);
+    Bool workerActive = s==UWorkerReadData || s==UWorkerWriteData || s==UWorkerOffer || s==UWorkerResponse;
+    Bool workerAs = pi.selected && pi.addressStrobe && pi.spaceValid && pi.space==PlioWorker;
+    Bool workerDs = pi.dataStrobe && workerActive;
+    Bool workerRspOut = workerActive && (po.ack || po.err);
+    Bool dmaAs = po.addressStrobe && po.spaceValid && po.space==PlioHostDma;
+    Bool dmaDs = po.dataStrobe && s==UDmaData;
+    Bool grantUsedEq = grantConsumed || po.addressStrobe;
+    $display("QICDBG|model=bsv|c=%08x|state=%0d|br=%0d|bg=%0d|grant_used_eq=%0d|grant_consumed=%0d|worker_as=%0d|worker_ds=%0d|mmio_ready=%0d|worker_rsp_in=%0d|worker_rsp_out=%0d|dma_as=%0d|dma_ds=%0d",
+      cc,pack(s),pack(po.request),pack(pi.grant),pack(grantUsedEq),pack(grantConsumed),pack(workerAs),pack(workerDs),pack(qi.mmioReady),pack(qi.mmioResponseValid),pack(workerRspOut),pack(dmaAs),pack(dmaDs));
+ endaction
+endfunction
+
 module mkTbQICPhase8(Empty);
-    PLIOQICIfc dut <- mkPLIOQIC; Reg#(Bit#(16)) c <- mkReg(0);
+    PLIOQICIfc dut <- mkPLIOQIC;
+    Reg#(Bit#(16)) c <- mkReg(0);
+    Reg#(Bool) grantConsumed <- mkReg(False);
     rule run;
-        PlioIn pi=piFor(c); QliIn qi=qiFor(c); PlioOut po=dut.drivePlio(pi,qi); QliOut qo=dut.driveQli(pi,qi);
-        emitTrace(c,pi,qi,po,qo); dut.advance(pi,qi);
+        PlioIn pi=piFor(c); QliIn qi=qiFor(c); PlioOut po=dut.drivePlio(pi,qi); QliOut qo=dut.driveQli(pi,qi); UnifiedQicState s=dut.debugState;
+        emitTrace(c,pi,qi,po,qo);
+        emitDebug(c,s,grantConsumed,pi,qi,po);
+        dut.advance(pi,qi);
+        if(pi.reset || !pi.grant) grantConsumed <= False;
+        else if(po.addressStrobe) grantConsumed <= True;
         if(c==1027) begin $display("PASS QIC Phase8 unified conformance fixture"); $finish(0); end else c<=c+1;
     endrule
 endmodule
