@@ -119,7 +119,7 @@ module mkTbMainboardLifecycleCoverage(Empty);
         stage <= LcResetDrain;
     endrule
 
-    rule resetDrain (stage == LcResetDrain && board.debugAdvanceReady);
+    rule resetDrain (stage == LcResetDrain);
         if (board.debugMemoryOwner != MainMemNone
             || board.debugMemoryControllerState != MemIdle
             || board.debugCpuResponsePending
@@ -174,7 +174,7 @@ module mkTbMainboardLifecycleCoverage(Empty);
         stage <= LcWaitClear;
     endrule
 
-    rule waitClear (stage == LcWaitClear && board.debugAdvanceReady);
+    rule waitClear (stage == LcWaitClear);
         if (board.debugMemoryOwner != MainMemNone
             || board.debugMemoryControllerState != MemIdle
             || board.debugCpuGrantHeld
@@ -198,7 +198,7 @@ module mkTbMainboardLifecycleCoverage(Empty);
         stage <= LcCheckStale;
     endrule
 
-    rule checkStale (stage == LcCheckStale && board.debugAdvanceReady);
+    rule checkStale (stage == LcCheckStale);
         LightingBusInputs bus = board.lightingMemory(idleCards(),
             lightingBusMasterDriveDefault(), False);
         if (board.debugMemoryOwner != MainMemNone
@@ -265,7 +265,7 @@ module mkTbMainboardLifecycleCoverage(Empty);
         stage <= LcFreshReleaseCheck;
     endrule
 
-    rule freshReleaseCheck (stage == LcFreshReleaseCheck && board.debugAdvanceReady);
+    rule freshReleaseCheck (stage == LcFreshReleaseCheck);
         if (board.debugCpuResponsePending || board.debugMemoryOwner != MainMemNone
             || board.debugMemoryControllerState != MemIdle) begin
             $display("FAIL|lifecycle-coverage|fresh-not-retired|cpu_resp=%0d|owner=%0d|mc=%0d",
