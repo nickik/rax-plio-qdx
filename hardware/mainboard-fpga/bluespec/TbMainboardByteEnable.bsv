@@ -35,6 +35,22 @@ function LightingBusMasterDrive cpuRequest(Bit#(32) addr, Bit#(4) be, Bit#(32) d
     return cpu;
 endfunction
 
+function Bit#(4) maskForIndex(Bit#(4) index);
+    case (index)
+        0: return 4'b0001;
+        1: return 4'b0010;
+        2: return 4'b0100;
+        3: return 4'b1000;
+        4: return 4'b0011;
+        5: return 4'b1100;
+        6: return 4'b0101;
+        7: return 4'b1010;
+        8: return 4'b0000;
+        9: return 4'b1111;
+        default: return 4'b0000;
+    endcase
+endfunction
+
 (* synthesize *)
 module mkTbMainboardByteEnable(Empty);
     MainboardFPGAIfc dut <- mkMainboardFPGA;
@@ -42,9 +58,6 @@ module mkTbMainboardByteEnable(Empty);
     Reg#(Bit#(4)) maskIndex <- mkReg(0);
     Reg#(Bit#(8)) heldCycles <- mkReg(0);
     Reg#(Bit#(32)) watchdog <- mkReg(0);
-
-    Vector#(10, Bit#(4)) masks = vec(4'b0001, 4'b0010, 4'b0100, 4'b1000,
-        4'b0011, 4'b1100, 4'b0101, 4'b1010, 4'b0000, 4'b1111);
 
     rule tick;
         watchdog <= watchdog + 1;
@@ -55,7 +68,7 @@ module mkTbMainboardByteEnable(Empty);
     endrule
 
     rule issueMask (phase == 0 && maskIndex < 10 && dut.debugAdvanceReady);
-        Bit#(4) be = masks[maskIndex];
+        Bit#(4) be = maskForIndex(maskIndex);
         Bit#(32) addr = 32'h00001000 + zeroExtend(maskIndex) * 4;
         Bit#(32) data = 32'ha5a50000 | zeroExtend(be);
         dut.advance(idleCards(), cpuRequest(addr, be, data), False, noWorkerRequest(),
@@ -64,7 +77,7 @@ module mkTbMainboardByteEnable(Empty);
     endrule
 
     rule waitBackend (phase == 1);
-        Bit#(4) be = masks[maskIndex];
+        Bit#(4) be = maskForIndex(maskIndex);
         Bit#(32) addr = 32'h00001000 + zeroExtend(maskIndex) * 4;
         Bit#(32) data = 32'ha5a50000 | zeroExtend(be);
         if (dut.memoryBackendRequestValid) begin
@@ -82,7 +95,7 @@ module mkTbMainboardByteEnable(Empty);
     endrule
 
     rule proveStable (phase == 2 && heldCycles < 4);
-        Bit#(4) be = masks[maskIndex];
+        Bit#(4) be = maskForIndex(maskIndex);
         Bit#(32) addr = 32'h00001000 + zeroExtend(maskIndex) * 4;
         Bit#(32) data = 32'ha5a50000 | zeroExtend(be);
         if (!dut.memoryBackendRequestValid
@@ -120,7 +133,7 @@ module mkTbMainboardByteEnable(Empty);
     rule retire (phase == 4 && dut.debugAdvanceReady);
         dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, noWorkerRequest(),
             False, False, False, False, 0, False);
-        $display("MAINBOARDBETRACE|mask=%04b|status=ok", masks[maskIndex]);
+        $display("MAINBOARDBETRACE|mask=%04b|status=ok", maskForIndex(maskIndex));
         if (maskIndex == 9) begin
             $display("PASS|byte-enable|CPU to Mainboard to MemoryController propagation and backpressure stability");
             $finish(0);
