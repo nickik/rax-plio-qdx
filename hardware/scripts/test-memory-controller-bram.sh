@@ -9,9 +9,10 @@ BSC="${BSC:-bsc}"
 BSC_STACK=(+RTS -K8M -RTS)
 
 rm -rf "$BUILD"
-mkdir -p "$BUILD/sim" "$BUILD/rtl-default" "$BUILD/rtl-128k"
+mkdir -p "$BUILD/sim" "$BUILD/plio" "$BUILD/rtl-default" "$BUILD/rtl-128k"
 
 command -v "$BSC" >/dev/null
+command -v cargo >/dev/null
 command -v yosys >/dev/null
 
 echo "== FPGA BRAM backend Bluesim semantics =="
@@ -27,6 +28,28 @@ echo "== FPGA BRAM backend Bluesim semantics =="
 grep '^MEMBRAMTRACE|' "$BUILD/sim.log" > "$BUILD/semantics.trace"
 test "$(wc -l < "$BUILD/semantics.trace")" -eq 5
 grep -q '^PASS FPGA block RAM backend semantics$' "$BUILD/sim.log"
+
+echo "== PLIOHostCore -> MemoryController -> FPGA BRAM =="
+"$BSC" "${BSC_STACK[@]}" -u -sim -p "$SEARCH" \
+    -bdir "$BUILD/plio" -simdir "$BUILD/plio" -info-dir "$BUILD/plio" \
+    -g mkTbPLIOHostBlockRam "$ROOT/memory-controller/bluespec/TbPLIOHostBlockRam.bsv" \
+    2>&1 | tee "$BUILD/bsc-plio-compile.log"
+"$BSC" "${BSC_STACK[@]}" -sim -p "$SEARCH" \
+    -bdir "$BUILD/plio" -simdir "$BUILD/plio" \
+    -e mkTbPLIOHostBlockRam -o "$BUILD/tb-plio-host-block-ram" \
+    2>&1 | tee "$BUILD/bsc-plio-link.log"
+"$BUILD/tb-plio-host-block-ram" 2>&1 | tee "$BUILD/plio.log"
+grep '^MEMHOSTTRACE|' "$BUILD/plio.log" > "$BUILD/plio-bram.trace"
+test "$(wc -l < "$BUILD/plio-bram.trace")" -eq 3
+grep -q '^PASS block RAM PLIO host integration$' "$BUILD/plio.log"
+
+# Reuse the established Rust/fake semantic vectors.  Backend identity is the
+# only expected textual difference.
+cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p memory-controller-model --bin conformance \
+    2>&1 | grep '^MEMHOSTTRACE|' > "$BUILD/plio-reference.trace"
+sed 's/backend=bram/backend=fake/' "$BUILD/plio-bram.trace" > "$BUILD/plio-bram-normalized.trace"
+diff -u "$BUILD/plio-reference.trace" "$BUILD/plio-bram-normalized.trace" \
+    2>&1 | tee "$BUILD/plio-diff.log"
 
 echo "== Locate BSC BRAM1 synthesis primitive =="
 BSC_REAL="$(readlink -f "$(command -v "$BSC")")"
@@ -73,4 +96,4 @@ yosys -p "read_verilog -sv $RTL_DEFAULT $BRAM1_V; hierarchy -check -top mkDefaul
     2>&1 | tee "$BUILD/yosys-ice40.log"
 grep -Eq 'SB_RAM40_4K[[:space:]]+[1-9][0-9]*' "$BUILD/yosys-ice40.log"
 
-echo "PASS FPGA BRAM backend simulation, sizing, and native block-RAM synthesis"
+echo "PASS FPGA BRAM backend simulation, PLIO integration, sizing, and native block-RAM synthesis"

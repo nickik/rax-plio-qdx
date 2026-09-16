@@ -12,10 +12,10 @@
 
 ## FPGA memory
 
-- [ ] MC8a — synthesizable 32-bit BRAM backend, default 64 KiB with 128 KiB option.
-- [ ] MC8b — prove one-cycle synchronous reads, handshake/backpressure, range faults, RAW, multiple addresses and reset/recovery.
-- [ ] MC8c — prove Yosys native FPGA BRAM inference while `mkMemoryController` stays at zero inferred RAM.
-- [ ] MC8d — run `PLIOHostCore -> MemoryController -> BlockRamBackend` DMA read/write/fault integration with the same semantic vectors as the fake backend.
+- [x] MC8a — synthesizable 32-bit BRAM backend, default 64 KiB with 128 KiB option.
+- [x] MC8b — prove one-cycle synchronous reads, handshake/backpressure, range faults, RAW, multiple addresses and reset/recovery.
+- [x] MC8c — prove Yosys native FPGA BRAM inference while `mkMemoryController` stays at zero inferred RAM.
+- [x] MC8d — run `PLIOHostCore -> MemoryController -> BlockRamBackend` DMA read/write/fault integration with the same semantic vectors as the fake backend.
 
 ## External memory later
 
