@@ -11,13 +11,13 @@ test-m6.1:
 	mkdir -p $(BUILD)/arbitration
 	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(SEARCH)' \
 		-bdir $(BUILD)/arbitration -simdir $(BUILD)/arbitration -info-dir $(BUILD)/arbitration \
-		-g mkTbMainboardM6Arbitration bluespec/TbMainboardM6Arbitration.bsv 2>&1 | tee $(BUILD)/arbitration/compile.log
+		-g mkTbMainboardM6ArbitrationV2 bluespec/TbMainboardM6ArbitrationV2.bsv 2>&1 | tee $(BUILD)/arbitration/compile.log
 	@if grep -q '(G0023)' $(BUILD)/arbitration/compile.log; then \
 		echo 'FAIL M6.1 contains a BSC always-false rule'; exit 1; \
 	fi
 	$(BSC) +RTS -K8M -RTS -sim -p '$(SEARCH)' \
 		-bdir $(BUILD)/arbitration -simdir $(BUILD)/arbitration \
-		-e mkTbMainboardM6Arbitration -o $(BUILD)/arbitration/tb
+		-e mkTbMainboardM6ArbitrationV2 -o $(BUILD)/arbitration/tb
 	@if command -v timeout >/dev/null 2>&1; then \
 		set -o pipefail; timeout 45s $(BUILD)/arbitration/tb 2>&1 | tee $(BUILD)/arbitration/run.log; \
 	else \
