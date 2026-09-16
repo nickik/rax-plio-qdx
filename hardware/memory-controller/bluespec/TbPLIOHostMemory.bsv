@@ -52,10 +52,7 @@ module mkTbPLIOHostMemory(Empty);
     Reg#(Bit#(8)) watchdog <- mkReg(0);
     HostWorkerRequest dummyWorker = HostWorkerRequest { slot:0, address:0, width:HostW32, write:False, value:0 };
 
-    // Keep the four mutually exclusive MemoryController actions in separate
-    // rules.  Putting hostRequest/backendRequestAccepted/backendRespond/
-    // hostResponseConsumed into the phase rule makes BSC conjoin their
-    // readiness conditions and remove the whole rule as unsatisfiable.
+    // Keep mutually exclusive MemoryController actions in separate rules.
     rule forwardBackendRequest (mc.backendRequestValid && ram.requestReady);
         ram.acceptRequest(mc.backendWrite, mc.backendAddress, mc.backendWriteData);
         mc.backendRequestAccepted;
@@ -72,6 +69,33 @@ module mkTbPLIOHostMemory(Empty);
 
     rule consumeHostMemoryResponse (mc.hostResponseValid && core.debugDmaState == DmaMemResponse);
         mc.hostResponseConsumed;
+    endrule
+
+    // clearDmaCompletion and advance both touch the core completion state. Keep
+    // completion handling out of the stimulus rule so BSC never has to place
+    // both actions in one atomic rule.
+    rule completeRead (phase == 5);
+        if (!core.dmaCompletionValid || core.dmaCompletionStatus != DmaOk || core.dmaCompletionBeats != 1) begin
+            $display("FAIL memory integration read completion");
+            $finish(1);
+        end
+        core.clearDmaCompletion;
+        $display("MEMHOSTTRACE|v1|case=dma_read|status=ok|value=55667788|backend=fake");
+        phase <= 6;
+    endrule
+
+    rule completeWrite (phase == 11);
+        if (ram.peek(32'h00000104) != 32'hcafebabe) begin
+            $display("FAIL memory integration write memory");
+            $finish(1);
+        end
+        if (!core.dmaCompletionValid || core.dmaCompletionStatus != DmaOk || core.dmaCompletionBeats != 1) begin
+            $display("FAIL memory integration write completion");
+            $finish(1);
+        end
+        core.clearDmaCompletion;
+        $display("MEMHOSTTRACE|v1|case=dma_write|status=ok|value=cafebabe|backend=fake");
+        phase <= 12;
     endrule
 
     rule run;
@@ -121,13 +145,7 @@ module mkTbPLIOHostMemory(Empty);
                 end
             end
             5: begin
-                if (!core.dmaCompletionValid || core.dmaCompletionStatus != DmaOk || core.dmaCompletionBeats != 1) begin
-                    $display("FAIL memory integration read completion");
-                    $finish(1);
-                end
-                core.clearDmaCompletion;
-                $display("MEMHOSTTRACE|v1|case=dma_read|status=ok|value=55667788|backend=fake");
-                phase <= 6;
+                advanceCore = False;
             end
             6: begin
                 cards[1] = reqOnly();
@@ -160,14 +178,7 @@ module mkTbPLIOHostMemory(Empty);
                 end
             end
             11: begin
-                if (ram.peek(32'h00000104) != 32'hcafebabe) begin $display("FAIL memory integration write memory"); $finish(1); end
-                if (!core.dmaCompletionValid || core.dmaCompletionStatus != DmaOk || core.dmaCompletionBeats != 1) begin
-                    $display("FAIL memory integration write completion");
-                    $finish(1);
-                end
-                core.clearDmaCompletion;
-                $display("MEMHOSTTRACE|v1|case=dma_write|status=ok|value=cafebabe|backend=fake");
-                phase <= 12;
+                advanceCore = False;
             end
             12: begin
                 core.bindDma(1, 4, 32'h00004000, 25'h00100, True, False);
