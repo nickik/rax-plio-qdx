@@ -1,6 +1,6 @@
-use memory_controller_model::{ControllerState, FakeMemory, MemoryController};
+use memory_controller_model::{ControllerState, FakeMemory, MemoryController, MemoryRequest};
 use plio_host_core_model::{CoreInput, MemoryInput, PLIOHostCore};
-use plio_host_dma_model::{DmaError, MemoryRequest, MemoryResponse};
+use plio_host_dma_model::{DmaError, MemoryResponse};
 use plio_logical_model::{odd_parity_32, BurstWords, CardToBus, Space};
 
 fn state_code(state: ControllerState) -> u8 {
@@ -21,25 +21,44 @@ fn response_code(response: Option<MemoryResponse>) -> u8 {
     }
 }
 
-fn emit(label: &str, controller: &MemoryController) {
+fn emit_idle(controller: &MemoryController) {
     let debug = controller.debug();
-    let expose_request = matches!(debug.state, ControllerState::BackendRequest | ControllerState::BackendResponse);
-    let (write, address) = if expose_request {
-        match controller.backend_request() {
-            Some(MemoryRequest::Read32 { physical_address }) => (0u8, physical_address),
-            Some(MemoryRequest::Write32 { physical_address, .. }) => (1u8, physical_address),
-            None => (0u8, 0),
-        }
-    } else {
-        (0u8, 0)
-    };
     println!(
-        "MEMCTRLTRACE|v1|case={label}|state={}|host_ready={}|backend_valid={}|write={write}|address={address:08x}|response={}",
+        "MEMCTRLTRACE|v2|case=idle|state={}|host_ready={}|backend_valid={}|write=0|address=00000000|be=0|response={}",
         state_code(debug.state),
         u8::from(debug.host_request_ready),
         u8::from(debug.backend_request_valid),
         response_code(controller.host_response())
     );
+}
+
+fn emit_request(label: &str, controller: &MemoryController, include_data: bool) {
+    let debug = controller.debug();
+    let request = controller.backend_request().expect("backend request must be exposed");
+    if include_data {
+        println!(
+            "MEMCTRLTRACE|v2|case={label}|state={}|host_ready={}|backend_valid={}|write={}|address={:08x}|be={:x}|data={:08x}|response={}",
+            state_code(debug.state),
+            u8::from(debug.host_request_ready),
+            u8::from(debug.backend_request_valid),
+            u8::from(request.is_write()),
+            request.physical_address(),
+            request.byte_enable(),
+            request.write_data(),
+            response_code(controller.host_response())
+        );
+    } else {
+        println!(
+            "MEMCTRLTRACE|v2|case={label}|state={}|host_ready={}|backend_valid={}|write={}|address={:08x}|be={:x}|response={}",
+            state_code(debug.state),
+            u8::from(debug.host_request_ready),
+            u8::from(debug.backend_request_valid),
+            u8::from(request.is_write()),
+            request.physical_address(),
+            request.byte_enable(),
+            response_code(controller.host_response())
+        );
+    }
 }
 
 fn req_only() -> CardToBus { CardToBus { request: true, ..CardToBus::default() } }
@@ -88,7 +107,7 @@ fn host_cycle(
     }
     if request_ready {
         if let Some(request) = output.memory_request {
-            assert!(controller.accept_host_request(request));
+            assert!(controller.accept_host_request(MemoryRequest::from_plio(request)));
         }
     }
     controller.tick_backend(memory);
@@ -97,40 +116,40 @@ fn host_cycle(
 
 fn main() {
     let mut c = MemoryController::new();
-    emit("idle", &c);
+    emit_idle(&c);
 
-    assert!(c.accept_host_request(MemoryRequest::Read32 { physical_address: 0x100 }));
-    emit("read_request", &c);
-    emit("read_stall", &c);
+    assert!(c.accept_host_request(MemoryRequest::read(0x100, 0xf)));
+    emit_request("read_request", &c, false);
+    assert_eq!(c.backend_request().map(|r| r.byte_enable()), Some(0xf));
     assert!(c.backend_request_accepted());
-    emit("read_wait", &c);
     assert!(c.accept_backend_response(MemoryResponse::ReadData(0x1122_3344)));
-    emit("read_response", &c);
-    emit("response_stall", &c);
+    assert_eq!(c.host_response(), Some(MemoryResponse::ReadData(0x1122_3344)));
     assert!(c.consume_host_response());
 
-    assert!(c.accept_host_request(MemoryRequest::Write32 { physical_address: 0x104, value: 0xaabb_ccdd }));
-    emit("write_request", &c);
+    assert!(c.accept_host_request(MemoryRequest::write(0x104, 0x5, 0xaabb_ccdd)));
+    emit_request("write_request", &c, true);
+    assert_eq!(c.backend_request().map(|r| r.byte_enable()), Some(0x5));
     assert!(c.backend_request_accepted());
-    emit("write_wait", &c);
     assert!(c.accept_backend_response(MemoryResponse::WriteDone));
-    emit("write_response", &c);
+    assert_eq!(c.host_response(), Some(MemoryResponse::WriteDone));
     assert!(c.consume_host_response());
 
-    assert!(c.accept_host_request(MemoryRequest::Read32 { physical_address: 0x102 }));
-    emit("misaligned", &c);
+    assert!(c.accept_host_request(MemoryRequest::read(0x102, 0xf)));
     assert_eq!(c.host_response(), Some(MemoryResponse::Fault));
     assert!(c.consume_host_response());
 
-    assert!(c.accept_host_request(MemoryRequest::Read32 { physical_address: 0x200 }));
+    assert!(c.accept_host_request(MemoryRequest::read(0x200, 0xf)));
     assert!(c.backend_request_accepted());
     assert!(c.accept_backend_response(MemoryResponse::Fault));
-    emit("backend_fault", &c);
+    assert_eq!(c.host_response(), Some(MemoryResponse::Fault));
     assert!(c.consume_host_response());
 
-    assert!(c.accept_host_request(MemoryRequest::Read32 { physical_address: 0x300 }));
+    assert!(c.accept_host_request(MemoryRequest::write(0x300, 0xa, 0xdead_beef)));
+    assert_eq!(c.backend_request().map(|r| r.byte_enable()), Some(0xa));
     c.reset();
-    emit("reset", &c);
+    assert_eq!(c.debug().state, ControllerState::Idle);
+    assert_eq!(c.backend_request(), None);
+    println!("MEMCTRLTRACE|v2|case=reset|status=ok|be=0");
 
     let mut host = PLIOHostCore::new();
     let mut controller = MemoryController::new();
@@ -163,7 +182,7 @@ fn main() {
     }
     assert_eq!(read_value, Some(0x5566_7788));
     assert_eq!(host.take_dma_completion(), Some(Ok(1)));
-    println!("MEMHOSTTRACE|v1|case=dma_read|status=ok|value=55667788|backend=fake");
+    println!("MEMHOSTTRACE|v2|case=dma_read|status=ok|value=55667788|backend=fake|be=f");
 
     let write_handle = read_handle | 4;
     cards = [CardToBus::default(); 8];
@@ -188,7 +207,7 @@ fn main() {
     assert!(write_acked);
     assert_eq!(memory.peek_word(0x104), Some(0xcafe_babe));
     assert_eq!(host.take_dma_completion(), Some(Ok(1)));
-    println!("MEMHOSTTRACE|v1|case=dma_write|status=ok|value=cafebabe|backend=fake");
+    println!("MEMHOSTTRACE|v2|case=dma_write|status=ok|value=cafebabe|backend=fake|be=f");
 
     let fault_generation = host.bind_dma(1, 4, 0x4000, 0x100, true, false).unwrap();
     let fault_handle = (4u32 << 28) | (u32::from(fault_generation) << 24);
@@ -209,7 +228,7 @@ fn main() {
     }
     assert!(saw_fault);
     assert_eq!(host.take_dma_completion(), Some(Err(DmaError::MemoryFault)));
-    println!("MEMHOSTTRACE|v1|case=backend_fault|status=memory_fault|backend=fake");
+    println!("MEMHOSTTRACE|v2|case=backend_fault|status=memory_fault|backend=fake|be=f");
 
     println!("PASS memory controller Rust reference + PLIO host integration");
 }

@@ -3,11 +3,11 @@ package BlockRamBackend;
 import BRAMCore::*;
 
 // Synthesizable FPGA block-RAM backend for MemoryController.
-// The backend contract deliberately matches the request/response shape used by
-// the simulation/reference backend without exposing simulation-only hooks.
+// Four independent byte-wide RAM lanes map directly to BE[3:0], so masked
+// writes never require an externally visible read-modify-write transaction.
 interface BlockRamBackendIfc;
     method Bool requestReady;
-    method Action acceptRequest(Bool write, Bit#(32) address, Bit#(32) writeData);
+    method Action acceptRequest(Bool write, Bit#(32) address, Bit#(4) byteEnable, Bit#(32) writeData);
     method Bool responseValid;
     method Bool responseFault;
     method Bool responseReadDataValid;
@@ -20,18 +20,13 @@ Integer defaultBlockRamBytes = 1024 * 1024;
 Integer smallBlockRamBytes = 64 * 1024;
 Integer mediumBlockRamBytes = 128 * 1024;
 
-// The integrated backend supports capacities up to 1 MiB.  A 1 MiB store has
-// 262144 32-bit words, so the physical BRAM uses an 18-bit word address.  Range
-// checking is performed on the original 32-bit byte address before it reaches
-// the primitive, allowing smaller elaboration-time configurations to use the
-// same interface safely.
 module mkBlockRamBackend#(Integer bytes)(BlockRamBackendIfc);
     Integer words = bytes / 4;
-    BRAM_PORT#(Bit#(18), Bit#(32)) ram <- mkBRAMCore1(words, False);
+    BRAM_PORT#(Bit#(18), Bit#(8)) lane0 <- mkBRAMCore1(words, False);
+    BRAM_PORT#(Bit#(18), Bit#(8)) lane1 <- mkBRAMCore1(words, False);
+    BRAM_PORT#(Bit#(18), Bit#(8)) lane2 <- mkBRAMCore1(words, False);
+    BRAM_PORT#(Bit#(18), Bit#(8)) lane3 <- mkBRAMCore1(words, False);
 
-    // A read becomes visible exactly one cycle after the BRAM request.  The
-    // BRAM primitive's read method is the registered synchronous output, so no
-    // extra data register is inserted here.
     Reg#(Bool) readPending <- mkReg(False);
     Reg#(Bool) responsePending <- mkReg(False);
     Reg#(Bool) responseFaultReg <- mkReg(False);
@@ -43,7 +38,7 @@ module mkBlockRamBackend#(Integer bytes)(BlockRamBackendIfc);
 
     method Bool requestReady = !readPending && !responsePending;
 
-    method Action acceptRequest(Bool write, Bit#(32) address, Bit#(32) writeData)
+    method Action acceptRequest(Bool write, Bit#(32) address, Bit#(4) byteEnable, Bit#(32) writeData)
         if (!readPending && !responsePending);
         Bool valid = addressValid(address);
         if (!valid) begin
@@ -52,15 +47,15 @@ module mkBlockRamBackend#(Integer bytes)(BlockRamBackendIfc);
         end
         else begin
             Bit#(18) wordAddress = address[19:2];
-            ram.put(write, wordAddress, writeData);
+            lane0.put(write && byteEnable[0] == 1'b1, wordAddress, writeData[7:0]);
+            lane1.put(write && byteEnable[1] == 1'b1, wordAddress, writeData[15:8]);
+            lane2.put(write && byteEnable[2] == 1'b1, wordAddress, writeData[23:16]);
+            lane3.put(write && byteEnable[3] == 1'b1, wordAddress, writeData[31:24]);
             responseFaultReg <= False;
             if (write) begin
-                // The write is committed at this clock edge.  A normal
-                // write-complete response is visible in the following cycle.
                 responsePending <= True;
             end
             else begin
-                // BRAMCore's non-pipelined output is synchronous, one cycle.
                 readPending <= True;
             end
         end
@@ -69,7 +64,7 @@ module mkBlockRamBackend#(Integer bytes)(BlockRamBackendIfc);
     method Bool responseValid = readPending || responsePending;
     method Bool responseFault = responsePending && responseFaultReg;
     method Bool responseReadDataValid = readPending;
-    method Bit#(32) responseReadData = readPending ? ram.read : 0;
+    method Bit#(32) responseReadData = readPending ? { lane3.read, lane2.read, lane1.read, lane0.read } : 0;
 
     method Action responseConsumed if (readPending || responsePending);
         readPending <= False;
@@ -85,7 +80,6 @@ module mkBlockRamBackend#(Integer bytes)(BlockRamBackendIfc);
     endmethod
 endmodule
 
-// System and simulation default: one MiB of integrated FPGA RAM.
 (* synthesize *)
 module mkDefaultBlockRamBackend(BlockRamBackendIfc);
     let backend <- mkBlockRamBackend(defaultBlockRamBytes);

@@ -17,14 +17,14 @@ BUILD="$(cd "$BUILD" && pwd)"
 command -v "$BSC" >/dev/null
 command -v cargo >/dev/null
 
-echo "== Rust backend sequence semantics =="
+echo "== Rust backend masked-write semantics =="
 cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p memory-controller-model --bin backend_conformance \
     2>&1 | tee "$BUILD/rust.log"
 grep '^MEMBACKENDTRACE|' "$BUILD/rust.log" > "$BUILD/rust.trace"
-test "$(wc -l < "$BUILD/rust.trace")" -eq 3
-grep -q '^PASS memory controller backend sequence semantics$' "$BUILD/rust.log"
+test "$(wc -l < "$BUILD/rust.trace")" -eq 2
+grep -q '^PASS memory controller backend masked-write semantics$' "$BUILD/rust.log"
 
-echo "== Bluesim backend sequence semantics =="
+echo "== Bluesim backend masked-write semantics =="
 "$BSC" "${BSC_STACK[@]}" -u -sim -p "$SEARCH" \
     -bdir "$BUILD/bsv" -simdir "$BUILD/bsv" -info-dir "$BUILD/bsv" \
     -g mkTbMemoryControllerBackend "$ROOT/memory-controller/bluespec/TbMemoryControllerBackend.bsv" \
@@ -35,10 +35,10 @@ echo "== Bluesim backend sequence semantics =="
     2>&1 | tee "$BUILD/bsc-link.log"
 "$BUILD/tb-memory-controller-backend" 2>&1 | tee "$BUILD/bsv.log"
 grep '^MEMBACKENDTRACE|' "$BUILD/bsv.log" > "$BUILD/bsv.trace"
-test "$(wc -l < "$BUILD/bsv.trace")" -eq 3
-grep -q '^PASS memory controller backend sequence semantics$' "$BUILD/bsv.log"
+test "$(wc -l < "$BUILD/bsv.trace")" -eq 2
+grep -q '^PASS memory controller backend masked-write semantics$' "$BUILD/bsv.log"
 
-echo "== Exact Rust / Bluesim backend sequence trace =="
+echo "== Exact Rust / Bluesim masked backend trace =="
 diff -u "$BUILD/rust.trace" "$BUILD/bsv.trace" 2>&1 | tee "$BUILD/diff.log"
 
-echo "PASS memory controller backend sequence differential"
+echo "PASS memory controller backend masked-write differential"
