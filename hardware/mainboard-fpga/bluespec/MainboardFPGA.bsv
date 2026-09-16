@@ -27,6 +27,7 @@ typedef struct {
     Bool backendFault;
     Bool backendReadDataValid;
     Bit#(32) backendReadData;
+    Bool cpuResponseObserved;
     Bool reset;
 } MainboardCycleInputs deriving (Bits, FShow);
 
@@ -216,15 +217,10 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         end
     endrule
 
-    rule completeMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
-        && memoryOwner != MainMemNone
-        && memory.hostResponseValid);
-        memory.hostResponseConsumed;
-        if (memoryOwner == MainMemCpu) preferCpu <= False;
-        else preferCpu <= True;
-        memoryOwner <= MainMemNone;
-    endrule
-
+    // The response must remain stable until the owning frontend has actually
+    // observed it.  For CPU traffic advance() snapshots whether the external
+    // Lighting bus saw a valid response on that physical cycle.  For PLIO,
+    // host.advance consumes the response in this rule itself.
     rule advancePlioHost (cycleQ.notEmpty && !cycleQ.first.reset);
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
@@ -243,6 +239,10 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             && !selectCpu;
         Bool plioResponseValid = memoryOwner == MainMemPlio
             && memory.hostResponseValid;
+        Bool consumeCpuResponse = cycle.cpuResponseObserved
+            && memoryOwner == MainMemCpu
+            && memory.hostResponseValid;
+
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             acceptPlio,
             plioResponseValid,
@@ -250,6 +250,17 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             memory.hostReadDataValid,
             memory.hostReadData,
             False);
+
+        if (consumeCpuResponse) begin
+            memory.hostResponseConsumed;
+            preferCpu <= False;
+            memoryOwner <= MainMemNone;
+        end
+        else if (plioResponseValid) begin
+            memory.hostResponseConsumed;
+            preferCpu <= True;
+            memoryOwner <= MainMemNone;
+        end
         cycleQ.deq;
     endrule
 
@@ -306,6 +317,13 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         Bool backendResponseValid, Bool backendFault,
         Bool backendReadDataValid, Bit#(32) backendReadData,
         Bool reset) if (cycleQ.notFull);
+        // This samples the same registered board state that lightingMemory()
+        // exposes before the caller advances the physical cycle.  Delaying the
+        // actual consume until this queued image is processed guarantees at
+        // least one externally visible response cycle.
+        Bool cpuResponseObserved = !reset
+            && memoryOwner == MainMemCpu
+            && memory.hostResponseValid;
         cycleQ.enq(MainboardCycleInputs {
             cards: cards,
             cpu: cpu,
@@ -316,6 +334,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             backendFault: backendFault,
             backendReadDataValid: backendReadDataValid,
             backendReadData: backendReadData,
+            cpuResponseObserved: cpuResponseObserved,
             reset: reset
         });
     endmethod
