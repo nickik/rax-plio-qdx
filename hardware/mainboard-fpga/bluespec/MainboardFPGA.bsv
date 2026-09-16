@@ -1,6 +1,7 @@
 package MainboardFPGA;
 
 import Vector::*;
+import FIFOF::*;
 import QLITypes::*;
 import QICInterfaces::*;
 import PLIOTx::*;
@@ -83,11 +84,10 @@ interface MainboardFPGAIfc;
     method Bit#(32) memoryBackendWriteData;
     method Bool memoryBackendResponseReady;
 
-    // Queue one physical board-cycle image. The image is processed exactly
-    // once, on a following FPGA clock, even when the producer does not submit
-    // another image for many clocks (as with the detailed QDX-B card model).
-    // The epoch handshake permits one image per clock without a same-cycle
-    // combinational path from external card/test logic into arbitration.
+    // Queue one physical board-cycle image. The method is guarded by queue
+    // capacity, so a producer cannot overwrite an unconsumed registered image.
+    // mkPipelineFIFOF preserves the registered boundary while allowing a new
+    // image to follow a consumed image without an artificial testbench bubble.
     method Action advance(Vector#(8, BackplaneDrive) cards,
         LightingBusMasterDrive cpu,
         Bool workerValid, HostWorkerRequest workerRequest,
@@ -121,6 +121,9 @@ interface MainboardFPGAIfc;
     method MainMemoryOwner debugMemoryOwner;
     method Bool debugPreferCpu;
     method Bool debugCpuGrantHeld;
+    method Bool debugCpuRequestSeen;
+    method Bool debugCyclePending;
+    method Bool debugAdvanceReady;
     method Bool debugPlioMemoryRequestValid;
     method PLIOHostCoreRole debugPlioRole;
     method Bool debugPlioFaultValid;
@@ -141,20 +144,17 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Reg#(Bool) cpuGrantHeld <- mkReg(False);
 
     // A completed CPU request remains consumed until a sampled cycle observes
-    // REQ deasserted. This is required at the registered boundary: the cycle
-    // in which READY/ERROR is observed still contains the old asserted REQ and
-    // must not be mistaken for a second transaction one pipeline stage later.
+    // REQ deasserted. The cycle in which READY/ERROR is observed still contains
+    // the old asserted REQ and must not become a second transaction later.
     Reg#(Bool) cpuRequestSeen <- mkReg(False);
 
-    // External board inputs are registered before use. A toggling epoch marks
-    // each newly submitted image. processedEpoch is changed only when the PLIO
-    // host consumes that image, so an image is neither replayed while a detailed
-    // card is busy nor lost merely because no new advance() arrives.
-    Reg#(MainboardCycleInputs) cycle <- mkRegU;
-    Reg#(Bool) cycleEpoch <- mkReg(False);
-    Reg#(Bool) processedEpoch <- mkReg(False);
+    // The old epoch register could be overwritten by a producer that called
+    // advance() on consecutive BSV clocks while the internal consumer was
+    // scheduled later. A real queue makes acceptance atomic and backpressured.
+    FIFOF#(MainboardCycleInputs) cycleQ <- mkPipelineFIFOF;
 
-    rule applyReset (cycleEpoch != processedEpoch && cycle.reset);
+    rule applyReset (cycleQ.notEmpty && cycleQ.first.reset);
+        let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
         memory.resetController;
         memoryOwner <= MainMemNone;
@@ -163,71 +163,73 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         cpuRequestSeen <= False;
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             False, False, False, False, 0, True);
-        processedEpoch <= cycleEpoch;
+        cycleQ.deq;
     endrule
 
-    rule acceptBackendRequest (cycleEpoch != processedEpoch && !cycle.reset
-        && memory.backendRequestValid && cycle.backendRequestReady);
+    rule acceptBackendRequest (cycleQ.notEmpty && !cycleQ.first.reset
+        && memory.backendRequestValid && cycleQ.first.backendRequestReady);
         memory.backendRequestAccepted;
     endrule
 
-    rule acceptBackendResponse (cycleEpoch != processedEpoch && !cycle.reset
-        && memory.backendResponseReady && cycle.backendResponseValid);
+    rule acceptBackendResponse (cycleQ.notEmpty && !cycleQ.first.reset
+        && memory.backendResponseReady && cycleQ.first.backendResponseValid);
+        let cycle = cycleQ.first;
         memory.backendRespond(cycle.backendFault,
             cycle.backendReadDataValid, cycle.backendReadData);
     endrule
 
-    rule reserveCpuGrant (cycleEpoch != processedEpoch && !cycle.reset
+    rule reserveCpuGrant (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
         && !cpuGrantHeld
         && memory.hostRequestReady
-        && cycle.cpu.busRequest
+        && cycleQ.first.cpu.busRequest
         && (!host.memoryRequestValid || preferCpu)
-        && !cycle.cpu.request);
+        && !cycleQ.first.cpu.request);
         cpuGrantHeld <= True;
     endrule
 
-    rule abandonCpuGrant (cycleEpoch != processedEpoch && !cycle.reset
+    rule abandonCpuGrant (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
         && cpuGrantHeld
-        && !cycle.cpu.busRequest
-        && !cycle.cpu.request);
+        && !cycleQ.first.cpu.busRequest
+        && !cycleQ.first.cpu.request);
         cpuGrantHeld <= False;
         preferCpu <= False;
     endrule
 
-    rule rearmCpuRequest (cycleEpoch != processedEpoch && !cycle.reset
+    rule rearmCpuRequest (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
         && cpuRequestSeen
-        && !cycle.cpu.request);
+        && !cycleQ.first.cpu.request);
         cpuRequestSeen <= False;
     endrule
 
-    rule rejectPartialCpu (cycleEpoch != processedEpoch && !cycle.reset
+    rule rejectPartialCpu (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
-        && cycle.cpu.request
-        && cycle.cpu.payload.byteEnable != 4'hf
+        && cycleQ.first.cpu.request
+        && cycleQ.first.cpu.payload.byteEnable != 4'hf
         && (cpuGrantHeld
             || (!cpuGrantHeld && memory.hostRequestReady
-                && cycle.cpu.busRequest
+                && cycleQ.first.cpu.busRequest
                 && (!host.memoryRequestValid || preferCpu))));
         cpuGrantHeld <= False;
         preferCpu <= False;
     endrule
 
-    rule startMemoryTransaction (cycleEpoch != processedEpoch && !cycle.reset
+    rule startMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
         && memory.hostRequestReady
-        && ( (cycle.cpu.request
+        && ( (cycleQ.first.cpu.request
                 && !cpuRequestSeen
-                && cycle.cpu.payload.byteEnable == 4'hf
+                && cycleQ.first.cpu.payload.byteEnable == 4'hf
                 && (cpuGrantHeld
-                    || (cycle.cpu.busRequest
+                    || (cycleQ.first.cpu.busRequest
                         && (!host.memoryRequestValid || preferCpu))))
             || (!cpuGrantHeld
                 && host.memoryRequestValid
-                && (!cycle.cpu.busRequest || !preferCpu)) ));
+                && (!cycleQ.first.cpu.busRequest || !preferCpu)) ));
 
+        let cycle = cycleQ.first;
         Bool selectCpu = cycle.cpu.request
             && !cpuRequestSeen
             && cycle.cpu.payload.byteEnable == 4'hf
@@ -251,7 +253,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         end
     endrule
 
-    rule completeMemoryTransaction (cycleEpoch != processedEpoch && !cycle.reset
+    rule completeMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner != MainMemNone
         && memory.hostResponseValid);
         memory.hostResponseConsumed;
@@ -260,10 +262,11 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         memoryOwner <= MainMemNone;
     endrule
 
-    // This rule is the commit point for one queued board-cycle image. Reset has
-    // its own mutually-exclusive rule above. Marking the epoch consumed here
-    // ensures a physical card image advances PLIOHostCore exactly once.
-    rule advancePlioHost (cycleEpoch != processedEpoch && !cycle.reset);
+    // Commit exactly one queued physical board-cycle image. Reset has its own
+    // mutually-exclusive rule above. Dequeueing is the sole non-reset commit
+    // point, so an image cannot be replayed or overwritten before consumption.
+    rule advancePlioHost (cycleQ.notEmpty && !cycleQ.first.reset);
+        let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
 
         Bool selectCpu = cycle.cpu.request
@@ -292,7 +295,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             memory.hostReadDataValid,
             memory.hostReadData,
             False);
-        processedEpoch <= cycleEpoch;
+        cycleQ.deq;
     endrule
 
     method Vector#(8, PlioIn) plioSlots(Vector#(8, BackplaneDrive) cards, Bool reset);
@@ -355,8 +358,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         Bool backendRequestReady,
         Bool backendResponseValid, Bool backendFault,
         Bool backendReadDataValid, Bit#(32) backendReadData,
-        Bool reset);
-        cycle <= MainboardCycleInputs {
+        Bool reset) if (cycleQ.notFull);
+        cycleQ.enq(MainboardCycleInputs {
             cards: cards,
             cpu: cpu,
             workerValid: workerValid,
@@ -367,8 +370,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             backendReadDataValid: backendReadDataValid,
             backendReadData: backendReadData,
             reset: reset
-        };
-        cycleEpoch <= !cycleEpoch;
+        });
     endmethod
 
     method Action bindDma(Bit#(3) slot, Bit#(4) channel, Bit#(32) base,
@@ -416,6 +418,9 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     method MainMemoryOwner debugMemoryOwner = memoryOwner;
     method Bool debugPreferCpu = preferCpu;
     method Bool debugCpuGrantHeld = cpuGrantHeld;
+    method Bool debugCpuRequestSeen = cpuRequestSeen;
+    method Bool debugCyclePending = cycleQ.notEmpty;
+    method Bool debugAdvanceReady = cycleQ.notFull;
     method Bool debugPlioMemoryRequestValid = host.memoryRequestValid;
     method PLIOHostCoreRole debugPlioRole = host.debugRole;
     method Bool debugPlioFaultValid = host.debugFaultValid;
