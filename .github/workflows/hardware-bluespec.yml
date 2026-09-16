@@ -54,7 +54,9 @@ jobs:
       - name: Run memory-controller regression first with full diagnostics
         env:
           MEMORY_CONTROLLER_DEBUG_DIR: ${{ runner.temp }}/memory-controller-debug
-        run: bash hardware/scripts/test-memory-controller.sh
+        run: |
+          bash hardware/scripts/test-memory-controller.sh
+          bash hardware/scripts/test-memory-controller-backend.sh
       - name: Upload memory-controller diagnostics
         if: always()
         uses: actions/upload-artifact@v4
