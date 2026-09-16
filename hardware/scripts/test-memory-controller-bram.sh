@@ -73,14 +73,16 @@ yosys_memory_stats() {
     local dir="$2"
     local log="$3"
     local expected_bits="$4"
+    local expected_lane_bits=$((expected_bits / 4))
     local rtl
     rtl="$(find "$dir" -maxdepth 1 -name '*.v' -print | sort | tr '\n' ' ')"
     test -n "$rtl"
-    yosys -p "read_verilog -sv $rtl $BRAM1_V; hierarchy -check -top $top; flatten; proc; opt; memory_collect; stat" \
+    yosys -p "read_verilog -sv $rtl $BRAM1_V; hierarchy -check -top $top; flatten; proc; opt; memory_collect; select -assert-count 4 t:\$mem_v2; select -assert-count 4 t:\$mem_v2 p:WIDTH=8 p:SIZE=${expected_lane_bits}; stat" \
         2>&1 | tee "$log"
-    # Byte-enabled implementation is intentionally four independent 8-bit memories.
-    grep -Eq 'Number of memories:[[:space:]]+4' "$log"
-    grep -Eq "Number of memory bits:[[:space:]]+${expected_bits}" "$log"
+    # memory_collect represents the byte-enabled backend as four $mem_v2 cells.
+    # Each cell is one 8-bit lane; SIZE is therefore bytes per lane and the
+    # aggregate capacity is 4 * 8 * SIZE bits.
+    grep -Eq '\$mem_v2[[:space:]]+4' "$log"
 }
 
 echo "== 1 MiB default four-lane BRAM RTL =="
