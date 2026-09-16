@@ -273,7 +273,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endrule
 
     method Vector#(8, PlioIn) plioSlots(Vector#(8, BackplaneDrive) cards, Bool reset);
-        Vector#(8, PlioOut) logicalCards = plioOutFromBackplane(cards[0]) == plioOutDefault() ? plioCardsFromBackplane(cards) : plioCardsFromBackplane(cards);
+        Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cards);
         return host.drive(logicalCards, reset);
     endmethod
 
