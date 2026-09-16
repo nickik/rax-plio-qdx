@@ -184,7 +184,10 @@ module mkPLIOQIC(PLIOQICIfc);
 
                     UDmaData: begin
                         Bool finalBuf = finalReadBuffer();
-                        out.request = True;
+                        // The final HOST->device word has already completed its
+                        // physical PLIO beat.  Only local QLI delivery remains,
+                        // so BR must no longer describe active bus work.
+                        out.request = !finalBuf;
                         if (!timedOut() && (finalBuf || bus.grant)) begin
                             if (dmaReq.direction == HostToDevice) begin
                                 if (!bufferValid && completed < burstWordCount(dmaReq.words))
@@ -200,9 +203,9 @@ module mkPLIOQIC(PLIOQICIfc);
                         end
                     end
 
-                    UDmaComplete: begin
-                        out.request = bus.grant && completion.status == DmaOk;
-                    end
+                    // DMA completion is a QLI-local handshake.  The PLIO
+                    // transaction has already ended, regardless of BG level.
+                    UDmaComplete: begin end
 
                     UNotificationAddress: begin
                         out.request = True;
