@@ -1,0 +1,32 @@
+SHELL := /bin/bash
+BSC ?= bsc
+ROOT := $(abspath ..)
+BUILD := $(abspath build/m6)
+SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
+
+.PHONY: test-m6.1 clean
+
+test-m6.1:
+	rm -rf $(BUILD)/arbitration
+	mkdir -p $(BUILD)/arbitration
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(SEARCH)' \
+		-bdir $(BUILD)/arbitration -simdir $(BUILD)/arbitration -info-dir $(BUILD)/arbitration \
+		-g mkTbMainboardM6Arbitration bluespec/TbMainboardM6Arbitration.bsv 2>&1 | tee $(BUILD)/arbitration/compile.log
+	@if grep -q '(G0023)' $(BUILD)/arbitration/compile.log; then \
+		echo 'FAIL M6.1 contains a BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(SEARCH)' \
+		-bdir $(BUILD)/arbitration -simdir $(BUILD)/arbitration \
+		-e mkTbMainboardM6Arbitration -o $(BUILD)/arbitration/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 45s $(BUILD)/arbitration/tb 2>&1 | tee $(BUILD)/arbitration/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/arbitration/tb 2>&1 | tee $(BUILD)/arbitration/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/arbitration/run.log; then exit 1; fi
+	@grep -Fq 'M6ARBITRATION|winner=cpu|loser=plio|stall_cycles=4|owner_stable=1|pending_preserved=1|status=ok' $(BUILD)/arbitration/run.log
+	@grep -Fq 'M6ARBITRATION|winner=plio|loser=cpu|stall_cycles=4|owner_stable=1|no_duplicate=1|status=ok' $(BUILD)/arbitration/run.log
+	@grep -Fq 'PASS|m6.1|deterministic CPU/PLIO arbitration, stable ownership, preserved loser, backpressure, no loss or duplication' $(BUILD)/arbitration/run.log
+
+clean:
+	rm -rf $(BUILD)
