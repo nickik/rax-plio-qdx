@@ -107,18 +107,22 @@ test-core:
 	mkdir -p $(BUILD)/core
 	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
 		-bdir $(BUILD)/core -simdir $(BUILD)/core -info-dir $(BUILD)/core \
-		-g mkTbMainboardFPGA bluespec/TbMainboardFPGA.bsv 2>&1 | tee $(BUILD)/core/compile.log
+		-g mkTbMainboardRegisteredBackend bluespec/TbMainboardRegisteredBackend.bsv 2>&1 | tee $(BUILD)/core/compile.log
 	@if grep -q '(G0023)' $(BUILD)/core/compile.log; then \
-		echo 'FAIL mainboard test contains a BSC always-false rule'; exit 1; \
+		echo 'FAIL registered-backend test contains a BSC always-false rule'; exit 1; \
 	fi
 	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
 		-bdir $(BUILD)/core -simdir $(BUILD)/core \
-		-e mkTbMainboardFPGA -o $(BUILD)/core/tb-mainboard-fpga
+		-e mkTbMainboardRegisteredBackend -o $(BUILD)/core/tb-mainboard-fpga
 	@if command -v timeout >/dev/null 2>&1; then \
 		set -o pipefail; timeout 60s $(BUILD)/core/tb-mainboard-fpga 2>&1 | tee $(BUILD)/core/run.log; \
 	else \
 		set -o pipefail; $(BUILD)/core/tb-mainboard-fpga 2>&1 | tee $(BUILD)/core/run.log; \
 	fi
+	@if grep -q '^FAIL|' $(BUILD)/core/run.log; then \
+		echo 'FAIL registered-backend integration emitted a failure marker'; exit 1; \
+	fi
+	@grep -q '^PASS|registered-backend|mainboard queued cycle matches fake backend handshake' $(BUILD)/core/run.log
 
 test-qdx-b:
 	rm -rf $(BUILD)/qdxb
@@ -147,7 +151,7 @@ verilog-sanity:
 	@test -f $(BUILD)/rtl/verilog/mkMainboardFPGA.v
 	@if command -v $(YOSYS) >/dev/null 2>&1; then \
 		BSC_PREFIX="$$(cd "$$(dirname "$$(command -v $(BSC))")/.." && pwd)"; \
-		std_files="$$(find "$$BSC_PREFIX/lib/Verilog" -maxdepth 1 -name '*.v' -print | tr '\n' ' ')"; \
+		std_files="$$(find "$$BSC_PREFIX/lib/Verilog" -maxdepth 1 -name '*.v' ! -name '*Load.v' -print | tr '\n' ' ')"; \
 		generated_files="$$(find $(BUILD)/rtl/verilog -maxdepth 1 -name '*.v' -print | tr '\n' ' ')"; \
 		$(YOSYS) -q -p "read_verilog -lib $$std_files; read_verilog $$generated_files; hierarchy -check -top mkMainboardFPGA; proc; check"; \
 	fi
