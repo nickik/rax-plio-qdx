@@ -27,17 +27,28 @@ The CPU side follows Lighting Memory Bus v0.1 semantics:
 - `ERROR` completes unsuccessfully;
 - `READ_DATA` is meaningful on a successful read.
 
-The mainboard MUST retain a CPU grant between the `BUS_REQ` arbitration cycle and the later `REQ` cycle. Once `REQ` is accepted, it MUST retain CPU ownership until the memory-controller response completes. A newly arriving PLIO DMA request MUST NOT steal either a held CPU grant or an active CPU transfer.
+The mainboard MUST retain a CPU grant between the `BUS_REQ` arbitration cycle and the later `REQ` cycle. Once `REQ` is accepted, it MUST retain CPU ownership until the memory-controller response has been externally observed by the CPU. A newly arriving PLIO DMA request MUST NOT steal either a held CPU grant or an active CPU transfer.
 
 If a malformed/test master drops `BUS_REQ` before asserting `REQ`, the mainboard may cancel the unused grant so PLIO cannot be deadlocked indefinitely. The real Lighting `ModuleBusAdapter` does not do this during a normal transaction.
 
 Because `advance()` is registered, a completed CPU `REQ` sample can still be present in the input pipeline on the cycle in which `READY`/`ERROR` becomes externally visible. The mainboard MUST remember that the request was already accepted and MUST NOT accept it again. It rearms CPU request acceptance only after a subsequently processed cycle observes `REQ=0`.
 
-### Temporary byte-enable restriction
+### Byte-enable semantics
 
-The current in-repository `MemoryControllerIfc.hostRequest` accepts only `(write, address, writeData)` and therefore cannot preserve arbitrary `BE[3:0]` semantics. Until that controller is extended, the mainboard MUST accept only `BE=0xf`. Any other `BE` MUST complete with `ERROR` and MUST NOT reach the memory backend.
+The mainboard MUST preserve the CPU's `BE[3:0]` unchanged through `MemoryController` to the selected memory backend.
 
-This restriction is temporary and is not a change to the Lighting Memory Bus specification.
+Byte lanes are defined as:
+
+- `BE[0]` controls `WRITE_DATA[7:0]`;
+- `BE[1]` controls `WRITE_DATA[15:8]`;
+- `BE[2]` controls `WRITE_DATA[23:16]`;
+- `BE[3]` controls `WRITE_DATA[31:24]`.
+
+A disabled lane MUST retain its previous memory value. `BE=4'b0000` is therefore a successful no-op write and `BE=4'b1111` is a normal full-word write. Non-contiguous masks are legal.
+
+Reads return the complete aligned 32-bit word. The request byte-enable may be retained for tracing and interface uniformity, but it does not mask the returned read data.
+
+The CPU board MUST NOT emulate partial writes with read/modify/write cycles. If a selected physical memory technology does not support native byte strobes, any required read/modify/write belongs entirely inside that backend adapter.
 
 ## 3. PLIO/QDX slots
 
@@ -63,9 +74,9 @@ The conversion from `BackplaneDrive` to the logical `PlioOut` image required by 
 
 `advance()` captures one complete physical board-cycle image into the FPGA boundary. Internal rules consume that image on a following FPGA clock. The registered boundary is intentional: external CPU/card/backend simulation logic must not form a same-cycle combinational scheduling path through mainboard arbitration.
 
-Each submitted image MUST be consumed exactly once. The implementation therefore carries an input epoch and a processed epoch. A newly submitted image toggles the input epoch; reset or the normal PLIO-host advance commits that epoch after processing. If a detailed card model takes many simulator clocks to finish one physical PLIO cycle, the mainboard MUST remain idle during those clocks rather than replaying its previous card image.
+Each submitted image MUST be consumed exactly once. The implementation uses a real FIFO boundary; callers cannot overwrite an unconsumed physical-cycle image. If a detailed card model takes many simulator clocks to finish one physical PLIO cycle, the mainboard MUST remain idle during those clocks rather than replaying its previous card image.
 
-The boundary MUST also sustain one newly submitted image per FPGA clock. Processing image N and registering image N+1 in the same clock is legal; normal register semantics keep the two images distinct.
+The boundary MUST also sustain one newly submitted image per FPGA clock. Processing image N and registering image N+1 in the same clock is legal; normal FIFO/register semantics keep the two images distinct.
 
 For a physical card integration harness, the image supplied to `advance()` after `card.cycleDone` MUST be the newly completed `card.backplane` image, not the image that was used to launch that card cycle.
 
@@ -82,7 +93,11 @@ Arbitration is round-robin at transaction boundaries:
 - after a PLIO completion, CPU receives preference;
 - a previously issued CPU `BUS_GRANT` overrides that preference until the CPU starts or abandons its transfer.
 
+A memory-controller response MUST remain valid until the owning frontend has observed it. CPU responses are retired only after a physical `advance()` cycle records that the Lighting bus exposed the response. PLIO responses are retired atomically with the `PLIOHostCore.advance` call that consumes them. The mainboard MUST NOT clear ownership merely because the backend response became available.
+
 PLIO DMA protection, capability generations, burst semantics, and notification behavior remain responsibilities of `PLIOHostCore`.
+
+PLIO DMA remains intentionally full-word: every PLIO memory request presented to the shared controller MUST use `BE=4'b1111`. Supporting CPU byte enables MUST NOT make PLIO DMA byte-granular.
 
 ## 5. Pluggable memory backend
 
@@ -92,6 +107,7 @@ PLIO DMA protection, capability generations, burst semantics, and notification b
 requestValid
 write
 address[31:0]
+byteEnable[3:0]
 writeData[31:0]
 requestReady
 
@@ -111,6 +127,8 @@ A system MAY connect this seam to:
 - a host/file-backed simulation adapter.
 
 Backend choice MUST NOT alter the CPU, PLIO, DMA-capability, or QDX-visible semantics. Arbitrary backend request or response wait states are legal.
+
+A backend with native byte-write enables SHOULD map `byteEnable` directly to its physical byte strobes or masks. The integrated FPGA BRAM backend uses four independent 8-bit lanes so masked writes require no externally visible read/modify/write cycle. A backend without native byte strobes MAY implement an internal read/modify/write sequence, but that sequence MUST remain behind this backend interface.
 
 ## 6. Interrupt boundary
 
@@ -148,17 +166,21 @@ The focused mainboard verification MUST establish at least:
 2. a CPU grant is retained from arbitration through `REQ` and throughout target wait states;
 3. CPU full-word write reaches the selected backend;
 4. CPU full-word read returns backend data unchanged;
-5. arbitrary backend request/response delay does not change the result;
-6. an explicit backend fault becomes Lighting `ERROR` while grant is retained through completion;
-7. a partial CPU access fails locally without modifying or reaching backend memory;
-8. reset cancels an outstanding mainboard/backend request and a later transaction works normally;
-9. backend RAM contents may survive reset while transaction state is cleared;
-10. a PLIO DMA request cannot steal a CPU bus that was already granted, even when round-robin preference currently favors PLIO;
-11. the waiting PLIO DMA proceeds after the CPU transaction completes;
-12. the PLIO DMA read reaches the same backend through `PLIOHostCore`;
-13. the slot adapter returns the PLIO ACK/data produced by the host controller;
-14. DMA completion remains visible through the mainboard;
-15. an idle board does not invent a PLIO interrupt;
-16. each submitted registered board-cycle image is consumed exactly once, including when no subsequent image arrives for many FPGA/simulator clocks;
-17. a separate integration test instantiates the real `mkQDXBCard` against the mainboard slot boundary and feeds each newly completed physical card image back to the mainboard;
-18. the mainboard core elaborates to Verilog and passes a synthesis sanity check without requiring an embedded RAM implementation.
+5. each individual CPU byte lane is writable independently;
+6. low-halfword (`0011`) and high-halfword (`1100`) writes update only their selected lanes;
+7. non-contiguous masks such as `0101` and `1010` update exactly their selected lanes;
+8. `BE=0000` performs a successful no-op write and `BE=1111` remains equivalent to a full-word write;
+9. arbitrary backend request/response delay does not change the result or the retained byte enable;
+10. an explicit backend fault becomes Lighting `ERROR` while grant is retained through completion;
+11. reset cancels an outstanding mainboard/backend request and a later transaction works normally, with no stale masked write or response appearing afterward;
+12. backend RAM contents may survive reset while transaction state is cleared;
+13. a PLIO DMA request cannot steal a CPU bus that was already granted, even when round-robin preference currently favors PLIO;
+14. the waiting PLIO DMA proceeds after the CPU transaction completes;
+15. every PLIO DMA memory request reaches the shared controller with `BE=1111`;
+16. the PLIO DMA read reaches the same backend through `PLIOHostCore`;
+17. the slot adapter returns the PLIO ACK/data produced by the host controller;
+18. DMA completion remains visible through the mainboard;
+19. an idle board does not invent a PLIO interrupt;
+20. each submitted registered board-cycle image is consumed exactly once, including when no subsequent image arrives for many FPGA/simulator clocks;
+21. a separate integration test instantiates the real `mkQDXBCard` against the mainboard slot boundary and feeds each newly completed physical card image back to the mainboard;
+22. the mainboard core elaborates to Verilog and passes a synthesis sanity check without requiring an embedded RAM implementation.
