@@ -15,7 +15,7 @@ echo "== M4 Rust integrated PLIOHostCore =="
 cargo test --manifest-path "$ROOT/Cargo.toml" -p plio-host-core-model --all-targets
 cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p plio-host-core-model --bin conformance | tee "$BUILD/rust.log"
 grep '^PLIOHOSTCORETRACE|' "$BUILD/rust.log" > "$BUILD/rust.trace"
-test "$(wc -l < "$BUILD/rust.trace")" -eq 20
+test "$(wc -l < "$BUILD/rust.trace")" -eq 21
 grep -q '^PASS PLIO host M4a-M4d integrated deterministic semantics$' "$BUILD/rust.log"
 
 echo "== M4 Bluesim integrated PLIOHostCore =="
@@ -23,7 +23,7 @@ bsc "${BSC_STACK[@]}" -u -sim -p "$SEARCH" -bdir "$BUILD/sim" -simdir "$BUILD/si
 bsc "${BSC_STACK[@]}" -sim -p "$SEARCH" -bdir "$BUILD/sim" -simdir "$BUILD/sim" -e mkTbPLIOHostCore -o "$BUILD/tb-plio-host-m4"
 "$BUILD/tb-plio-host-m4" | tee "$BUILD/bsv.log"
 grep '^PLIOHOSTCORETRACE|' "$BUILD/bsv.log" > "$BUILD/bsv.trace"
-test "$(wc -l < "$BUILD/bsv.trace")" -eq 20
+test "$(wc -l < "$BUILD/bsv.trace")" -eq 21
 grep -q '^PASS PLIO host M4a-M4d integrated deterministic semantics$' "$BUILD/bsv.log"
 
 echo "== Exact M4 deterministic Rust / Bluesim equivalence =="
