@@ -37,5 +37,26 @@ jobs:
           tar -xzf "$archive" -C "$prefix" --strip-components=1
           test -x "$prefix/bin/bsc"
           echo "$prefix/bin" >> "$GITHUB_PATH"
-      - name: Run Phase9 only with synthesis diagnostics
-        run: bash hardware/scripts/test-qic-phase9.sh
+      - name: Reproduce existing probe and test corrected Yosys command
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          bash hardware/scripts/test-qic-phase9.sh
+          old_rc=$?
+          set -e
+          echo "EXISTING_SCRIPT_RC=$old_rc"
+
+          build="$GITHUB_WORKSPACE/hardware/build/qic-phase9"
+          verilog="$build/vdir/mkPLIOQIC.v"
+          test -s "$verilog"
+
+          echo '== Corrected top-only Yosys parse/synthesis: no shell-style quotes inside -p =='
+          set -x
+          yosys -p "read_verilog -sv $verilog; hierarchy -check -top mkPLIOQIC; proc; opt; memory; opt; check; stat" \
+            2>&1 | tee "$build/yosys-corrected.log"
+          set +x
+          grep -Eq 'Number of memories:[[:space:]]+0' "$build/yosys-corrected.log"
+          grep -Eq 'Number of memory bits:[[:space:]]+0' "$build/yosys-corrected.log"
+          ! grep -Eiq '\$mem(rd|wr|init)|RAMB|SB_RAM' "$verilog"
+          echo 'PASS corrected Phase9 Yosys probe'
