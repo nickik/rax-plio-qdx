@@ -97,7 +97,7 @@ function NotificationDataCheck checkNotificationData(PlioOut card);
     NotificationDataCheck result = NotificationDataCheck {
         valid: False, payload: 0, fault: M2BadNotificationData
     };
-    // BE is an address-phase control signal.  Notification data is always one
+    // BE is an address-phase control signal. Notification data is always one
     // full 32-bit payload beat, so validate the full AD/parity image here and
     // do not require the manager to continue driving address-phase BE values.
     if (card.adValid && card.parValid) begin
@@ -144,7 +144,7 @@ module mkPLIOHostManagerM2(PLIOHostManagerM2Ifc);
     Reg#(Bit#(3)) cursor <- mkReg(0);
     Reg#(Bit#(9)) waitCycles <- mkReg(0);
     Reg#(Bool) faultValid <- mkReg(False);
-    Reg#(PLIOHostCoreFault) faultReg <- mkReg(CoreNoFault);
+    Reg#(HostM2Fault) faultReg <- mkReg(M2Reset);
 
     Vector#(8, Reg#(Bit#(16))) grantCounts <- replicateM(mkReg(0));
     Reg#(Bit#(32)) pendingBits <- mkReg(0);
