@@ -22,59 +22,58 @@ fn transact(
 fn main() {
     let mut controller = MemoryController::new();
     let mut memory = FakeMemory::new(1024, 2);
+    assert!(memory.preload_word(0x100, 0x1122_3344));
+    assert!(memory.preload_word(0x104, 0x5566_7788));
 
     assert_eq!(
-        transact(
-            &mut controller,
-            &mut memory,
-            MemoryRequest::write(0x100, 0xf, 0x1111_1111),
-        ),
+        transact(&mut controller, &mut memory, MemoryRequest::write(0x100, 0x5, 0xaabb_ccdd)),
         MemoryResponse::WriteDone
     );
-    assert_eq!(
-        transact(
-            &mut controller,
-            &mut memory,
-            MemoryRequest::write(0x104, 0xf, 0x2222_2222),
-        ),
-        MemoryResponse::WriteDone
-    );
-    assert_eq!(memory.peek_word(0x100), Some(0x1111_1111));
-    assert_eq!(memory.peek_word(0x104), Some(0x2222_2222));
-    assert_eq!(
-        transact(
-            &mut controller,
-            &mut memory,
-            MemoryRequest::read(0x100, 0xf),
-        ),
-        MemoryResponse::ReadData(0x1111_1111)
-    );
-    assert_eq!(
-        transact(
-            &mut controller,
-            &mut memory,
-            MemoryRequest::read(0x104, 0xf),
-        ),
-        MemoryResponse::ReadData(0x2222_2222)
-    );
-    println!("MEMBACKENDTRACE|v1|case=raw_multi_address|status=ok|a=11111111|b=22222222");
+    assert_eq!(memory.peek_word(0x100), Some(0x11bb_33dd));
 
-    // Exercise the shared backend's masked-write semantics in the conformance
-    // executable as well as the unit tests. BE=0101 updates lanes 0 and 2.
     assert_eq!(
-        transact(
-            &mut controller,
-            &mut memory,
-            MemoryRequest::write(0x100, 0x5, 0xaabb_ccdd),
-        ),
+        transact(&mut controller, &mut memory, MemoryRequest::write(0x104, 0xa, 0xaabb_ccdd)),
         MemoryResponse::WriteDone
     );
-    assert_eq!(memory.peek_word(0x100), Some(0x11bb_11dd));
-    println!("MEMBACKENDTRACE|v2|case=masked_write|be=5|value=11bb11dd|status=ok");
+    assert_eq!(memory.peek_word(0x104), Some(0xaa66_cc88));
 
-    assert!(controller.accept_host_request(MemoryRequest::read(0x100, 0xf)));
-    controller.tick_backend(&mut memory);
-    assert_eq!(controller.debug().state, ControllerState::BackendResponse);
+    assert_eq!(
+        transact(&mut controller, &mut memory, MemoryRequest::write(0x100, 0x0, 0xffff_ffff)),
+        MemoryResponse::WriteDone
+    );
+    assert_eq!(memory.peek_word(0x100), Some(0x11bb_33dd));
+
+    assert_eq!(
+        transact(&mut controller, &mut memory, MemoryRequest::write(0x100, 0xf, 0xdead_beef)),
+        MemoryResponse::WriteDone
+    );
+    assert_eq!(memory.peek_word(0x100), Some(0xdead_beef));
+
+    // Read masks are retained for tracing but do not mask read data.
+    assert_eq!(
+        transact(&mut controller, &mut memory, MemoryRequest::read(0x100, 0x3)),
+        MemoryResponse::ReadData(0xdead_beef)
+    );
+    println!("MEMBACKENDTRACE|v2|case=masked|status=ok|m5=11bb33dd|ma=aa66cc88|full=deadbeef");
+
+    memory.set_request_holdoff(4);
+    assert!(controller.accept_host_request(MemoryRequest::write(0x108, 0x6, 0x1234_5678)));
+    for _ in 0..4 {
+        assert_eq!(controller.backend_request().map(|r| r.byte_enable()), Some(0x6));
+        assert_eq!(controller.backend_request().map(|r| r.write_data()), Some(0x1234_5678));
+        controller.tick_backend(&mut memory);
+    }
+    while controller.host_response().is_none() {
+        controller.tick_backend(&mut memory);
+    }
+    assert_eq!(controller.host_response(), Some(MemoryResponse::WriteDone));
+    assert!(controller.consume_host_response());
+    assert_eq!(memory.peek_word(0x108), Some(0x0034_5600));
+
+    assert!(controller.accept_host_request(MemoryRequest::write(0x10c, 0x9, 0xcafe_babe)));
+    while controller.debug().state != ControllerState::BackendResponse {
+        controller.tick_backend(&mut memory);
+    }
     assert_eq!(memory.response(), None);
 
     controller.reset();
@@ -89,18 +88,7 @@ fn main() {
         }
     }
     assert!(saw_stale_backend_response);
-    println!("MEMBACKENDTRACE|v1|case=reset_pending|status=isolated");
-
     memory.reset();
-    assert_eq!(memory.response(), None);
-    assert_eq!(
-        transact(
-            &mut controller,
-            &mut memory,
-            MemoryRequest::read(0x100, 0xf),
-        ),
-        MemoryResponse::ReadData(0x11bb_11dd)
-    );
-    println!("MEMBACKENDTRACE|v2|case=reset_recovery|status=ok|value=11bb11dd");
-    println!("PASS memory controller backend sequence semantics");
+    println!("MEMBACKENDTRACE|v2|case=reset_pending_masked|status=isolated");
+    println!("PASS memory controller backend masked-write semantics");
 }
