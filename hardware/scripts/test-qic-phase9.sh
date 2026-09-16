@@ -17,10 +17,10 @@ VERILOG="$BUILD/vdir/mkPLIOQIC.v"
 test -s "$VERILOG"
 grep -q '^module mkPLIOQIC' "$VERILOG"
 
-# The unified abstract QIC is intentionally register/FSM logic only.  Yosys
-# must be able to elaborate it without PTI/QLI-16 wrappers and must not infer
-# RAMs or memories.
-yosys -p "read_verilog '$VERILOG'; hierarchy -check -top mkPLIOQIC; proc; opt; memory; opt; check; stat" \
+# Current BSC emits SystemVerilog-compatible constructs even for its Verilog
+# backend.  Parse them with Yosys' SystemVerilog frontend, then keep the same
+# strict hierarchy, process, memory, consistency, and statistics checks.
+yosys -p "read_verilog -sv '$VERILOG'; hierarchy -check -top mkPLIOQIC; proc; opt; memory; opt; check; stat" \
     | tee "$BUILD/yosys.log"
 
 grep -Eq 'Number of memories:[[:space:]]+0' "$BUILD/yosys.log"
