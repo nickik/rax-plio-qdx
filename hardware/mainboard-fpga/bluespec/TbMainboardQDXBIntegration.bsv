@@ -37,43 +37,16 @@ module mkTbMainboardQDXBIntegration(Empty);
     Reg#(Bit#(16)) watchdog <- mkReg(0);
     Reg#(Bit#(32)) clockTicks <- mkReg(0);
 
-    // This monitor owns clockTicks. Other rules deliberately do not read
-    // clockTicks: a previous debug version created a two-way scheduling
-    // conflict (monitor writes clockTicks while consume reads it; consume
-    // writes stage/launched while monitor reads them) and starved the real
-    // card-cycle consume rule. Debugging must never alter forward progress.
-    rule observeProgress (stage != QbDone);
+    // Keep the wall-clock watchdog deliberately blind to board/card state.
+    // Debug methods can expose FIFO/register reads that participate in rule
+    // scheduling; an always-on observer of those methods previously became
+    // more urgent than board_advancePlio* and stopped forward progress. Rich
+    // state is therefore emitted only by the event rules below, which already
+    // own the corresponding transition.
+    rule tickWatchdog (stage != QbDone);
         clockTicks <= clockTicks + 1;
-
-        if (clockTicks != 0 && clockTicks[9:0] == 0) begin
-            $display("DBG|qdx-b|clock=%0d|physical_cycles=%0d|stage=%0d|launched=%0d|worker_sent=%0d|role=%0d|dma_state=%0d|qic=%0d|qdx=%0d|owner=%0d|mc_state=%0d|mc_host_resp=%0d|plio_mem_req=%0d|cycle_pending=%0d|advance_ready=%0d|backend_req=%0d|backend_resp_ready=%0d|host_fault_valid=%0d|host_fault=%0d|card_fault=%0d",
-                clockTicks, watchdog, pack(stage), pack(launched),
-                pack(workerSent), pack(board.debugPlioRole),
-                pack(board.debugPlioDmaState), pack(card.qicState),
-                pack(card.qdxState), pack(board.debugMemoryOwner),
-                pack(board.debugMemoryControllerState),
-                pack(board.debugMemoryHostResponseValid),
-                pack(board.debugPlioMemoryRequestValid),
-                pack(board.debugCyclePending), pack(board.debugAdvanceReady),
-                pack(board.memoryBackendRequestValid),
-                pack(board.memoryBackendResponseReady),
-                pack(board.debugPlioFaultValid), pack(board.debugPlioFault),
-                pack(card.protocolFault));
-        end
-
         if (clockTicks == 32'd200000) begin
-            $display("FAIL|qdx-b|clock-watchdog|physical_cycles=%0d|stage=%0d|launched=%0d|worker_sent=%0d|role=%0d|dma_state=%0d|qic=%0d|qdx=%0d|owner=%0d|mc_state=%0d|mc_host_resp=%0d|plio_mem_req=%0d|cycle_pending=%0d|advance_ready=%0d|backend_req=%0d|backend_resp_ready=%0d|host_fault_valid=%0d|host_fault=%0d|card_fault=%0d",
-                watchdog, pack(stage), pack(launched), pack(workerSent),
-                pack(board.debugPlioRole), pack(board.debugPlioDmaState),
-                pack(card.qicState), pack(card.qdxState),
-                pack(board.debugMemoryOwner), pack(board.debugMemoryControllerState),
-                pack(board.debugMemoryHostResponseValid),
-                pack(board.debugPlioMemoryRequestValid),
-                pack(board.debugCyclePending), pack(board.debugAdvanceReady),
-                pack(board.memoryBackendRequestValid),
-                pack(board.memoryBackendResponseReady),
-                pack(board.debugPlioFaultValid), pack(board.debugPlioFault),
-                pack(card.protocolFault));
+            $display("FAIL|qdx-b|clock-watchdog|clock=%0d", clockTicks);
             $finish(1);
         end
     endrule
@@ -188,7 +161,7 @@ module mkTbMainboardQDXBIntegration(Empty);
     endrule
 
     rule done (stage == QbDone && !launched);
-        $display("MAINBOARDQDXBTRACE|v5|registered_fifo=once|debug_nonintrusive=1|physical_slot=ok|worker_read=ok|cap=%08x|physical_cycles=%0d|clock_ticks=%0d",
+        $display("MAINBOARDQDXBTRACE|v6|registered_fifo=once|debug_event_driven=1|physical_slot=ok|worker_read=ok|cap=%08x|physical_cycles=%0d|clock_ticks=%0d",
             qdxCapValue, watchdog, clockTicks);
         $display("PASS mainboard FPGA <-> physical mkQDXBCard integration");
         $finish(0);
