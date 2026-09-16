@@ -20,8 +20,6 @@ function BackplaneDrive dmaWriteBeat(Bit#(32) v); BackplaneDrive d=dmaReadBeat()
 function LightingBusMasterDrive cpuBR(); LightingBusMasterDrive d=lightingBusMasterDriveDefault(); d.busRequest=True; return d; endfunction
 function LightingBusMasterDrive cpuReq(Bit#(32) a, Bool wr); LightingBusMasterDrive d=cpuBR(); d.request=True; d.payload.addr=a; d.payload.write=wr; d.payload.byteEnable=4'hf; d.payload.writeData=32'hfeed6002; return d; endfunction
 
-// CPU read fault with a PLIO contender held pending.  After the CPU fault retires,
-// the same PLIO request must acquire the controller and complete normally.
 (* synthesize *)
 module mkTbMainboardM6CpuFaultIsolation(Empty);
     MainboardFPGAIfc b <- mkMainboardFPGA;
@@ -33,7 +31,7 @@ module mkTbMainboardM6CpuFaultIsolation(Empty);
     rule r1(s==1); b.bindDma(1,3,pa,25'h100,True,True);s<=2;endrule
     rule r2(s==2&&b.debugAdvanceReady); Vector#(8,BackplaneDrive)c=idleCards();c[1]=requestOnly();b.advance(c,lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);s<=3;endrule
     rule r3(s==3&&b.debugAdvanceReady); Vector#(8,BackplaneDrive)c=idleCards();c[1]=dmaAddress(32'h30000000,True);b.advance(c,lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);s<=4;endrule
-    rule r4(s==4&&b.debugAdvanceReady); Vector#(8,BackplaneDrive)c=idleCards();c[1]=dmaAddress(32'h30000000,True);Vector#(8,PlioIn)i=b.plioSlots(c,False);if(!i[1].ack||i[1].err)begin$display("FAIL|m6.2|cpu-isolation-address");$finish(1);end b.advance(c,lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);s<=5;endrule
+    rule r4(s==4&&b.debugAdvanceReady); Vector#(8,BackplaneDrive)c=idleCards(); Vector#(8,PlioIn)i=b.plioSlots(c,False); c[1]=dmaAddress(32'h30000000,True); i=b.plioSlots(c,False);if(!i[1].ack||i[1].err)begin$display("FAIL|m6.2|cpu-isolation-address");$finish(1);end b.advance(c,lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);s<=5;endrule
     rule r5(s==5&&b.debugAdvanceReady&&b.debugPlioMemoryRequestValid); LightingBusInputs x=b.lightingMemory(pc(),cpuBR(),False);if(!x.busGrant)begin$display("FAIL|m6.2|cpu-isolation-grant");$finish(1);end b.advance(pc(),cpuBR(),False,noWorkerRequest(),False,False,False,False,0,False);s<=6;endrule
     rule r6(s==6&&b.debugAdvanceReady); b.advance(pc(),cpuReq(ca,False),False,noWorkerRequest(),False,False,False,False,0,False);s<=7;endrule
     rule acceptCpu(s==7&&b.debugAdvanceReady&&b.memoryBackendRequestValid); if(b.debugMemoryOwner!=MainMemCpu||!b.debugPlioMemoryRequestValid)begin$display("FAIL|m6.2|cpu-owner");$finish(1);end b.advance(pc(),cpuReq(ca,False),False,noWorkerRequest(),True,False,False,False,0,False);s<=8;endrule
@@ -45,7 +43,6 @@ module mkTbMainboardM6CpuFaultIsolation(Empty);
     rule observePlio(s==13&&b.debugAdvanceReady); Vector#(8,PlioIn)i=b.plioSlots(pc(),False); if(i[1].err)begin$display("FAIL|m6.2|pending-plio-error");$finish(1);end if(i[1].ack)begin if(!i[1].adValid||i[1].ad!=pd)begin$display("FAIL|m6.2|pending-plio-data");$finish(1);end $display("PASS|m6.2-cpu-isolation|CPU fault routed once, PLIO isolated and preserved through owner fault");$finish(0);end b.advance(pc(),lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);endrule
 endmodule
 
-// CPU write fault: terminal completion is an error exactly once and no PLIO response exists.
 (* synthesize *)
 module mkTbMainboardM6CpuWriteFault(Empty);
     MainboardFPGAIfc b<-mkMainboardFPGA; Reg#(Bit#(4))s<-mkReg(0);Reg#(Bit#(8))wd<-mkReg(0);
@@ -58,7 +55,6 @@ module mkTbMainboardM6CpuWriteFault(Empty);
     rule r5(s==5&&b.debugAdvanceReady&&b.debugCpuResponsePending);LightingBusInputs x=b.lightingMemory(idleCards(),cpuReq(32'h1800,True),False);Vector#(8,PlioIn)i=b.plioSlots(idleCards(),False);if(!x.ready||!x.error||i[1].ack||i[1].err)begin$display("FAIL|m6.2|cpu-write-routing");$finish(1);end $display("M6FAULT|owner=cpu|op=write|cpu_fault=1|plio_spurious=0|status=ok");$display("PASS|m6.2-cpu-write|CPU write fault routed exactly to CPU");$finish(0);endrule
 endmodule
 
-// PLIO read/write faults.  Both use the production host DMA parser and Mainboard owner routing.
 module mkPlioFault#(Bool isRead)(Empty);
     MainboardFPGAIfc b<-mkMainboardFPGA; Reg#(Bit#(5))s<-mkReg(0);Reg#(Bit#(16))wd<-mkReg(0); Bit#(32) pa=32'h1c00;
     function Vector#(8,BackplaneDrive) beat(); Vector#(8,BackplaneDrive)c=idleCards();c[1]=isRead?dmaReadBeat():dmaWriteBeat(32'h12345678);return c;endfunction
@@ -67,7 +63,7 @@ module mkPlioFault#(Bool isRead)(Empty);
     rule r1(s==1);b.bindDma(1,3,pa,25'h100,True,True);s<=2;endrule
     rule r2(s==2&&b.debugAdvanceReady);Vector#(8,BackplaneDrive)c=idleCards();c[1]=requestOnly();b.advance(c,lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);s<=3;endrule
     rule r3(s==3&&b.debugAdvanceReady);Vector#(8,BackplaneDrive)c=idleCards();c[1]=dmaAddress(32'h30000000,isRead);b.advance(c,lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);s<=4;endrule
-    rule r4(s==4&&b.debugAdvanceReady);Vector#(8,BackplaneDrive)c=idleCards();c[1]=dmaAddress(32'h30000000,isRead);Vector#(8,PlioIn)i=b.plioSlots(c,False);if(!i[1].ack||i[1].err)begin$display("FAIL|m6.2|plio-address|read=%0d",pack(isRead));$finish(1);end b.advance(c,lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);s<=5;endrule
+    rule r4(s==4&&b.debugAdvanceReady);Vector#(8,BackplaneDrive)c=idleCards();Vector#(8,PlioIn)i=b.plioSlots(c,False);c[1]=dmaAddress(32'h30000000,isRead);i=b.plioSlots(c,False);if(!i[1].ack||i[1].err)begin$display("FAIL|m6.2|plio-address|read=%0d",pack(isRead));$finish(1);end b.advance(c,lightingBusMasterDriveDefault(),False,noWorkerRequest(),False,False,False,False,0,False);s<=5;endrule
     rule accept(s==5&&b.debugAdvanceReady&&b.memoryBackendRequestValid);if(b.debugMemoryOwner!=MainMemPlio||b.memoryBackendAddress!=pa||b.memoryBackendWrite==isRead)begin$display("FAIL|m6.2|plio-owner|read=%0d|write=%0d",pack(isRead),pack(b.memoryBackendWrite));$finish(1);end b.advance(beat(),cpuBR(),False,noWorkerRequest(),True,False,False,False,0,False);s<=6;endrule
     rule fault(s==6&&b.debugAdvanceReady&&b.memoryBackendResponseReady);b.advance(beat(),cpuBR(),False,noWorkerRequest(),False,True,True,False,0,False);s<=7;endrule
     rule observe(s==7&&b.debugAdvanceReady);Vector#(8,PlioIn)i=b.plioSlots(beat(),False);LightingBusInputs x=b.lightingMemory(beat(),cpuBR(),False);if(x.ready||x.error)begin$display("FAIL|m6.2|plio-fault-leaked-to-cpu|read=%0d",pack(isRead));$finish(1);end if(i[1].ack)begin$display("FAIL|m6.2|plio-fault-acked|read=%0d",pack(isRead));$finish(1);end if(i[1].err)begin$display("M6FAULT|owner=plio|op_read=%0d|plio_fault=1|cpu_spurious=0|status=ok",pack(isRead));$display("PASS|m6.2-plio|PLIO DMA fault routed exactly to PLIO|read=%0d",pack(isRead));$finish(0);end b.advance(beat(),cpuBR(),False,noWorkerRequest(),False,False,False,False,0,False);endrule
