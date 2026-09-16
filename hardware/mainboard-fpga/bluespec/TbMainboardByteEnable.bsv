@@ -2,12 +2,24 @@ package TbMainboardByteEnable;
 
 import Vector::*;
 import QLITypes::*;
+import QICInterfaces::*;
+import PLIOTx::*;
 import PLIOWorkerHost::*;
 import MainboardFPGA::*;
 import LightingMemoryBusCompat::*;
 
 function Vector#(8, BackplaneDrive) idleCards();
     return replicate(backplaneDriveDefault());
+endfunction
+
+function HostWorkerRequest noWorkerRequest();
+    return HostWorkerRequest {
+        slot: 0,
+        address: 0,
+        width: HostW32,
+        write: False,
+        value: 0
+    };
 endfunction
 
 function LightingBusMasterDrive cpuRequest(Bit#(32) addr, Bit#(4) be, Bit#(32) data);
@@ -42,18 +54,15 @@ module mkTbMainboardByteEnable(Empty);
         end
     endrule
 
-    // Queue one CPU request. Backend request-ready is deliberately false so
-    // MemoryController must retain the exact request through backpressure.
     rule issueMask (phase == 0 && maskIndex < 10 && dut.debugAdvanceReady);
         Bit#(4) be = masks[maskIndex];
         Bit#(32) addr = 32'h00001000 + zeroExtend(maskIndex) * 4;
         Bit#(32) data = 32'ha5a50000 | zeroExtend(be);
-        dut.advance(idleCards(), cpuRequest(addr, be, data), False, ?,
+        dut.advance(idleCards(), cpuRequest(addr, be, data), False, noWorkerRequest(),
             False, False, False, False, 0, False);
         phase <= 1;
     endrule
 
-    // Wait until the CPU request has reached MemoryController's backend side.
     rule waitBackend (phase == 1);
         Bit#(4) be = masks[maskIndex];
         Bit#(32) addr = 32'h00001000 + zeroExtend(maskIndex) * 4;
@@ -72,8 +81,6 @@ module mkTbMainboardByteEnable(Empty);
         end
     endrule
 
-    // Keep backend stalled for four cycles and require the complete request,
-    // especially BE, to remain stable on every cycle.
     rule proveStable (phase == 2 && heldCycles < 4);
         Bit#(4) be = masks[maskIndex];
         Bit#(32) addr = 32'h00001000 + zeroExtend(maskIndex) * 4;
@@ -92,28 +99,26 @@ module mkTbMainboardByteEnable(Empty);
         heldCycles <= heldCycles + 1;
     endrule
 
-    // Accept the retained request on a queued physical cycle.
     rule acceptBackend (phase == 2 && heldCycles == 4 && dut.debugAdvanceReady);
-        dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, ?,
+        dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, noWorkerRequest(),
             True, False, False, False, 0, False);
         phase <= 3;
     endrule
 
     rule waitResponseReady (phase == 3 && dut.debugAdvanceReady);
         if (dut.memoryBackendResponseReady) begin
-            dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, ?,
+            dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, noWorkerRequest(),
                 False, True, False, False, 0, False);
             phase <= 4;
         end
         else begin
-            dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, ?,
+            dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, noWorkerRequest(),
                 False, False, False, False, 0, False);
         end
     endrule
 
-    // Drop CPU request so the mainboard can retire the response and re-arm.
     rule retire (phase == 4 && dut.debugAdvanceReady);
-        dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, ?,
+        dut.advance(idleCards(), lightingBusMasterDriveDefault(), False, noWorkerRequest(),
             False, False, False, False, 0, False);
         $display("MAINBOARDBETRACE|mask=%04b|status=ok", masks[maskIndex]);
         if (maskIndex == 9) begin
