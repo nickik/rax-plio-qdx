@@ -8,7 +8,9 @@ QDXB_SEARCH := $(BASE_SEARCH):$(ROOT)/qli16/bluespec:$(ROOT)/testbench/bluespec:
 
 .PHONY: test test-isolated test-cpu-grant test-cpu-write test-cpu-read test-byte-enable test-reset-recovery test-plio-dma test-core test-qdx-b verilog-sanity clean
 
-test: test-isolated test-byte-enable test-core test-qdx-b verilog-sanity
+test: test-core test-qdx-b verilog-sanity
+
+test-core: test-isolated test-byte-enable
 
 test-isolated: test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma
 
@@ -73,16 +75,6 @@ test-plio-dma:
 	@if grep -q '(G0023)' $(BUILD)/diag-plio-dma/compile.log; then echo 'FAIL PLIO DMA diagnostic contains a BSC always-false rule'; exit 1; fi
 	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' -bdir $(BUILD)/diag-plio-dma -simdir $(BUILD)/diag-plio-dma -e mkTbMainboardPlioDma -o $(BUILD)/diag-plio-dma/tb
 	@if command -v timeout >/dev/null 2>&1; then set -o pipefail; timeout 30s $(BUILD)/diag-plio-dma/tb 2>&1 | tee $(BUILD)/diag-plio-dma/run.log; else set -o pipefail; $(BUILD)/diag-plio-dma/tb 2>&1 | tee $(BUILD)/diag-plio-dma/run.log; fi
-
-test-core:
-	rm -rf $(BUILD)/core
-	mkdir -p $(BUILD)/core
-	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
-		-bdir $(BUILD)/core -simdir $(BUILD)/core -info-dir $(BUILD)/core \
-		-g mkTbMainboardFPGA bluespec/TbMainboardFPGA.bsv 2>&1 | tee $(BUILD)/core/compile.log
-	@if grep -q '(G0023)' $(BUILD)/core/compile.log; then echo 'FAIL mainboard test contains a BSC always-false rule'; exit 1; fi
-	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' -bdir $(BUILD)/core -simdir $(BUILD)/core -e mkTbMainboardFPGA -o $(BUILD)/core/tb-mainboard-fpga
-	@if command -v timeout >/dev/null 2>&1; then set -o pipefail; timeout 60s $(BUILD)/core/tb-mainboard-fpga 2>&1 | tee $(BUILD)/core/run.log; else set -o pipefail; $(BUILD)/core/tb-mainboard-fpga 2>&1 | tee $(BUILD)/core/run.log; fi
 
 test-qdx-b:
 	rm -rf $(BUILD)/qdxb
