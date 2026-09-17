@@ -31,15 +31,15 @@ function LightingBusMasterDrive dmaOperation(Bit#(4) operation, Bool request);
         1: begin cpu.payload.addr = dmaEntry + 4; cpu.payload.write = True;
             cpu.payload.writeData = 32'h0000_0100; end
         2: begin cpu.payload.addr = dmaEntry + 8; cpu.payload.write = True;
-            cpu.payload.writeData = 7; end // bind; device read and write
-        3: cpu.payload.addr = dmaEntry + 12;
+            cpu.payload.writeData = 7; end
+        3: begin cpu.payload.addr = dmaEntry + 12; end
         4: begin cpu.payload.addr = dmaEntry + 8; cpu.payload.write = True;
-            cpu.payload.writeData = 8; end // revoke
+            cpu.payload.writeData = 8; end
         5: begin cpu.payload.addr = dmaEntry; cpu.payload.write = True;
             cpu.payload.writeData = 32'h0000_3000; end
         6: begin cpu.payload.addr = dmaEntry + 8; cpu.payload.write = True;
             cpu.payload.writeData = 7; end
-        default: cpu.payload.addr = dmaEntry + 12;
+        default: begin cpu.payload.addr = dmaEntry + 12; end
     endcase
     return cpu;
 endfunction
@@ -47,6 +47,7 @@ endfunction
 typedef enum { DcReset, DcBus, DcActive, DcRetire, DcDone }
     DmaCsrStage deriving (Bits, Eq, FShow);
 
+(* synthesize *)
 module mkTbMainboardLightingPlio0DmaCsr(Empty);
     MainboardFPGAIfc board <- mkMainboardFPGA;
     Reg#(DmaCsrStage) stage <- mkReg(DcReset);
@@ -83,27 +84,36 @@ module mkTbMainboardLightingPlio0DmaCsr(Empty);
         end
         else if (stage == DcActive && bus.ready) begin
             if (bus.error) begin
-                $display("FAIL|lighting-plio0-dma-csr|response|op=%0d", operation);
+                $display("FAIL|lighting-plio0-dma-csr|response|op=%0d",
+                    operation);
                 $finish(1);
             end
             if (operation == 3 && bus.readData != 0) begin
-                $display("FAIL|lighting-plio0-dma-csr|first-generation|value=%0d", bus.readData);
+                $display("FAIL|lighting-plio0-dma-csr|first-generation|value=%0d",
+                    bus.readData);
                 $finish(1);
             end
             if (operation == 7 && bus.readData != 1) begin
-                $display("FAIL|lighting-plio0-dma-csr|rebind-generation|value=%0d", bus.readData);
+                $display("FAIL|lighting-plio0-dma-csr|rebind-generation|value=%0d",
+                    bus.readData);
+                $finish(1);
+            end
+            if (operation == 8 && bus.readData != 0) begin
+                $display("FAIL|lighting-plio0-dma-csr|reset-generation|value=%0d",
+                    bus.readData);
                 $finish(1);
             end
             stage <= DcRetire;
         end
         else if (stage == DcRetire) begin
-            if (operation == 7) stage <= DcDone;
+            if (operation == 7) begin operation <= 8; stage <= DcReset; end
+            else if (operation == 8) stage <= DcDone;
             else begin operation <= operation + 1; stage <= DcBus; end
         end
     endrule
 
     rule done (stage == DcDone);
-        $display("MAINBOARDPLIO0DMACSR|slot=1|channel=3|bind=ok|revoke=ok|generation=1");
+        $display("MAINBOARDPLIO0DMACSR|slot=1|channel=3|bind=ok|revoke=ok|generation=1|reset_generation=0");
         $display("PASS|lighting-plio0-dma-csr|CPU programs frozen DMA table through Mainboard host state");
         $finish(0);
     endrule

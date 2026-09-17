@@ -39,6 +39,10 @@ Bit#(32) lightingPlio0Size = 32'h0010_0000;
 Bit#(32) lightingPlio0WorkerBase = 32'h0008_0000;
 Bit#(32) lightingPlio0DmaTableBase = 32'h0000_1000;
 Bit#(32) lightingPlio0DmaTableEnd = 32'h0000_1800;
+Bit#(32) lightingPlio0NotifyTableBase = 32'h0000_1800;
+Bit#(32) lightingPlio0NotifyTableEnd = 32'h0000_1a00;
+Bit#(32) lightingPlio0ClaimSource = 32'h0000_1a00;
+Bit#(32) lightingPlio0ClaimPayload = 32'h0000_1a04;
 
 function Bool isLightingPlio0(Bit#(32) address);
     return address >= lightingPlio0Base
@@ -205,6 +209,15 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Reg#(Bool) plioSoftResetPending <- mkReg(False);
     Reg#(Bit#(8)) slotPresentBits <- mkReg(0);
     Reg#(Bit#(32)) notificationClaimData <- mkReg(0);
+    Reg#(Bool) claimPayloadValid <- mkReg(False);
+    Reg#(Bit#(32)) claimedPayload <- mkReg(0);
+    Reg#(Bool) privilegedDmaBindPending <- mkReg(False);
+    Reg#(Bit#(3)) privilegedDmaBindSlot <- mkReg(0);
+    Reg#(Bit#(4)) privilegedDmaBindChannel <- mkReg(0);
+    Reg#(Bit#(32)) privilegedDmaBindBase <- mkReg(0);
+    Reg#(Bit#(25)) privilegedDmaBindLength <- mkReg(0);
+    Reg#(Bool) privilegedDmaBindRead <- mkReg(False);
+    Reg#(Bool) privilegedDmaBindWrite <- mkReg(False);
 
     FIFOF#(MainboardCycleInputs) cycleQ <- mkLFIFOF;
 
@@ -228,6 +241,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         plioSoftResetPending <= False;
         slotPresentBits <= 0;
         notificationClaimData <= 0;
+        claimPayloadValid <= False;
+        claimedPayload <= 0;
         for (Integer channel = 0; channel < 8; channel = channel + 1)
             ioChannels[channel] <= 0;
         for (Integer entry = 0; entry < 128; entry = entry + 1) begin
@@ -239,6 +254,18 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             False, False, False, False, 0, True);
         cycleQ.deq;
+    endrule
+
+    // A privileged configuration may be queued immediately after a machine
+    // reset epoch.  Apply it only after reset retires.  A controller-local
+    // soft reset remains exclusive and discards any older queued bind.
+    rule applyPrivilegedDmaBind (privilegedDmaBindPending
+        && !plioSoftResetPending
+        && !(cycleQ.notEmpty && cycleQ.first.reset));
+        host.bindDma(privilegedDmaBindSlot, privilegedDmaBindChannel,
+            privilegedDmaBindBase, privilegedDmaBindLength,
+            privilegedDmaBindRead, privilegedDmaBindWrite);
+        privilegedDmaBindPending <= False;
     endrule
 
     rule acceptBackendRequest (cycleQ.notEmpty && !cycleQ.first.reset
@@ -276,6 +303,9 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         plioError <= False;
         plioErrorInfo <= 0;
         notificationClaimData <= 0;
+        claimPayloadValid <= False;
+        claimedPayload <= 0;
+        privilegedDmaBindPending <= False;
         slotPresentBits <= pack(cycle.slotPresent);
         cpuMmioWorkerPending <= False;
         cpuMmioWorkerIssued <= False;
@@ -534,6 +564,75 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                         default: fault = True;
                     endcase
                 end
+                else if (offset >= lightingPlio0NotifyTableBase
+                    && offset < lightingPlio0NotifyTableEnd) begin
+                    Bit#(9) relative = truncate(offset
+                        - lightingPlio0NotifyTableBase);
+                    Bit#(5) entry = relative[8:4];
+                    Bit#(4) field = relative[3:0];
+                    Bit#(3) slot = entry[4:2];
+                    Bit#(2) channel = entry[1:0];
+                    Bit#(32) mark = 32'b1 << entry;
+                    complete = True;
+                    case (field)
+                        4'h0: begin
+                            if (cycle.cpu.payload.write) begin
+                                Bit#(32) configWord = cycle.cpu.payload.writeData;
+                                if (configWord[31:8] != 0 || configWord[3:2] != 0)
+                                    fault = True;
+                                else begin
+                                    Bit#(32) enableImage = configWord[0] == 1
+                                        ? host.notificationEnabledMask | mark
+                                        : host.notificationEnabledMask & ~mark;
+                                    Bit#(32) maskedImage = configWord[1] == 1
+                                        ? host.notificationMaskedMask | mark
+                                        : host.notificationMaskedMask & ~mark;
+                                    host.configureNotificationState(enableImage,
+                                        maskedImage, True, slot, channel,
+                                        configWord[7:4]);
+                                end
+                            end
+                            else begin
+                                readData = { 24'b0,
+                                    host.notificationClass(slot, channel),
+                                    2'b0,
+                                    host.notificationMaskedMask[entry],
+                                    host.notificationEnabledMask[entry] };
+                            end
+                        end
+                        4'h4: begin
+                            if (cycle.cpu.payload.write) fault = True;
+                            else readData = zeroExtend(pack(
+                                host.notificationPending(slot, channel)));
+                        end
+                        4'h8: begin
+                            if (cycle.cpu.payload.write) fault = True;
+                            else readData = host.notificationPayload(slot, channel);
+                        end
+                        default: fault = True;
+                    endcase
+                end
+                else if (offset == lightingPlio0ClaimSource) begin
+                    complete = True;
+                    if (cycle.cpu.payload.write || claimPayloadValid)
+                        fault = True;
+                    else if (host.claimValid) begin
+                        readData = { 1'b1, 20'b0, host.claimClass,
+                            host.claimSlot, 2'b0, host.claimChannel };
+                        claimedPayload <= host.claimPayload;
+                        claimPayloadValid <= True;
+                        host.claimFirst;
+                    end
+                end
+                else if (offset == lightingPlio0ClaimPayload) begin
+                    complete = True;
+                    if (cycle.cpu.payload.write || !claimPayloadValid)
+                        fault = True;
+                    else begin
+                        readData = claimedPayload;
+                        claimPayloadValid <= False;
+                    end
+                end
                 else begin
                     complete = True; fault = True;
                 end
@@ -781,8 +880,15 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endmethod
 
     method Action bindDma(Bit#(3) slot, Bit#(4) channel, Bit#(32) base,
-        Bit#(25) length, Bool deviceRead, Bool deviceWrite);
-        host.bindDma(slot, channel, base, length, deviceRead, deviceWrite);
+        Bit#(25) length, Bool deviceRead, Bool deviceWrite)
+        if (!privilegedDmaBindPending);
+        privilegedDmaBindSlot <= slot;
+        privilegedDmaBindChannel <= channel;
+        privilegedDmaBindBase <= base;
+        privilegedDmaBindLength <= length;
+        privilegedDmaBindRead <= deviceRead;
+        privilegedDmaBindWrite <= deviceWrite;
+        privilegedDmaBindPending <= True;
     endmethod
     method Action revokeDma(Bit#(3) slot, Bit#(4) channel);
         host.revokeDma(slot, channel);

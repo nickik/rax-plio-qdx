@@ -47,7 +47,7 @@ CPU board -> MainboardFPGA -> MemoryController -> RAM
 
 - [x] Implement the frozen per-slot DMA capability CSR table as a staged
   base/length/control interface to `PLIOHostCore` bind/revoke.
-- [ ] Implement notification enable/mask/class configuration and claim/data
+- [x] Implement notification enable/mask/class configuration and claim/data
   registers through the same host controller state.
 - [ ] Prove a card-originated DMA transfer reaches RAM only through
   `MemoryController` and that a CPU claim clears exactly one eligible PLIO

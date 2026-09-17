@@ -137,9 +137,27 @@ The CPU-module interrupt aggregate is:
 
 Individual PLIO cards do not receive dedicated CPU interrupt wires.
 
-## 7. Temporary privileged control seam
+## 7. CPU-visible Lighting PLIO0 host control
 
-The final CPU-visible host-controller register block is not yet frozen. v0.1 therefore passes these operations directly through the composition interface:
+Lighting maps the Mainboard-owned PLIO host controller at CPU physical
+`0xffe0_0000`. In addition to identity and IOchannel worker mappings, the
+controller owns these privileged tables:
+
+- `+0x1000 .. +0x17ff`: 128 DMA entries, indexed by `(slot, channel)`, with
+  staged base, length, bind/revoke permissions, and generation fields;
+- `+0x1800 .. +0x19ff`: 32 notification entries, indexed by
+  `(slot, channel)`, with configuration, pending, and payload fields;
+- `+0x1a00`: atomic claim source read. Bit 31 is valid, class is bits 10:7,
+  slot is bits 6:4, and channel is bits 1:0;
+- `+0x1a04`: payload of the source returned by the preceding successful
+  claim-source read. Reading it consumes the held payload.
+
+Notification configuration uses `ENABLE[0]`, `MASK[1]`, and `CLASS[7:4]`.
+The claim-source read snapshots payload and clears exactly one eligible source
+inside `PLIOHostCore`; software must consume the payload before claiming again.
+
+The composition interface still exposes direct operations for focused unit
+tests and lower-level integration compatibility:
 
 - worker MMIO request injection;
 - DMA bind/revoke and generation inspection;
