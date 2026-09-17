@@ -3,10 +3,10 @@
 ## Goal
 
 `MainboardFPGA` owns the Lighting platform unit made from the CPU-facing
-memory path, `MemoryController`, and the PLIO host controller. A CPU board
+memory path, `MemoryController`, and the PLIO host controller.  A CPU board
 and the eight physical cards remain external peers.
 
-The implementation MUST use the already frozen Lighting PLIO0 profile. It
+The implementation MUST use the already frozen Lighting PLIO0 profile.  It
 MUST NOT add a second PLIO ABI, a Rust-side controller, or a CPU-direct card
 path.
 
@@ -20,30 +20,30 @@ CPU board -> MainboardFPGA -> MemoryController -> RAM
                     eight card slots
 ```
 
-## M6.6a — CPU physical PLIO0 decode
+## M6.6a -- CPU physical PLIO0 decode
 
-- [ ] Decode the existing Lighting PLIO0 aperture at `0xffe00000` in the
+- [x] Decode the existing Lighting PLIO0 aperture at `0xffe00000` in the
   production Mainboard CPU path.
-- [ ] Preserve normal RAM traffic through `MemoryController`; PLIO0 accesses
+- [x] Preserve normal RAM traffic through `MemoryController`; PLIO0 accesses
   MUST NOT reach the external RAM backend.
-- [ ] Make aligned 32-bit controller-register reads/writes complete through
+- [x] Make aligned 32-bit controller-register reads/writes complete through
   the normal CPU `BUS_REQ/REQ/READY|ERROR` protocol.
-- [ ] Reject unsupported width, alignment, reserved-offset, and malformed
+- [x] Reject unsupported width, alignment, reserved-offset, and malformed
   command accesses as CPU-visible faults.
-- [ ] Keep reset atomic across CPU response state, PLIO0 state, host worker,
+- [x] Keep reset atomic across CPU response state, PLIO0 state, host worker,
   DMA capability state, notification state, and MemoryController state.
 
-## M6.6b — existing IOchannel worker mapping
+## M6.6b -- existing IOchannel worker mapping
 
-- [ ] Implement the frozen eight IOchannel map registers and 64 KiB windows.
-- [ ] Translate a CPU window access into one selected, slot-relative PLIO
+- [x] Implement the frozen eight IOchannel map registers and 64 KiB windows.
+- [x] Translate a CPU window access into one selected, slot-relative PLIO
   worker transaction through the existing `PLIOHostCore` worker state machine.
-- [ ] Hold the CPU response until the worker completes; preserve worker width,
+- [x] Hold the CPU response until the worker completes; preserve worker width,
   byte lanes, parity, ACK/ERR, and timeout behavior.
-- [ ] Prove that a real QDX-B configuration read is reached only through the
+- [x] Prove that a real QDX-B configuration read is reached only through the
   CPU -> Mainboard -> PLIO worker -> card-pin path.
 
-## M6.6c — DMA, notifications, and claim
+## M6.6c -- DMA, notifications, and claim
 
 - [ ] Implement the frozen per-slot DMA capability CSR table as a staged
   base/length/control interface to `PLIOHostCore` bind/revoke.
@@ -53,7 +53,7 @@ CPU board -> MainboardFPGA -> MemoryController -> RAM
   `MemoryController` and that a CPU claim clears exactly one eligible PLIO
   Notification.
 
-## M6.6d — hardware proof and Lighting integration
+## M6.6d -- hardware proof and Lighting integration
 
 - [ ] Add a focused Bluesim proof covering CPU controller access, IOchannel
   worker access, protected DMA, notification, claim, reset, and RAM isolation.
@@ -70,3 +70,17 @@ CPU board -> MainboardFPGA -> MemoryController -> RAM
 - Cards receive only registered `PlioIn` images and emit next-epoch drives.
 - CPU-visible PLIO0 is a Lighting host-profile mapping, not a universal PLIO
   address-map change.
+
+## Evidence
+
+M6.6a/M6.6b merged as `10a594d0abc38c46ba2548fadb374437ee14f31f` from PR
+[#37](https://github.com/nickik/rax-plio-qdx/pull/37). Exact tested PR head:
+`cb1acef472136fd1f7c8ffec149b47c60744aefb`.
+
+- Hardware Bluespec run `35223057875`: passed the complete Mainboard FPGA
+  regression, including `TbMainboardLightingPlio0` and the physical QDX-B
+  CPU-MMIO worker read.
+- Mainboard P0 run `35223057844`: passed all six physical QDX-B/PLIO/CPU
+  compatibility jobs.
+- Mainboard M6 run `35223057609`: passed M6.1-M6.5 and the final gate.
+- Hardware Rust run `35223057677`: passed.
