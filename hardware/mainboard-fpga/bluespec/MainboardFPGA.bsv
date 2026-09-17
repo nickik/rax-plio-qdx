@@ -2,6 +2,7 @@ package MainboardFPGA;
 
 import Vector::*;
 import FIFOF::*;
+import RegFile::*;
 import QLITypes::*;
 import QICInterfaces::*;
 import PLIOTx::*;
@@ -358,8 +359,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 else if (offset == 32'h0000_000c) begin
                     complete = True;
                     if (cycle.cpu.payload.write) begin
-                        plioEnabled <= cycle.cpu.payload.writeData[1];
-                        if (cycle.cpu.payload.writeData[0])
+                        plioEnabled <= unpack(cycle.cpu.payload.writeData[1]);
+                        if (cycle.cpu.payload.writeData[0] == 1)
                             plioSoftResetPending <= True;
                     end
                     else begin
