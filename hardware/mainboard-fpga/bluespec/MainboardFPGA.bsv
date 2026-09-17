@@ -242,11 +242,13 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endrule
 
     rule acceptBackendRequest (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && memory.backendRequestValid && cycleQ.first.backendRequestReady);
         memory.backendRequestAccepted;
     endrule
 
     rule acceptBackendResponse (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && memory.backendResponseReady && cycleQ.first.backendResponseValid);
         let cycle = cycleQ.first;
         memory.backendRespond(cycle.backendFault,
@@ -265,6 +267,17 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // delivered to PLIOHostCore and the physically attached cards.
     rule completePlioSoftReset (cycleQ.notEmpty && !cycleQ.first.reset
         && plioSoftResetPending);
+        let cycle = cycleQ.first;
+        Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
+        memory.resetController;
+        memoryOwner <= MainMemNone;
+        preferCpu <= True;
+        cpuGrantHeld <= False;
+        cpuRequestSeen <= False;
+        cpuResponsePending <= False;
+        cpuResponseFault <= False;
+        cpuResponseReadDataValid <= False;
+        cpuResponseReadData <= 0;
         plioSoftResetPending <= False;
         plioEnabled <= True;
         plioError <= False;
@@ -274,9 +287,19 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         cpuMmioWorkerIssued <= False;
         for (Integer channel = 0; channel < 8; channel = channel + 1)
             ioChannels[channel] <= 0;
+        for (Integer entry = 0; entry < 128; entry = entry + 1) begin
+            dmaStagedBase[entry] <= 0;
+            dmaStagedLength[entry] <= 0;
+            dmaPermissions[entry] <= 0;
+            dmaBound[entry] <= False;
+        end
+        host.advance(logicalCards, False, cycle.workerRequest,
+            False, False, False, False, 0, True);
+        cycleQ.deq;
     endrule
 
     rule reserveCpuGrant (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && memoryOwner == MainMemNone
         && !cpuResponsePending
         && !cpuGrantHeld
@@ -289,6 +312,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endrule
 
     rule abandonCpuGrant (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && memoryOwner == MainMemNone
         && !cpuResponsePending
         && cpuGrantHeld
@@ -299,6 +323,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endrule
 
     rule rearmCpuRequest (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && memoryOwner == MainMemNone
         && !cpuResponsePending
         && cpuRequestSeen
@@ -307,6 +332,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endrule
 
     rule retireCpuResponse (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && cpuResponsePending
         && !cycleQ.first.cpu.request);
         cpuResponsePending <= False;
@@ -317,6 +343,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endrule
 
     rule startCpuMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && memoryOwner == MainMemNone
         && !cpuResponsePending
         && !cpuMmioWorkerPending
@@ -557,7 +584,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // A worker MMIO transfer is an asynchronous CPU transaction, but it is
     // still driven exclusively by the real PLIO host state machine.  The CPU
     // remains granted until the resulting ACK/ERR completion is registered.
-    rule captureCpuMmioWorkerCompletion (cpuMmioWorkerPending
+    rule captureCpuMmioWorkerCompletion (!plioSoftResetPending
+        && cpuMmioWorkerPending
         && cpuMmioWorkerIssued && host.workerCompletionValid
         && !cpuResponsePending);
         let completion = host.workerCompletion;
@@ -575,7 +603,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         host.clearWorkerCompletion;
     endrule
 
-    rule captureCpuMemoryResponse (!(cycleQ.notEmpty && cycleQ.first.reset)
+    rule captureCpuMemoryResponse (!plioSoftResetPending
+        && !(cycleQ.notEmpty && cycleQ.first.reset)
         && memoryOwner == MainMemCpu
         && memory.hostResponseValid);
         cpuResponsePending <= True;
@@ -616,6 +645,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // PLIO response delivery is also atomic: the response is presented to the
     // host in the same rule that consumes it from MemoryController.
     rule advancePlioResponse (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && memoryOwner == MainMemPlio
         && memory.hostResponseValid);
         let cycle = cycleQ.first;
@@ -627,7 +657,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             memory.hostResponseFault,
             memory.hostReadDataValid,
             memory.hostReadData,
-            plioSoftResetPending);
+            False);
         if (useCpuWorker) cpuMmioWorkerIssued <= True;
         memory.hostResponseConsumed;
         memoryOwner <= MainMemNone;
@@ -639,19 +669,20 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // edge. The explicit negations make this rule mutually exclusive with the
     // two atomic PLIO memory rules above.
     rule advancePlioOrdinary (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && !(memoryOwner == MainMemPlio && memory.hostResponseValid)
-        && (plioSoftResetPending || !(!cpuResponsePending
+        && !(!cpuResponsePending
             && memoryOwner == MainMemNone
             && !cpuGrantHeld
             && memory.hostRequestReady
             && host.memoryRequestValid
-            && (!cycleQ.first.cpu.busRequest || !preferCpu))));
+            && (!cycleQ.first.cpu.busRequest || !preferCpu)));
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
         Bool useCpuWorker = cpuMmioWorkerPending && !cpuMmioWorkerIssued;
         host.advance(logicalCards, useCpuWorker ? True : cycle.workerValid,
             useCpuWorker ? cpuMmioWorkerRequest : cycle.workerRequest,
-            False, False, False, False, 0, plioSoftResetPending);
+            False, False, False, False, 0, False);
         if (useCpuWorker) cpuMmioWorkerIssued <= True;
         cycleQ.deq;
     endrule
