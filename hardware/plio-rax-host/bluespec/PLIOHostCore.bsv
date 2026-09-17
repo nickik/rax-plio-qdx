@@ -209,7 +209,9 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
                 dmaCompletionBeatsReg<=0; dmaState<=DmaIdle; dmaWait<=0;
                 dmaRevokePending<=False;
                 role<=CoreIdle; activeSlot<=0; cursor<=0; waitCycles<=0; workerState<=HostIdle; workerWait<=0; queuedWorkerValid<=False;
-                notificationPendingBits<=0; dmaAddressPending<=False; writeAckPending<=False; faultValid<=False;
+                notificationPendingBits<=0;
+                capValidMask<=0; capEverMask<=0;
+                dmaAddressPending<=False; writeAckPending<=False; faultValid<=False;
             end
             else begin
                 if (workerValid && !queuedWorkerValid) begin queuedWorker<=workerRequest; queuedWorkerValid<=True; end
