@@ -98,16 +98,22 @@ module mkTbMainboardLightingPlio0DmaCsr(Empty);
                     bus.readData);
                 $finish(1);
             end
+            if (operation == 8 && bus.readData != 0) begin
+                $display("FAIL|lighting-plio0-dma-csr|reset-generation|value=%0d",
+                    bus.readData);
+                $finish(1);
+            end
             stage <= DcRetire;
         end
         else if (stage == DcRetire) begin
-            if (operation == 7) stage <= DcDone;
+            if (operation == 7) begin operation <= 8; stage <= DcReset; end
+            else if (operation == 8) stage <= DcDone;
             else begin operation <= operation + 1; stage <= DcBus; end
         end
     endrule
 
     rule done (stage == DcDone);
-        $display("MAINBOARDPLIO0DMACSR|slot=1|channel=3|bind=ok|revoke=ok|generation=1");
+        $display("MAINBOARDPLIO0DMACSR|slot=1|channel=3|bind=ok|revoke=ok|generation=1|reset_generation=0");
         $display("PASS|lighting-plio0-dma-csr|CPU programs frozen DMA table through Mainboard host state");
         $finish(0);
     endrule

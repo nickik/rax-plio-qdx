@@ -190,6 +190,13 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Vector#(32, Reg#(Bit#(4))) notifyClass <- replicateM(mkReg(0));
     Reg#(Bool) claimPayloadValid <- mkReg(False);
     Reg#(Bit#(32)) claimedPayload <- mkReg(0);
+    Reg#(Bool) privilegedDmaBindPending <- mkReg(False);
+    Reg#(Bit#(3)) privilegedDmaBindSlot <- mkReg(0);
+    Reg#(Bit#(4)) privilegedDmaBindChannel <- mkReg(0);
+    Reg#(Bit#(32)) privilegedDmaBindBase <- mkReg(0);
+    Reg#(Bit#(25)) privilegedDmaBindLength <- mkReg(0);
+    Reg#(Bool) privilegedDmaBindRead <- mkReg(False);
+    Reg#(Bool) privilegedDmaBindWrite <- mkReg(False);
     Reg#(Bool) cpuMmioWorkerPending <- mkReg(False);
     Reg#(Bool) cpuMmioWorkerIssued <- mkReg(False);
     Reg#(HostWorkerRequest) cpuMmioWorkerRequest <- mkReg(
@@ -230,6 +237,17 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             False, False, False, False, 0, True);
         cycleQ.deq;
+    endrule
+
+    // The legacy privileged configuration method may be called immediately
+    // after enqueueing a reset epoch.  Retire that reset first, then apply the
+    // bind so reset invalidation cannot silently shadow the configuration.
+    rule applyPrivilegedDmaBind (privilegedDmaBindPending
+        && !(cycleQ.notEmpty && cycleQ.first.reset));
+        host.bindDma(privilegedDmaBindSlot, privilegedDmaBindChannel,
+            privilegedDmaBindBase, privilegedDmaBindLength,
+            privilegedDmaBindRead, privilegedDmaBindWrite);
+        privilegedDmaBindPending <= False;
     endrule
 
     rule acceptBackendRequest (cycleQ.notEmpty && !cycleQ.first.reset
@@ -675,8 +693,15 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endmethod
 
     method Action bindDma(Bit#(3) slot, Bit#(4) channel, Bit#(32) base,
-        Bit#(25) length, Bool deviceRead, Bool deviceWrite);
-        host.bindDma(slot, channel, base, length, deviceRead, deviceWrite);
+        Bit#(25) length, Bool deviceRead, Bool deviceWrite)
+        if (!privilegedDmaBindPending);
+        privilegedDmaBindSlot <= slot;
+        privilegedDmaBindChannel <= channel;
+        privilegedDmaBindBase <= base;
+        privilegedDmaBindLength <= length;
+        privilegedDmaBindRead <= deviceRead;
+        privilegedDmaBindWrite <= deviceWrite;
+        privilegedDmaBindPending <= True;
     endmethod
     method Action revokeDma(Bit#(3) slot, Bit#(4) channel);
         host.revokeDma(slot, channel);
