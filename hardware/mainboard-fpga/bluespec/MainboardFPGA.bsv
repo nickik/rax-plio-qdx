@@ -286,7 +286,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // clears the host-visible control plane atomically with the reset image
     // delivered to PLIOHostCore and the physically attached cards.
     rule completePlioSoftReset (cycleQ.notEmpty && !cycleQ.first.reset
-        && plioSoftResetPending);
+        && plioSoftResetPending
+        && !cpuResponsePending);
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
         memory.resetController;
@@ -294,7 +295,9 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         preferCpu <= True;
         cpuGrantHeld <= False;
         cpuRequestSeen <= False;
-        cpuResponsePending <= False;
+        // Complete the initiating CONTROL.RESET write only after the host and
+        // controller state have reached their reset image.
+        cpuResponsePending <= True;
         cpuResponseFault <= False;
         cpuResponseReadDataValid <= False;
         cpuResponseReadData <= 0;
@@ -356,7 +359,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endrule
 
     rule retireCpuResponse (cycleQ.notEmpty && !cycleQ.first.reset
-        && !plioSoftResetPending
         && cpuResponsePending
         && !cycleQ.first.cpu.request);
         cpuResponsePending <= False;
@@ -389,6 +391,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             Bit#(32) offset = cycle.cpu.payload.addr - lightingPlio0Base;
             Bool controller = offset < lightingPlio0WorkerBase;
             Bool complete = False;
+            Bool deferResponse = False;
             Bool fault = False;
             Bit#(32) readData = 0;
             if (controller) begin
@@ -416,8 +419,10 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                     complete = True;
                     if (cycle.cpu.payload.write) begin
                         plioEnabled <= unpack(cycle.cpu.payload.writeData[1]);
-                        if (cycle.cpu.payload.writeData[0] == 1)
+                        if (cycle.cpu.payload.writeData[0] == 1) begin
                             plioSoftResetPending <= True;
+                            deferResponse = True;
+                        end
                     end
                     else begin
                         readData[0] = pack(plioSoftResetPending);
@@ -659,7 +664,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                     cpuMmioWorkerIssued <= False;
                 end
             end
-            if (complete) begin
+            if (complete && !deferResponse) begin
                 cpuResponsePending <= True;
                 cpuResponseFault <= fault;
                 cpuResponseReadDataValid <= !fault && !cycle.cpu.payload.write;
