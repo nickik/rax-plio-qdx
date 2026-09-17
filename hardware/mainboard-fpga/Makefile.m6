@@ -10,7 +10,7 @@ define run_bench
 	rm -rf $(BUILD)/$(1); mkdir -p $(BUILD)/$(1)
 	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(SEARCH)' -bdir $(BUILD)/$(1) -simdir $(BUILD)/$(1) -info-dir $(BUILD)/$(1) -g $(2) bluespec/$(3) 2>&1 | tee $(BUILD)/$(1)/compile.log
 	@if grep -q '(G0023)' $(BUILD)/$(1)/compile.log; then echo 'FAIL $(1) contains a BSC always-false rule'; exit 1; fi
-	$(BSC) +RTS -K8M -RTS -sim -p '$(SEARCH)' -bdir $(BUILD)/$(1) -simdir $(BUILD)/$(1) -e $(2) -o $(BUILD)/$(1)/tb
+	$(BSC) +RTS -K8M -RTS -sim -parallel-sim-link 1 -p '$(SEARCH)' -bdir $(BUILD)/$(1) -simdir $(BUILD)/$(1) -e $(2) -o $(BUILD)/$(1)/tb
 	@if command -v timeout >/dev/null 2>&1; then set -o pipefail; timeout 45s $(BUILD)/$(1)/tb 2>&1 | tee $(BUILD)/$(1)/run.log; else set -o pipefail; $(BUILD)/$(1)/tb 2>&1 | tee $(BUILD)/$(1)/run.log; fi
 	@if grep -q '^FAIL|' $(BUILD)/$(1)/run.log; then exit 1; fi
 endef
