@@ -61,9 +61,13 @@ interface PLIOHostCoreIfc;
     method Bit#(32) notificationEnabledMask;
     method Bit#(32) notificationMaskedMask;
     method Bit#(4) notificationClass(Bit#(3) slot, Bit#(2) channel);
-    method Action setNotificationEnableMask(Bit#(32) enabled);
-    method Action setNotificationMaskedMask(Bit#(32) masked);
-    method Action setNotificationConfig(Bit#(3) slot, Bit#(2) channel, Bool enabled, Bool masked, Bit#(4) classCode);
+    // All notification control-plane updates go through one atomic action.
+    // This makes the enabled/masked image and an optional class update one
+    // controller-owned state transition, rather than relying on an ordering
+    // between independently callable mask and class setters.
+    method Action configureNotificationState(Bit#(32) enabled,
+        Bit#(32) masked, Bool writeClass, Bit#(3) slot,
+        Bit#(2) channel, Bit#(4) classCode);
     method Bool claimValid;
     method Bit#(3) claimSlot;
     method Bit#(2) claimChannel;
@@ -365,9 +369,13 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     method Bit#(32) notificationEnabledMask=notificationEnabledBits;
     method Bit#(32) notificationMaskedMask=notificationMaskedBits;
     method Bit#(4) notificationClass(Bit#(3) slot,Bit#(2) channel)=notificationClassFile.sub({slot,channel});
-    method Action setNotificationEnableMask(Bit#(32) enabled);notificationEnabledBits<=enabled;endmethod
-    method Action setNotificationMaskedMask(Bit#(32) masked);notificationMaskedBits<=masked;endmethod
-    method Action setNotificationConfig(Bit#(3) slot,Bit#(2) channel,Bool en,Bool mask,Bit#(4) cls);Bit#(5)idx={slot,channel};Bit#(32)mark=32'b1<<idx;if(en)notificationEnabledBits<=notificationEnabledBits|mark;else notificationEnabledBits<=notificationEnabledBits&~mark;if(mask)notificationMaskedBits<=notificationMaskedBits|mark;else notificationMaskedBits<=notificationMaskedBits&~mark;notificationClassFile.upd(idx,cls);endmethod
+    method Action configureNotificationState(Bit#(32) enabled,
+        Bit#(32) masked, Bool writeClass, Bit#(3) slot,
+        Bit#(2) channel, Bit#(4) classCode);
+        notificationEnabledBits <= enabled;
+        notificationMaskedBits <= masked;
+        if (writeClass) notificationClassFile.upd({slot, channel}, classCode);
+    endmethod
     method Bool claimValid;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.valid;endmethod
     method Bit#(3) claimSlot;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.index[4:2];endmethod
     method Bit#(2) claimChannel;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.index[1:0];endmethod
