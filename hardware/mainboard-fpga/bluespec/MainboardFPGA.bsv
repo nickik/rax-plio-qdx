@@ -326,7 +326,9 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 out.busGrant = True;
                 if (cpuResponsePending) begin
                     out.error = cpuResponseFault;
-                    out.ready = !cpuResponseFault;
+                    // ready denotes a terminal CPU response; error qualifies
+                    // that response rather than suppressing it.
+                    out.ready = True;
                     if (cpuResponseReadDataValid) out.readData = cpuResponseReadData;
                 end
             end

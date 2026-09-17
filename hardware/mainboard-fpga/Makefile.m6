@@ -4,7 +4,7 @@ ROOT := $(abspath ..)
 BUILD := $(abspath build/m6)
 SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
 
-.PHONY: test-m6.1 test-m6.2 test-m6.3 clean
+.PHONY: test-m6.1 test-m6.2 test-m6.3 test-m6.4 test-m6.5 clean
 
 define run_bench
 	rm -rf $(BUILD)/$(1); mkdir -p $(BUILD)/$(1)
@@ -36,6 +36,16 @@ test-m6.3:
 	@grep -Fq 'PASS|m6.3-cpu-owner|reset clears CPU owner and waiting PLIO, suppresses stale completion, fresh PLIO recovers' $(BUILD)/reset-cpu-owner/run.log
 	$(call run_bench,reset-plio-owner,mkTbMainboardM6ResetPlioOwner,TbMainboardM6Reset.bsv)
 	@grep -Fq 'PASS|m6.3-plio-owner|reset clears PLIO owner and waiting CPU, suppresses stale completion, fresh CPU recovers' $(BUILD)/reset-plio-owner/run.log
+
+# Production Mainboard + MemoryController + registered-backend proof: all
+# byte-enable masks, CPU partial write -> PLIO read, and PLIO full write ->
+# CPU read observe one serialized memory image.
+test-m6.4:
+	$(MAKE) -f Makefile test-memory-semantics
+
+# Complete M6 sign-off plus the established Mainboard regression suite.
+test-m6.5: test-m6.1 test-m6.2 test-m6.3 test-m6.4
+	$(MAKE) -f Makefile test
 
 clean:
 	rm -rf $(BUILD)

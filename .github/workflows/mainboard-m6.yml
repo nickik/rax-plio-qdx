@@ -56,3 +56,31 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with: { name: 'm6-3-reset-${{ github.run_id }}', path: 'hardware/mainboard-fpga/build/m6/reset-*/*.log', if-no-files-found: warn }
+
+  m6-4-memory-semantics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with: { version: '${{ env.BSC_VERSION }}', url: '${{ env.BSC_URL }}', sha256: '${{ env.BSC_SHA256 }}' }
+      - name: Prove M6.4 serialized CPU/PLIO same-address semantics
+        run: make -C hardware/mainboard-fpga -f Makefile.m6 test-m6.4
+      - name: Upload M6.4 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: 'm6-4-memory-${{ github.run_id }}', path: 'hardware/mainboard-fpga/build/diag-memory-semantics/*.log', if-no-files-found: warn }
+
+  m6-5-final-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bsc
+        with: { version: '${{ env.BSC_VERSION }}', url: '${{ env.BSC_URL }}', sha256: '${{ env.BSC_SHA256 }}' }
+      - name: Run complete M6 and Mainboard regression gate
+        run: make -C hardware/mainboard-fpga -f Makefile.m6 test-m6.5
+      - name: Upload final-gate diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: 'm6-5-final-${{ github.run_id }}', path: 'hardware/mainboard-fpga/build/**/*.log', if-no-files-found: warn }
