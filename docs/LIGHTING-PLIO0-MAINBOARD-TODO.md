@@ -45,7 +45,7 @@ CPU board -> MainboardFPGA -> MemoryController -> RAM
 
 ## M6.6c -- DMA, notifications, and claim
 
-- [ ] Implement the frozen per-slot DMA capability CSR table as a staged
+- [x] Implement the frozen per-slot DMA capability CSR table as a staged
   base/length/control interface to `PLIOHostCore` bind/revoke.
 - [ ] Implement notification enable/mask/class configuration and claim/data
   registers through the same host controller state.
