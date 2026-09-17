@@ -24,15 +24,15 @@ M6 is a Mainboard integration/verification milestone. Do not add RMW behavior to
 
 ## M6.1 — CPU/PLIO arbitration under contention
 
-- [ ] CPU request pending when PLIO DMA arrives.
-- [ ] PLIO request pending when CPU request arrives.
-- [ ] Hold backend `requestReady` low while both contenders are present.
-- [ ] Prove exactly one requester owns the MemoryController transaction.
-- [ ] Prove ownership does not change until completion/fault/reset.
-- [ ] Prove the losing requester remains pending rather than being dropped.
-- [ ] Prove no duplicate backend request is emitted.
-- [ ] Prove both transactions eventually complete once backpressure is removed.
-- [ ] Record deterministic arbitration policy and assert it in the test rather than relying on incidental Bluespec scheduling.
+- [x] CPU request pending when PLIO DMA arrives.
+- [x] PLIO request pending when CPU request arrives.
+- [x] Hold backend `requestReady` low while both contenders are present.
+- [x] Prove exactly one requester owns the MemoryController transaction.
+- [x] Prove ownership does not change until completion/fault/reset.
+- [x] Prove the losing requester remains pending rather than being dropped.
+- [x] Prove no duplicate backend request is emitted.
+- [x] Prove both transactions eventually complete once backpressure is removed.
+- [x] Record deterministic arbitration policy and assert it in the test rather than relying on incidental Bluespec scheduling.
 
 Acceptance:
 
@@ -46,22 +46,22 @@ Acceptance:
 
 CPU path:
 
-- [ ] Backend fault during CPU read.
-- [ ] Backend fault during CPU write.
-- [ ] CPU receives the fault/completion exactly once.
-- [ ] PLIO receives no spurious response.
+- [x] Backend fault during CPU read.
+- [x] Backend fault during CPU write.
+- [x] CPU receives the fault/completion exactly once.
+- [x] PLIO receives no spurious response.
 
 PLIO path:
 
-- [ ] Backend fault during PLIO DMA read.
-- [ ] Backend fault during PLIO DMA write.
-- [ ] PLIO receives the fault/completion exactly once.
-- [ ] CPU receives no spurious response.
+- [x] Backend fault during PLIO DMA read.
+- [x] Backend fault during PLIO DMA write.
+- [x] PLIO receives the fault/completion exactly once.
+- [x] CPU receives no spurious response.
 
 Cross-requester isolation:
 
-- [ ] Keep the non-owner requester pending while the owner faults.
-- [ ] After fault completion, prove the pending requester can subsequently acquire memory and complete normally.
+- [x] Keep the non-owner requester pending while the owner faults.
+- [x] After fault completion, prove the pending requester can subsequently acquire memory and complete normally.
 
 Acceptance:
 
@@ -73,25 +73,25 @@ Acceptance:
 
 CPU-owned case:
 
-- [ ] CPU owns an outstanding MemoryController transaction.
-- [ ] PLIO is waiting.
-- [ ] Assert reset before backend completion.
-- [ ] Prove Mainboard ownership/pending transaction state clears.
-- [ ] Prove MemoryController outstanding state clears.
-- [ ] Inject stale completion from the pre-reset backend request.
-- [ ] Prove stale completion reaches neither CPU nor PLIO.
+- [x] CPU owns an outstanding MemoryController transaction.
+- [x] PLIO is waiting.
+- [x] Assert reset before backend completion.
+- [x] Prove Mainboard ownership/pending transaction state clears.
+- [x] Prove MemoryController outstanding state clears.
+- [x] Inject stale completion from the pre-reset backend request.
+- [x] Prove stale completion reaches neither CPU nor PLIO.
 
 PLIO-owned case:
 
-- [ ] PLIO owns an outstanding MemoryController transaction.
-- [ ] CPU is waiting.
-- [ ] Repeat the same reset/stale-response proof.
+- [x] PLIO owns an outstanding MemoryController transaction.
+- [x] CPU is waiting.
+- [x] Repeat the same reset/stale-response proof.
 
 Recovery:
 
-- [ ] Fresh CPU transaction succeeds after reset.
-- [ ] Fresh PLIO transaction succeeds after reset.
-- [ ] No pre-reset ownership or response state influences the new transactions.
+- [x] Fresh CPU transaction succeeds after reset.
+- [x] Fresh PLIO transaction succeeds after reset.
+- [x] No pre-reset ownership or response state influences the new transactions.
 
 Acceptance:
 
@@ -103,14 +103,14 @@ Acceptance:
 
 Use the real production Mainboard + MemoryController + backend path.
 
-- [ ] Seed a known aligned 32-bit word.
-- [ ] CPU partial write, then PLIO read: PLIO observes the merged word.
-- [ ] PLIO full-word write, then CPU read: CPU observes the PLIO value.
-- [ ] Alternate CPU partial and PLIO full-word accesses to the same address.
-- [ ] Prove each completed transaction establishes the value observed by the next serialized transaction.
-- [ ] Include non-contiguous CPU byte enables (`0101`, `1010`).
-- [ ] Include `0000` CPU write as a successful no-op.
-- [ ] PLIO remains full-beat `BE=1111`.
+- [x] Seed a known aligned 32-bit word.
+- [x] CPU partial write, then PLIO read: PLIO observes the merged word.
+- [x] PLIO full-word write, then CPU read: CPU observes the PLIO value.
+- [x] Alternate CPU partial and PLIO full-word accesses to the same address.
+- [x] Prove each completed transaction establishes the value observed by the next serialized transaction.
+- [x] Include non-contiguous CPU byte enables (`0101`, `1010`).
+- [x] Include `0000` CPU write as a successful no-op.
+- [x] PLIO remains full-beat `BE=1111`.
 
 This is serialized shared-memory behavior, not a cache-coherence protocol.
 
@@ -122,18 +122,22 @@ Acceptance:
 
 ## M6.5 — Final integration/regression gate
 
-- [ ] Focused arbitration tests.
-- [ ] Focused fault-routing tests.
-- [ ] Focused reset/arbitration tests.
-- [ ] Focused same-address coherence tests.
-- [ ] Existing Mainboard CPU grant/read/write/lifecycle tests.
-- [ ] Existing byte-enable propagation and semantics tests.
-- [ ] Registered-backend integration.
-- [ ] QDX-B/Mainboard integration.
-- [ ] Generated Verilog.
-- [ ] Yosys/synthesis sanity.
-- [ ] Broader affected Bluespec/PLIO/bus regression.
-- [ ] Freeze one exact SHA with the complete gate green before merge.
+- [x] Focused arbitration tests.
+- [x] Focused fault-routing tests.
+- [x] Focused reset/arbitration tests.
+- [x] Focused same-address coherence tests.
+- [x] Existing Mainboard CPU grant/read/write/lifecycle tests.
+- [x] Existing byte-enable propagation and semantics tests.
+- [x] Registered-backend integration.
+- [x] QDX-B/Mainboard integration.
+- [x] Generated Verilog.
+- [x] Yosys/synthesis sanity.
+- [x] Broader affected Bluespec/PLIO/bus regression.
+- [x] Freeze one exact SHA with the complete gate green before merge.
+
+## Frozen verification record
+
+M6.1-M6.5 are complete. Source checkpoint `a4299c8b627d371d0e312a5df4ffa01e1b535bec` passed Mainboard M6 Verification run 35205353981, Mainboard P0 Debug run 35205353978, Hardware Bluespec run 35205353982, Hardware Rust run 35205353992, Hardware PLIO Host M0-M1 run 35205354078, and Hardware PLIO Host M4 run 35205353965.
 
 ## Implementation constraints
 
