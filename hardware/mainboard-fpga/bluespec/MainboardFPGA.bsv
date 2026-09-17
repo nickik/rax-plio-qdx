@@ -19,6 +19,7 @@ typedef enum {
 
 typedef struct {
     Vector#(8, BackplaneDrive) cards;
+    Vector#(8, Bool) slotPresent;
     LightingBusMasterDrive cpu;
     Bool workerValid;
     HostWorkerRequest workerRequest;
@@ -113,6 +114,14 @@ interface MainboardFPGAIfc;
         Bool backendResponseValid, Bool backendFault,
         Bool backendReadDataValid, Bit#(32) backendReadData,
         Bool reset);
+    method Action advanceWithSlotPresence(Vector#(8, BackplaneDrive) cards,
+        Vector#(8, Bool) slotPresent,
+        LightingBusMasterDrive cpu,
+        Bool workerValid, HostWorkerRequest workerRequest,
+        Bool backendRequestReady,
+        Bool backendResponseValid, Bool backendFault,
+        Bool backendReadDataValid, Bit#(32) backendReadData,
+        Bool reset);
 
     method Action bindDma(Bit#(3) slot, Bit#(4) channel, Bit#(32) base,
         Bit#(25) length, Bool deviceRead, Bool deviceWrite);
@@ -181,6 +190,20 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         HostWorkerRequest { slot: 0, address: 0, width: HostW32,
                             write: False, value: 0 });
 
+    // These are host-profile CSRs owned by the Mainboard platform unit.  The
+    // PLIOHostCore retains protocol/arbitration ownership; this state only
+    // exposes its frozen CPU-visible control plane.
+    Reg#(Bool) plioEnabled <- mkReg(True);
+    Reg#(Bool) plioError <- mkReg(False);
+    Reg#(Bit#(32)) plioErrorInfo <- mkReg(0);
+    Reg#(Bool) plioSoftResetPending <- mkReg(False);
+    Reg#(Bit#(8)) slotPresentBits <- mkReg(0);
+    Reg#(Bit#(32)) notificationClaimData <- mkReg(0);
+    RegFile#(Bit#(7), Bit#(32)) dmaBaseFile <- mkRegFileFull;
+    RegFile#(Bit#(7), Bit#(25)) dmaLengthFile <- mkRegFileFull;
+    RegFile#(Bit#(7), Bit#(2)) dmaDirectionFile <- mkRegFileFull;
+    Reg#(Bit#(128)) dmaBoundMask <- mkReg(0);
+
     FIFOF#(MainboardCycleInputs) cycleQ <- mkLFIFOF;
 
     rule applyReset (cycleQ.notEmpty && cycleQ.first.reset);
@@ -197,6 +220,13 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         cpuResponseReadData <= 0;
         cpuMmioWorkerPending <= False;
         cpuMmioWorkerIssued <= False;
+        plioEnabled <= True;
+        plioError <= False;
+        plioErrorInfo <= 0;
+        plioSoftResetPending <= False;
+        slotPresentBits <= 0;
+        notificationClaimData <= 0;
+        dmaBoundMask <= 0;
         for (Integer channel = 0; channel < 8; channel = channel + 1)
             ioChannels[channel] <= 0;
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
@@ -214,6 +244,30 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         let cycle = cycleQ.first;
         memory.backendRespond(cycle.backendFault,
             cycle.backendReadDataValid, cycle.backendReadData);
+    endrule
+
+    // The physical chassis/scheduler owns attachment detection, but the
+    // Mainboard registers the resulting geographic bitmap and exposes it via
+    // the frozen SLOT_PRESENT CSR.  Cards never learn any CPU address.
+    rule captureSlotPresence (cycleQ.notEmpty && !cycleQ.first.reset);
+        slotPresentBits <= pack(cycleQ.first.slotPresent);
+    endrule
+
+    // CONTROL.RESET is a PLIO-host reset, not a machine-memory reset.  It
+    // clears the host-visible control plane atomically with the reset image
+    // delivered to PLIOHostCore and the physically attached cards.
+    rule completePlioSoftReset (cycleQ.notEmpty && !cycleQ.first.reset
+        && plioSoftResetPending);
+        plioSoftResetPending <= False;
+        plioEnabled <= True;
+        plioError <= False;
+        plioErrorInfo <= 0;
+        notificationClaimData <= 0;
+        dmaBoundMask <= 0;
+        cpuMmioWorkerPending <= False;
+        cpuMmioWorkerIssued <= False;
+        for (Integer channel = 0; channel < 8; channel = channel + 1)
+            ioChannels[channel] <= 0;
     endrule
 
     rule reserveCpuGrant (cycleQ.notEmpty && !cycleQ.first.reset
@@ -281,9 +335,10 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             Bool fault = False;
             Bit#(32) readData = 0;
             if (controller) begin
-                // Controller CSRs are naturally aligned 32-bit accesses.  The
-                // first slice exposes identity plus IOchannel programming;
-                // DMA/Notification CSRs are added over this same CPU path.
+                // Controller CSRs are naturally aligned 32-bit accesses.
+                // This is the frozen Lighting PLIO0 profile; the action path
+                // below only programs PLIOHostCore, never a CPU-side device
+                // shortcut or a direct RAM mapping.
                 if (cycle.cpu.payload.byteEnable != 4'hf || offset[1:0] != 0) begin
                     complete = True; fault = True;
                 end
@@ -293,6 +348,69 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 else if (offset == 32'h0000_0004 && !cycle.cpu.payload.write) begin
                     complete = True; readData = 32'h0000_0600;
                 end
+                else if (offset == 32'h0000_0008 && !cycle.cpu.payload.write) begin
+                    complete = True;
+                    readData[0] = pack(plioEnabled);
+                    readData[1] = pack(plioError);
+                    readData[2] = pack(slotPresentBits != 0);
+                    readData[3] = pack(host.claimValid);
+                end
+                else if (offset == 32'h0000_000c) begin
+                    complete = True;
+                    if (cycle.cpu.payload.write) begin
+                        plioEnabled <= cycle.cpu.payload.writeData[1];
+                        if (cycle.cpu.payload.writeData[0])
+                            plioSoftResetPending <= True;
+                    end
+                    else begin
+                        readData[0] = pack(plioSoftResetPending);
+                        readData[1] = pack(plioEnabled);
+                    end
+                end
+                else if (offset == 32'h0000_0010 && !cycle.cpu.payload.write) begin
+                    complete = True; readData = zeroExtend(slotPresentBits);
+                end
+                else if (offset == 32'h0000_0014 && !cycle.cpu.payload.write) begin
+                    complete = True; readData = host.notificationPendingMask;
+                end
+                else if (offset == 32'h0000_0018) begin
+                    complete = True;
+                    if (cycle.cpu.payload.write)
+                        host.setNotificationEnableMask(cycle.cpu.payload.writeData);
+                    else readData = host.notificationEnabledMask;
+                end
+                else if (offset == 32'h0000_001c) begin
+                    complete = True;
+                    if (cycle.cpu.payload.write)
+                        host.setNotificationMaskedMask(cycle.cpu.payload.writeData);
+                    else readData = host.notificationMaskedMask;
+                end
+                else if (offset == 32'h0000_0020 && !cycle.cpu.payload.write) begin
+                    complete = True;
+                    if (host.claimValid) begin
+                        readData = { 23'd0, host.claimClass, host.claimSlot,
+                                     host.claimChannel };
+                        notificationClaimData <= host.claimPayload;
+                        host.claimFirst;
+                    end
+                    else readData = 32'hffff_ffff;
+                end
+                else if (offset == 32'h0000_0024 && !cycle.cpu.payload.write) begin
+                    complete = True; readData = notificationClaimData;
+                end
+                else if (offset == 32'h0000_0028) begin
+                    complete = True;
+                    if (cycle.cpu.payload.write) begin
+                        if (cycle.cpu.payload.writeData != 0) begin
+                            plioError <= False;
+                            plioErrorInfo <= 0;
+                        end
+                    end
+                    else readData = zeroExtend(pack(plioError));
+                end
+                else if (offset == 32'h0000_002c && !cycle.cpu.payload.write) begin
+                    complete = True; readData = plioErrorInfo;
+                end
                 else if (offset >= 32'h0000_0100 && offset < 32'h0000_0120) begin
                     Bit#(3) channel = truncate((offset - 32'h100) >> 2);
                     complete = True;
@@ -300,6 +418,62 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                         ioChannels[channel] <= cycle.cpu.payload.writeData;
                     else
                         readData = ioChannels[channel];
+                end
+                else if (offset >= 32'h0000_0400 && offset < 32'h0000_0480) begin
+                    Bit#(5) notification = truncate((offset - 32'h400) >> 2);
+                    Bit#(3) slot = notification[4:2];
+                    Bit#(2) channel = notification[1:0];
+                    complete = True;
+                    if (cycle.cpu.payload.write)
+                        host.setNotificationConfig(slot, channel,
+                            host.notificationEnabledMask[notification] == 1,
+                            host.notificationMaskedMask[notification] == 1,
+                            cycle.cpu.payload.writeData[3:0]);
+                    else readData = zeroExtend(host.notificationClass(slot, channel));
+                end
+                else if (offset >= 32'h0000_1000 && offset < 32'h0000_1800) begin
+                    Bit#(7) dmaIndex = truncate((offset - 32'h1000) >> 4);
+                    Bit#(128) dmaMark = 128'h1 << dmaIndex;
+                    Bit#(3) dmaSlot = dmaIndex[6:4];
+                    Bit#(4) dmaChannel = dmaIndex[3:0];
+                    Bit#(2) field = offset[3:2];
+                    complete = True;
+                    if (!cycle.cpu.payload.write) begin
+                        if (field == 0) readData = dmaBaseFile.sub(dmaIndex);
+                        else if (field == 1) readData = zeroExtend(dmaLengthFile.sub(dmaIndex));
+                        else if (field == 2) begin
+                            readData[0] = pack(host.dmaCapabilityValid(dmaSlot, dmaChannel));
+                            readData[1] = dmaDirectionFile.sub(dmaIndex)[0];
+                            readData[2] = dmaDirectionFile.sub(dmaIndex)[1];
+                        end
+                        else readData = zeroExtend(host.dmaGeneration(dmaSlot, dmaChannel));
+                    end
+                    else if (field == 0 || field == 1) begin
+                        if ((dmaBoundMask & dmaMark) != 0) fault = True;
+                        else if (field == 0) dmaBaseFile.upd(dmaIndex, cycle.cpu.payload.writeData);
+                        else dmaLengthFile.upd(dmaIndex, truncate(cycle.cpu.payload.writeData));
+                    end
+                    else if (field == 2) begin
+                        Bool bind = cycle.cpu.payload.writeData[0] == 1;
+                        Bool revoke = cycle.cpu.payload.writeData[3] == 1;
+                        Bit#(2) direction = cycle.cpu.payload.writeData[2:1];
+                        Bit#(32) base = dmaBaseFile.sub(dmaIndex);
+                        Bit#(25) length = dmaLengthFile.sub(dmaIndex);
+                        Bool legal = base[1:0] == 0 && length != 0
+                            && length <= 25'h1000000 && direction != 0;
+                        if (bind == revoke || (bind && !legal)) fault = True;
+                        else if (bind) begin
+                            host.bindDma(dmaSlot, dmaChannel, base, length,
+                                direction[0] == 1, direction[1] == 1);
+                            dmaDirectionFile.upd(dmaIndex, direction);
+                            dmaBoundMask <= dmaBoundMask | dmaMark;
+                        end
+                        else begin
+                            host.revokeDma(dmaSlot, dmaChannel);
+                            dmaBoundMask <= dmaBoundMask & ~dmaMark;
+                        end
+                    end
+                    else fault = True;
                 end
                 else begin
                     complete = True; fault = True;
@@ -312,7 +486,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                     || (cycle.cpu.payload.byteEnable == 4'b0011 && cycle.cpu.payload.addr[0] == 0)
                     || (cycle.cpu.payload.byteEnable == 4'b1100 && cycle.cpu.payload.addr[0] == 0)
                     || (cycle.cpu.payload.byteEnable != 0 && workerByteEnableValid(cycle.cpu.payload.byteEnable));
-                if (map[31] == 0 || !aligned || !workerByteEnableValid(cycle.cpu.payload.byteEnable)) begin
+                if (!plioEnabled || map[31] == 0 || !aligned || !workerByteEnableValid(cycle.cpu.payload.byteEnable)) begin
                     complete = True; fault = True;
                 end
                 else begin
@@ -332,6 +506,10 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 cpuResponseFault <= fault;
                 cpuResponseReadDataValid <= !fault && !cycle.cpu.payload.write;
                 cpuResponseReadData <= readData;
+                if (fault) begin
+                    plioError <= True;
+                    plioErrorInfo <= offset;
+                end
             end
         end
         cpuGrantHeld <= False;
@@ -352,6 +530,10 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         cpuResponseReadData <= completion.data;
         cpuMmioWorkerPending <= False;
         cpuMmioWorkerIssued <= False;
+        if (completion.status != HostSuccess) begin
+            plioError <= True;
+            plioErrorInfo <= zeroExtend(pack(completion.status));
+        end
         host.clearWorkerCompletion;
     endrule
 
@@ -371,6 +553,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // is created in the same clock that PLIOHostCore sees memoryRequestReady.
     // PLIO DMA remains a full 32-bit transfer and therefore always uses BE=f.
     rule advancePlioRequest (cycleQ.notEmpty && !cycleQ.first.reset
+        && !plioSoftResetPending
         && !cpuResponsePending
         && memoryOwner == MainMemNone
         && !cpuGrantHeld
@@ -382,7 +565,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         Bool useCpuWorker = cpuMmioWorkerPending && !cpuMmioWorkerIssued;
         host.advance(logicalCards, useCpuWorker ? True : cycle.workerValid,
             useCpuWorker ? cpuMmioWorkerRequest : cycle.workerRequest,
-            True, False, False, False, 0, False);
+            True, False, False, False, 0, plioSoftResetPending);
         if (useCpuWorker) cpuMmioWorkerIssued <= True;
         memory.hostRequest(host.memoryWrite,
             host.memoryAddress,
@@ -406,7 +589,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             memory.hostResponseFault,
             memory.hostReadDataValid,
             memory.hostReadData,
-            False);
+            plioSoftResetPending);
         if (useCpuWorker) cpuMmioWorkerIssued <= True;
         memory.hostResponseConsumed;
         memoryOwner <= MainMemNone;
@@ -419,25 +602,25 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // two atomic PLIO memory rules above.
     rule advancePlioOrdinary (cycleQ.notEmpty && !cycleQ.first.reset
         && !(memoryOwner == MainMemPlio && memory.hostResponseValid)
-        && !(!cpuResponsePending
+        && (plioSoftResetPending || !(!cpuResponsePending
             && memoryOwner == MainMemNone
             && !cpuGrantHeld
             && memory.hostRequestReady
             && host.memoryRequestValid
-            && (!cycleQ.first.cpu.busRequest || !preferCpu)));
+            && (!cycleQ.first.cpu.busRequest || !preferCpu))));
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
         Bool useCpuWorker = cpuMmioWorkerPending && !cpuMmioWorkerIssued;
         host.advance(logicalCards, useCpuWorker ? True : cycle.workerValid,
             useCpuWorker ? cpuMmioWorkerRequest : cycle.workerRequest,
-            False, False, False, False, 0, False);
+            False, False, False, False, 0, plioSoftResetPending);
         if (useCpuWorker) cpuMmioWorkerIssued <= True;
         cycleQ.deq;
     endrule
 
     method Vector#(8, PlioIn) plioSlots(Vector#(8, BackplaneDrive) cards, Bool reset);
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cards);
-        return host.drive(logicalCards, reset);
+        return host.drive(logicalCards, reset || plioSoftResetPending);
     endmethod
 
     method LightingBusInputs lightingMemory(Vector#(8, BackplaneDrive) cards,
@@ -495,6 +678,30 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         Bool reset) if (cycleQ.notFull);
         cycleQ.enq(MainboardCycleInputs {
             cards: cards,
+            slotPresent: replicate(False),
+            cpu: cpu,
+            workerValid: workerValid,
+            workerRequest: workerRequest,
+            backendRequestReady: backendRequestReady,
+            backendResponseValid: backendResponseValid,
+            backendFault: backendFault,
+            backendReadDataValid: backendReadDataValid,
+            backendReadData: backendReadData,
+            reset: reset
+        });
+    endmethod
+
+    method Action advanceWithSlotPresence(Vector#(8, BackplaneDrive) cards,
+        Vector#(8, Bool) slotPresent,
+        LightingBusMasterDrive cpu,
+        Bool workerValid, HostWorkerRequest workerRequest,
+        Bool backendRequestReady,
+        Bool backendResponseValid, Bool backendFault,
+        Bool backendReadDataValid, Bit#(32) backendReadData,
+        Bool reset) if (cycleQ.notFull);
+        cycleQ.enq(MainboardCycleInputs {
+            cards: cards,
+            slotPresent: slotPresent,
             cpu: cpu,
             workerValid: workerValid,
             workerRequest: workerRequest,
