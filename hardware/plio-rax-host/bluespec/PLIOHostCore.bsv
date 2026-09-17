@@ -47,6 +47,7 @@ interface PLIOHostCoreIfc;
     method Action bindDma(Bit#(3) slot, Bit#(4) channel, Bit#(32) base, Bit#(25) length, Bool deviceRead, Bool deviceWrite);
     method Action revokeDma(Bit#(3) slot, Bit#(4) channel);
     method Bit#(4) dmaGeneration(Bit#(3) slot, Bit#(4) channel);
+    method Bool dmaCapabilityValid(Bit#(3) slot, Bit#(4) channel);
     method Bool workerCompletionValid;
     method HostWorkerCompletion workerCompletion;
     method Action clearWorkerCompletion;
@@ -56,7 +57,17 @@ interface PLIOHostCoreIfc;
     method Action clearDmaCompletion;
     method Bool notificationPending(Bit#(3) slot, Bit#(2) channel);
     method Bit#(32) notificationPayload(Bit#(3) slot, Bit#(2) channel);
-    method Action setNotificationConfig(Bit#(3) slot, Bit#(2) channel, Bool enabled, Bool masked, Bit#(4) classCode);
+    method Bit#(32) notificationPendingMask;
+    method Bit#(32) notificationEnabledMask;
+    method Bit#(32) notificationMaskedMask;
+    method Bit#(4) notificationClass(Bit#(3) slot, Bit#(2) channel);
+    // All notification control-plane updates go through one atomic action.
+    // This makes the enabled/masked image and an optional class update one
+    // controller-owned state transition, rather than relying on an ordering
+    // between independently callable mask and class setters.
+    method Action configureNotificationState(Bit#(32) enabled,
+        Bit#(32) masked, Bool writeClass, Bit#(3) slot,
+        Bit#(2) channel, Bit#(4) classCode);
     method Bool claimValid;
     method Bit#(3) claimSlot;
     method Bit#(2) claimChannel;
@@ -344,6 +355,7 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
     endmethod
     method Action revokeDma(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};Bit#(128)mark=128'h1<<idx;capValidMask<=capValidMask&~mark;if(role==CoreDma&&slot==activeSlot&&channel==dmaChannel)dmaRevokePending<=True;endmethod
     method Bit#(4) dmaGeneration(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};Bit#(128)mark=128'h1<<idx;return((capEverMask&mark)!=0)?caps.sub(idx).generation:0;endmethod
+    method Bool dmaCapabilityValid(Bit#(3) slot,Bit#(4) channel);Bit#(7)idx={slot,channel};return(capValidMask&(128'h1<<idx))!=0;endmethod
 
     method Bool workerCompletionValid=workerCompletionPending[1];
     method HostWorkerCompletion workerCompletion=workerCompletionReg;
@@ -355,7 +367,17 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
 
     method Bool notificationPending(Bit#(3) slot,Bit#(2) channel);Bit#(5)idx={slot,channel};return unpack(notificationPendingBits[idx]);endmethod
     method Bit#(32) notificationPayload(Bit#(3) slot,Bit#(2) channel)=notificationPayloadFile.sub({slot,channel});
-    method Action setNotificationConfig(Bit#(3) slot,Bit#(2) channel,Bool en,Bool mask,Bit#(4) cls);Bit#(5)idx={slot,channel};Bit#(32)mark=32'b1<<idx;if(en)notificationEnabledBits<=notificationEnabledBits|mark;else notificationEnabledBits<=notificationEnabledBits&~mark;if(mask)notificationMaskedBits<=notificationMaskedBits|mark;else notificationMaskedBits<=notificationMaskedBits&~mark;notificationClassFile.upd(idx,cls);endmethod
+    method Bit#(32) notificationPendingMask=notificationPendingBits;
+    method Bit#(32) notificationEnabledMask=notificationEnabledBits;
+    method Bit#(32) notificationMaskedMask=notificationMaskedBits;
+    method Bit#(4) notificationClass(Bit#(3) slot,Bit#(2) channel)=notificationClassFile.sub({slot,channel});
+    method Action configureNotificationState(Bit#(32) enabled,
+        Bit#(32) masked, Bool writeClass, Bit#(3) slot,
+        Bit#(2) channel, Bit#(4) classCode);
+        notificationEnabledBits <= enabled;
+        notificationMaskedBits <= masked;
+        if (writeClass) notificationClassFile.upd({slot, channel}, classCode);
+    endmethod
     method Bool claimValid;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.valid;endmethod
     method Bit#(3) claimSlot;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.index[4:2];endmethod
     method Bit#(2) claimChannel;ClaimChoice c=firstClaim(notificationPendingBits&notificationEnabledBits&~notificationMaskedBits);return c.index[1:0];endmethod
