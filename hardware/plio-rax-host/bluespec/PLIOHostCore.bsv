@@ -203,7 +203,11 @@ module mkPLIOHostCore(PLIOHostCoreIfc);
         action
             if (reset) begin
                 if (role==CoreWorker) begin workerCompletionPending[0]<=True; workerCompletionReg<=HostWorkerCompletion{status:HostReset,data:0}; end
-                if (role==CoreDma || dmaState!=DmaIdle) finishDma(DmaReset,dmaAcknowledged);
+                // Reset abandons an in-flight DMA.  Do not leave a synthetic
+                // DmaReset completion for a later fresh transaction.
+                dmaCompletionPending[0]<=False; dmaCompletionStatusReg<=DmaOk;
+                dmaCompletionBeatsReg<=0; dmaState<=DmaIdle; dmaWait<=0;
+                dmaRevokePending<=False;
                 role<=CoreIdle; activeSlot<=0; cursor<=0; waitCycles<=0; workerState<=HostIdle; workerWait<=0; queuedWorkerValid<=False;
                 notificationPendingBits<=0; dmaAddressPending<=False; writeAckPending<=False; faultValid<=False;
             end
