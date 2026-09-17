@@ -255,13 +255,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             cycle.backendReadDataValid, cycle.backendReadData);
     endrule
 
-    // The physical chassis/scheduler owns attachment detection, but the
-    // Mainboard registers the resulting geographic bitmap and exposes it via
-    // the frozen SLOT_PRESENT CSR.  Cards never learn any CPU address.
-    rule captureSlotPresence (cycleQ.notEmpty && !cycleQ.first.reset);
-        slotPresentBits <= pack(cycleQ.first.slotPresent);
-    endrule
-
     // CONTROL.RESET is a PLIO-host reset, not a machine-memory reset.  It
     // clears the host-visible control plane atomically with the reset image
     // delivered to PLIOHostCore and the physically attached cards.
@@ -283,6 +276,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         plioError <= False;
         plioErrorInfo <= 0;
         notificationClaimData <= 0;
+        slotPresentBits <= pack(cycle.slotPresent);
         cpuMmioWorkerPending <= False;
         cpuMmioWorkerIssued <= False;
         for (Integer channel = 0; channel < 8; channel = channel + 1)
@@ -639,6 +633,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             4'hf,
             host.memoryWriteData);
         memoryOwner <= MainMemPlio;
+        slotPresentBits <= pack(cycle.slotPresent);
         cycleQ.deq;
     endrule
 
@@ -662,6 +657,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         memory.hostResponseConsumed;
         memoryOwner <= MainMemNone;
         preferCpu <= True;
+        slotPresentBits <= pack(cycle.slotPresent);
         cycleQ.deq;
     endrule
 
@@ -684,6 +680,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             useCpuWorker ? cpuMmioWorkerRequest : cycle.workerRequest,
             False, False, False, False, 0, False);
         if (useCpuWorker) cpuMmioWorkerIssued <= True;
+        slotPresentBits <= pack(cycle.slotPresent);
         cycleQ.deq;
     endrule
 
