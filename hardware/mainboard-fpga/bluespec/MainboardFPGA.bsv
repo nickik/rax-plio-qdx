@@ -376,13 +376,15 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 else if (offset == 32'h0000_0018) begin
                     complete = True;
                     if (cycle.cpu.payload.write)
-                        host.setNotificationEnableMask(cycle.cpu.payload.writeData);
+                        host.configureNotificationState(cycle.cpu.payload.writeData,
+                            host.notificationMaskedMask, False, 0, 0, 0);
                     else readData = host.notificationEnabledMask;
                 end
                 else if (offset == 32'h0000_001c) begin
                     complete = True;
                     if (cycle.cpu.payload.write)
-                        host.setNotificationMaskedMask(cycle.cpu.payload.writeData);
+                        host.configureNotificationState(host.notificationEnabledMask,
+                            cycle.cpu.payload.writeData, False, 0, 0, 0);
                     else readData = host.notificationMaskedMask;
                 end
                 else if (offset == 32'h0000_0020 && !cycle.cpu.payload.write) begin
@@ -425,9 +427,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                     Bit#(2) channel = notification[1:0];
                     complete = True;
                     if (cycle.cpu.payload.write)
-                        host.setNotificationConfig(slot, channel,
-                            host.notificationEnabledMask[notification] == 1,
-                            host.notificationMaskedMask[notification] == 1,
+                        host.configureNotificationState(host.notificationEnabledMask,
+                            host.notificationMaskedMask, True, slot, channel,
                             cycle.cpu.payload.writeData[3:0]);
                     else readData = zeroExtend(host.notificationClass(slot, channel));
                 end
@@ -738,7 +739,16 @@ module mkMainboardFPGA(MainboardFPGAIfc);
 
     method Action setNotificationConfig(Bit#(3) slot, Bit#(2) channel,
         Bool enabled, Bool masked, Bit#(4) classCode);
-        host.setNotificationConfig(slot, channel, enabled, masked, classCode);
+        Bit#(5) index = {slot, channel};
+        Bit#(32) mark = 32'b1 << index;
+        Bit#(32) enableImage = enabled
+            ? host.notificationEnabledMask | mark
+            : host.notificationEnabledMask & ~mark;
+        Bit#(32) maskedImage = masked
+            ? host.notificationMaskedMask | mark
+            : host.notificationMaskedMask & ~mark;
+        host.configureNotificationState(enableImage, maskedImage, True,
+            slot, channel, classCode);
     endmethod
     method Bool claimValid = host.claimValid;
     method Bit#(3) claimSlot = host.claimSlot;
