@@ -2,7 +2,6 @@ package MainboardFPGA;
 
 import Vector::*;
 import FIFOF::*;
-import RegFile::*;
 import QLITypes::*;
 import QICInterfaces::*;
 import PLIOTx::*;
@@ -38,6 +37,8 @@ typedef struct {
 Bit#(32) lightingPlio0Base = 32'hffe0_0000;
 Bit#(32) lightingPlio0Size = 32'h0010_0000;
 Bit#(32) lightingPlio0WorkerBase = 32'h0008_0000;
+Bit#(32) lightingPlio0DmaTableBase = 32'h0000_1000;
+Bit#(32) lightingPlio0DmaTableEnd = 32'h0000_1800;
 
 function Bool isLightingPlio0(Bit#(32) address);
     return address >= lightingPlio0Base
@@ -185,6 +186,10 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // Its format is the frozen Lighting PLIO0 host-profile CSR encoding:
     // ENABLE[31] | SLOT[18:16] | PAGE[8:0].
     Vector#(8, Reg#(Bit#(32))) ioChannels <- replicateM(mkReg(0));
+    Vector#(128, Reg#(Bit#(32))) dmaStagedBase <- replicateM(mkReg(0));
+    Vector#(128, Reg#(Bit#(25))) dmaStagedLength <- replicateM(mkReg(0));
+    Vector#(128, Reg#(Bit#(2))) dmaPermissions <- replicateM(mkReg(0));
+    Vector#(128, Reg#(Bool)) dmaBound <- replicateM(mkReg(False));
     Reg#(Bool) cpuMmioWorkerPending <- mkReg(False);
     Reg#(Bool) cpuMmioWorkerIssued <- mkReg(False);
     Reg#(HostWorkerRequest) cpuMmioWorkerRequest <- mkReg(
@@ -200,10 +205,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Reg#(Bool) plioSoftResetPending <- mkReg(False);
     Reg#(Bit#(8)) slotPresentBits <- mkReg(0);
     Reg#(Bit#(32)) notificationClaimData <- mkReg(0);
-    RegFile#(Bit#(7), Bit#(32)) dmaBaseFile <- mkRegFileFull;
-    RegFile#(Bit#(7), Bit#(25)) dmaLengthFile <- mkRegFileFull;
-    RegFile#(Bit#(7), Bit#(2)) dmaDirectionFile <- mkRegFileFull;
-    Reg#(Bit#(128)) dmaBoundMask <- mkReg(0);
 
     FIFOF#(MainboardCycleInputs) cycleQ <- mkLFIFOF;
 
@@ -227,9 +228,14 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         plioSoftResetPending <= False;
         slotPresentBits <= 0;
         notificationClaimData <= 0;
-        dmaBoundMask <= 0;
         for (Integer channel = 0; channel < 8; channel = channel + 1)
             ioChannels[channel] <= 0;
+        for (Integer entry = 0; entry < 128; entry = entry + 1) begin
+            dmaStagedBase[entry] <= 0;
+            dmaStagedLength[entry] <= 0;
+            dmaPermissions[entry] <= 0;
+            dmaBound[entry] <= False;
+        end
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             False, False, False, False, 0, True);
         cycleQ.deq;
@@ -264,7 +270,6 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         plioError <= False;
         plioErrorInfo <= 0;
         notificationClaimData <= 0;
-        dmaBoundMask <= 0;
         cpuMmioWorkerPending <= False;
         cpuMmioWorkerIssued <= False;
         for (Integer channel = 0; channel < 8; channel = channel + 1)
@@ -433,49 +438,80 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                             cycle.cpu.payload.writeData[3:0]);
                     else readData = zeroExtend(host.notificationClass(slot, channel));
                 end
-                else if (offset >= 32'h0000_1000 && offset < 32'h0000_1800) begin
-                    Bit#(7) dmaIndex = truncate((offset - 32'h1000) >> 4);
-                    Bit#(128) dmaMark = 128'h1 << dmaIndex;
-                    Bit#(3) dmaSlot = dmaIndex[6:4];
-                    Bit#(4) dmaChannel = dmaIndex[3:0];
-                    Bit#(2) field = offset[3:2];
+                else if (offset >= lightingPlio0DmaTableBase
+                    && offset < lightingPlio0DmaTableEnd) begin
+                    Bit#(11) relative = truncate(offset
+                        - lightingPlio0DmaTableBase);
+                    Bit#(7) entry = relative[10:4];
+                    Bit#(4) field = relative[3:0];
+                    Bit#(3) slot = entry[6:4];
+                    Bit#(4) channel = entry[3:0];
                     complete = True;
-                    if (!cycle.cpu.payload.write) begin
-                        if (field == 0) readData = dmaBaseFile.sub(dmaIndex);
-                        else if (field == 1) readData = zeroExtend(dmaLengthFile.sub(dmaIndex));
-                        else if (field == 2) begin
-                            readData[0] = pack(host.dmaCapabilityValid(dmaSlot, dmaChannel));
-                            readData[1] = dmaDirectionFile.sub(dmaIndex)[0];
-                            readData[2] = dmaDirectionFile.sub(dmaIndex)[1];
+                    case (field)
+                        4'h0: begin
+                            if (cycle.cpu.payload.write) begin
+                                if (dmaBound[entry]
+                                    || cycle.cpu.payload.writeData[1:0] != 0)
+                                    fault = True;
+                                else dmaStagedBase[entry]
+                                    <= cycle.cpu.payload.writeData;
+                            end
+                            else readData = dmaStagedBase[entry];
                         end
-                        else readData = zeroExtend(host.dmaGeneration(dmaSlot, dmaChannel));
-                    end
-                    else if (field == 0 || field == 1) begin
-                        if ((dmaBoundMask & dmaMark) != 0) fault = True;
-                        else if (field == 0) dmaBaseFile.upd(dmaIndex, cycle.cpu.payload.writeData);
-                        else dmaLengthFile.upd(dmaIndex, truncate(cycle.cpu.payload.writeData));
-                    end
-                    else if (field == 2) begin
-                        Bool bindCommand = cycle.cpu.payload.writeData[0] == 1;
-                        Bool revokeCommand = cycle.cpu.payload.writeData[3] == 1;
-                        Bit#(2) direction = cycle.cpu.payload.writeData[2:1];
-                        Bit#(32) base = dmaBaseFile.sub(dmaIndex);
-                        Bit#(25) length = dmaLengthFile.sub(dmaIndex);
-                        Bool legal = base[1:0] == 0 && length != 0
-                            && length <= 25'h1000000 && direction != 0;
-                        if (bindCommand == revokeCommand || (bindCommand && !legal)) fault = True;
-                        else if (bindCommand) begin
-                            host.bindDma(dmaSlot, dmaChannel, base, length,
-                                direction[0] == 1, direction[1] == 1);
-                            dmaDirectionFile.upd(dmaIndex, direction);
-                            dmaBoundMask <= dmaBoundMask | dmaMark;
+                        4'h4: begin
+                            if (cycle.cpu.payload.write) begin
+                                if (dmaBound[entry]
+                                    || cycle.cpu.payload.writeData == 0
+                                    || cycle.cpu.payload.writeData
+                                        > 32'h0100_0000)
+                                    fault = True;
+                                else dmaStagedLength[entry]
+                                    <= cycle.cpu.payload.writeData[24:0];
+                            end
+                            else readData = zeroExtend(dmaStagedLength[entry]);
                         end
-                        else begin
-                            host.revokeDma(dmaSlot, dmaChannel);
-                            dmaBoundMask <= dmaBoundMask & ~dmaMark;
+                        4'h8: begin
+                            if (cycle.cpu.payload.write) begin
+                                Bit#(32) command = cycle.cpu.payload.writeData;
+                                Bool doBind = unpack(command[0]);
+                                Bool revoke = unpack(command[3]);
+                                Bool deviceRead = unpack(command[1]);
+                                Bool deviceWrite = unpack(command[2]);
+                                Bool malformed = command[31:4] != 0
+                                    || doBind == revoke;
+                                if (doBind) malformed = malformed
+                                    || dmaBound[entry]
+                                    || (!deviceRead && !deviceWrite)
+                                    || dmaStagedBase[entry][1:0] != 0
+                                    || dmaStagedLength[entry] == 0;
+                                if (malformed) fault = True;
+                                else if (revoke) begin
+                                    host.revokeDma(slot, channel);
+                                    dmaBound[entry] <= False;
+                                    dmaPermissions[entry] <= 0;
+                                end
+                                else begin
+                                    host.bindDma(slot, channel,
+                                        dmaStagedBase[entry],
+                                        dmaStagedLength[entry],
+                                        deviceRead, deviceWrite);
+                                    dmaBound[entry] <= True;
+                                    dmaPermissions[entry]
+                                        <= { pack(deviceWrite),
+                                            pack(deviceRead) };
+                                end
+                            end
+                            else readData = { 28'b0, 1'b0,
+                                dmaPermissions[entry],
+                                pack(dmaBound[entry]) };
                         end
-                    end
-                    else fault = True;
+                        4'hc: begin
+                            if (cycle.cpu.payload.write) fault = True;
+                            else readData = zeroExtend(
+                                host.dmaGeneration(slot, channel));
+                        end
+                        default: fault = True;
+                    endcase
                 end
                 else begin
                     complete = True; fault = True;
