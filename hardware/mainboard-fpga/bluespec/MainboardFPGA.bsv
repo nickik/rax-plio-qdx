@@ -454,15 +454,15 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                         else dmaLengthFile.upd(dmaIndex, truncate(cycle.cpu.payload.writeData));
                     end
                     else if (field == 2) begin
-                        Bool bind = cycle.cpu.payload.writeData[0] == 1;
-                        Bool revoke = cycle.cpu.payload.writeData[3] == 1;
+                        Bool bindCommand = cycle.cpu.payload.writeData[0] == 1;
+                        Bool revokeCommand = cycle.cpu.payload.writeData[3] == 1;
                         Bit#(2) direction = cycle.cpu.payload.writeData[2:1];
                         Bit#(32) base = dmaBaseFile.sub(dmaIndex);
                         Bit#(25) length = dmaLengthFile.sub(dmaIndex);
                         Bool legal = base[1:0] == 0 && length != 0
                             && length <= 25'h1000000 && direction != 0;
-                        if (bind == revoke || (bind && !legal)) fault = True;
-                        else if (bind) begin
+                        if (bindCommand == revokeCommand || (bindCommand && !legal)) fault = True;
+                        else if (bindCommand) begin
                             host.bindDma(dmaSlot, dmaChannel, base, length,
                                 direction[0] == 1, direction[1] == 1);
                             dmaDirectionFile.upd(dmaIndex, direction);
