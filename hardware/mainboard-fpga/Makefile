@@ -6,11 +6,31 @@ BUILD := $(abspath build)
 BASE_SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
 QDXB_SEARCH := $(BASE_SEARCH):$(ROOT)/qli16/bluespec:$(ROOT)/testbench/bluespec:$(ROOT)/qdx-a/bluespec:$(ROOT)/qdx-b/bluespec:$(ROOT)/qdx-b-card/bluespec
 
-.PHONY: test test-isolated test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-core test-qdx-b test-lighting-plio0 test-lighting-plio0-dma-csr verilog-sanity clean
+.PHONY: test test-isolated test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-core test-qdx-b test-lighting-plio0 test-lighting-plio0-dma-csr test-lighting-plio0-notify-claim verilog-sanity clean
 
 test: test-isolated test-core test-qdx-b test-lighting-plio0 verilog-sanity
 
-test-isolated: test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-lighting-plio0-dma-csr
+test-isolated: test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-lighting-plio0-dma-csr test-lighting-plio0-notify-claim
+
+test-lighting-plio0-notify-claim:
+	rm -rf $(BUILD)/lighting-plio0-notify-claim
+	mkdir -p $(BUILD)/lighting-plio0-notify-claim
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0-notify-claim -simdir $(BUILD)/lighting-plio0-notify-claim -info-dir $(BUILD)/lighting-plio0-notify-claim \
+		-g mkTbMainboardLightingPlio0NotifyClaim bluespec/TbMainboardLightingPlio0NotifyClaim.bsv 2>&1 | tee $(BUILD)/lighting-plio0-notify-claim/compile.log
+	@if grep -q '(G0023)' $(BUILD)/lighting-plio0-notify-claim/compile.log; then \
+		echo 'FAIL Lighting PLIO0 notification/claim test contains a BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0-notify-claim -simdir $(BUILD)/lighting-plio0-notify-claim \
+		-e mkTbMainboardLightingPlio0NotifyClaim -o $(BUILD)/lighting-plio0-notify-claim/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 30s $(BUILD)/lighting-plio0-notify-claim/tb 2>&1 | tee $(BUILD)/lighting-plio0-notify-claim/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/lighting-plio0-notify-claim/tb 2>&1 | tee $(BUILD)/lighting-plio0-notify-claim/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/lighting-plio0-notify-claim/run.log; then exit 1; fi
+	@grep -Fq 'PASS|lighting-plio0-notify-claim|CPU configures and atomically claims one card notification' $(BUILD)/lighting-plio0-notify-claim/run.log
 
 test-lighting-plio0-dma-csr:
 	rm -rf $(BUILD)/lighting-plio0-dma-csr

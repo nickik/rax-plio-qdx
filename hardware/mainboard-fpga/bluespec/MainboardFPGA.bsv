@@ -38,6 +38,10 @@ Bit#(32) lightingPlio0Size = 32'h0010_0000;
 Bit#(32) lightingPlio0WorkerBase = 32'h0008_0000;
 Bit#(32) lightingPlio0DmaTableBase = 32'h0000_1000;
 Bit#(32) lightingPlio0DmaTableEnd = 32'h0000_1800;
+Bit#(32) lightingPlio0NotifyTableBase = 32'h0000_1800;
+Bit#(32) lightingPlio0NotifyTableEnd = 32'h0000_1a00;
+Bit#(32) lightingPlio0ClaimSource = 32'h0000_1a00;
+Bit#(32) lightingPlio0ClaimPayload = 32'h0000_1a04;
 
 function Bool isLightingPlio0(Bit#(32) address);
     return address >= lightingPlio0Base
@@ -181,6 +185,11 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Vector#(128, Reg#(Bit#(25))) dmaStagedLength <- replicateM(mkReg(0));
     Vector#(128, Reg#(Bit#(2))) dmaPermissions <- replicateM(mkReg(0));
     Vector#(128, Reg#(Bool)) dmaBound <- replicateM(mkReg(False));
+    Vector#(32, Reg#(Bool)) notifyEnabled <- replicateM(mkReg(True));
+    Vector#(32, Reg#(Bool)) notifyMasked <- replicateM(mkReg(False));
+    Vector#(32, Reg#(Bit#(4))) notifyClass <- replicateM(mkReg(0));
+    Reg#(Bool) claimPayloadValid <- mkReg(False);
+    Reg#(Bit#(32)) claimedPayload <- mkReg(0);
     Reg#(Bool) cpuMmioWorkerPending <- mkReg(False);
     Reg#(Bool) cpuMmioWorkerIssued <- mkReg(False);
     Reg#(HostWorkerRequest) cpuMmioWorkerRequest <- mkReg(
@@ -211,6 +220,13 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             dmaPermissions[entry] <= 0;
             dmaBound[entry] <= False;
         end
+        for (Integer source = 0; source < 32; source = source + 1) begin
+            notifyEnabled[source] <= True;
+            notifyMasked[source] <= False;
+            notifyClass[source] <= 0;
+        end
+        claimPayloadValid <= False;
+        claimedPayload <= 0;
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             False, False, False, False, 0, True);
         cycleQ.deq;
@@ -387,6 +403,70 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                         end
                         default: fault = True;
                     endcase
+                end
+                else if (offset >= lightingPlio0NotifyTableBase
+                    && offset < lightingPlio0NotifyTableEnd) begin
+                    Bit#(9) relative = truncate(offset
+                        - lightingPlio0NotifyTableBase);
+                    Bit#(5) entry = relative[8:4];
+                    Bit#(4) field = relative[3:0];
+                    Bit#(3) slot = entry[4:2];
+                    Bit#(2) channel = entry[1:0];
+                    complete = True;
+                    case (field)
+                        4'h0: begin
+                            if (cycle.cpu.payload.write) begin
+                                Bit#(32) configWord = cycle.cpu.payload.writeData;
+                                if (configWord[31:8] != 0 || configWord[3:2] != 0)
+                                    fault = True;
+                                else begin
+                                    Bool enabled = unpack(configWord[0]);
+                                    Bool masked = unpack(configWord[1]);
+                                    Bit#(4) classCode = configWord[7:4];
+                                    notifyEnabled[entry] <= enabled;
+                                    notifyMasked[entry] <= masked;
+                                    notifyClass[entry] <= classCode;
+                                    host.setNotificationConfig(slot, channel,
+                                        enabled, masked, classCode);
+                                end
+                            end
+                            else readData = { 24'b0, notifyClass[entry],
+                                2'b0, pack(notifyMasked[entry]),
+                                pack(notifyEnabled[entry]) };
+                        end
+                        4'h4: begin
+                            if (cycle.cpu.payload.write) fault = True;
+                            else readData = zeroExtend(pack(
+                                host.notificationPending(slot, channel)));
+                        end
+                        4'h8: begin
+                            if (cycle.cpu.payload.write) fault = True;
+                            else readData = host.notificationPayload(
+                                slot, channel);
+                        end
+                        default: fault = True;
+                    endcase
+                end
+                else if (offset == lightingPlio0ClaimSource) begin
+                    complete = True;
+                    if (cycle.cpu.payload.write || claimPayloadValid)
+                        fault = True;
+                    else if (host.claimValid) begin
+                        readData = { 1'b1, 20'b0, host.claimClass,
+                            host.claimSlot, 2'b0, host.claimChannel };
+                        claimedPayload <= host.claimPayload;
+                        claimPayloadValid <= True;
+                        host.claimFirst;
+                    end
+                end
+                else if (offset == lightingPlio0ClaimPayload) begin
+                    complete = True;
+                    if (cycle.cpu.payload.write || !claimPayloadValid)
+                        fault = True;
+                    else begin
+                        readData = claimedPayload;
+                        claimPayloadValid <= False;
+                    end
                 end
                 else begin
                     complete = True; fault = True;
