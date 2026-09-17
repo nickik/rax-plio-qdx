@@ -30,6 +30,36 @@ typedef struct {
     Bool reset;
 } MainboardCycleInputs deriving (Bits, FShow);
 
+// Lighting's CPU-visible PLIO0 aperture is a host-profile concern.  The
+// cards still see only slot-relative worker transactions; no CPU address is
+// ever exposed on the PLIO backplane.
+Bit#(32) lightingPlio0Base = 32'hffe0_0000;
+Bit#(32) lightingPlio0Size = 32'h0010_0000;
+Bit#(32) lightingPlio0WorkerBase = 32'h0008_0000;
+
+function Bool isLightingPlio0(Bit#(32) address);
+    return address >= lightingPlio0Base
+        && address < lightingPlio0Base + lightingPlio0Size;
+endfunction
+
+function Bool isLightingPlio0Worker(Bit#(32) address);
+    Bit#(32) offset = address - lightingPlio0Base;
+    return isLightingPlio0(address) && offset >= lightingPlio0WorkerBase;
+endfunction
+
+function Bool workerByteEnableValid(Bit#(4) byteEnable);
+    return byteEnable == 4'b0001 || byteEnable == 4'b0010
+        || byteEnable == 4'b0100 || byteEnable == 4'b1000
+        || byteEnable == 4'b0011 || byteEnable == 4'b1100
+        || byteEnable == 4'b1111;
+endfunction
+
+function HostWorkerWidth workerWidth(Bit#(4) byteEnable);
+    if (byteEnable == 4'b1111) return HostW32;
+    else if (byteEnable == 4'b0011 || byteEnable == 4'b1100) return HostW16;
+    else return HostW8;
+endfunction
+
 function PlioOut plioOutFromBackplane(BackplaneDrive bp);
     PlioOut out = plioOutDefault();
     out.request = bp.request;
@@ -141,6 +171,16 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Reg#(Bool) cpuResponseReadDataValid <- mkReg(False);
     Reg#(Bit#(32)) cpuResponseReadData <- mkReg(0);
 
+    // The IOchannel map is deliberately owned by the Mainboard platform unit.
+    // Its format is the frozen Lighting PLIO0 host-profile CSR encoding:
+    // ENABLE[31] | SLOT[18:16] | PAGE[8:0].
+    Vector#(8, Reg#(Bit#(32))) ioChannels <- replicateM(mkReg(0));
+    Reg#(Bool) cpuMmioWorkerPending <- mkReg(False);
+    Reg#(Bool) cpuMmioWorkerIssued <- mkReg(False);
+    Reg#(HostWorkerRequest) cpuMmioWorkerRequest <- mkReg(
+        HostWorkerRequest { slot: 0, address: 0, width: HostW32,
+                            write: False, value: 0 });
+
     FIFOF#(MainboardCycleInputs) cycleQ <- mkLFIFOF;
 
     rule applyReset (cycleQ.notEmpty && cycleQ.first.reset);
@@ -155,6 +195,10 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         cpuResponseFault <= False;
         cpuResponseReadDataValid <= False;
         cpuResponseReadData <= 0;
+        cpuMmioWorkerPending <= False;
+        cpuMmioWorkerIssued <= False;
+        for (Integer channel = 0; channel < 8; channel = channel + 1)
+            ioChannels[channel] <= 0;
         host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
             False, False, False, False, 0, True);
         cycleQ.deq;
@@ -176,7 +220,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         && memoryOwner == MainMemNone
         && !cpuResponsePending
         && !cpuGrantHeld
-        && memory.hostRequestReady
+        && (memory.hostRequestReady
+            || isLightingPlio0(cycleQ.first.cpu.payload.addr))
         && cycleQ.first.cpu.busRequest
         && (!host.memoryRequestValid || preferCpu)
         && !cycleQ.first.cpu.request);
@@ -214,20 +259,100 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     rule startCpuMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
         && memoryOwner == MainMemNone
         && !cpuResponsePending
-        && memory.hostRequestReady
+        && !cpuMmioWorkerPending
         && cycleQ.first.cpu.request
         && !cpuRequestSeen
         && (cpuGrantHeld
             || (cycleQ.first.cpu.busRequest
                 && (!host.memoryRequestValid || preferCpu))));
         let cycle = cycleQ.first;
-        memory.hostRequest(cycle.cpu.payload.write,
-            cycle.cpu.payload.addr,
-            cycle.cpu.payload.byteEnable,
-            cycle.cpu.payload.writeData);
-        memoryOwner <= MainMemCpu;
+        Bool plio0 = isLightingPlio0(cycle.cpu.payload.addr);
+        if (!plio0 && memory.hostRequestReady) begin
+            memory.hostRequest(cycle.cpu.payload.write,
+                cycle.cpu.payload.addr,
+                cycle.cpu.payload.byteEnable,
+                cycle.cpu.payload.writeData);
+            memoryOwner <= MainMemCpu;
+        end
+        else if (plio0) begin
+            Bit#(32) offset = cycle.cpu.payload.addr - lightingPlio0Base;
+            Bool controller = offset < lightingPlio0WorkerBase;
+            Bool complete = False;
+            Bool fault = False;
+            Bit#(32) readData = 0;
+            if (controller) begin
+                // Controller CSRs are naturally aligned 32-bit accesses.  The
+                // first slice exposes identity plus IOchannel programming;
+                // DMA/Notification CSRs are added over this same CPU path.
+                if (cycle.cpu.payload.byteEnable != 4'hf || offset[1:0] != 0) begin
+                    complete = True; fault = True;
+                end
+                else if (offset == 32'h0000_0000 && !cycle.cpu.payload.write) begin
+                    complete = True; readData = 32'h4f49_4c50; // "PLIO", LE
+                end
+                else if (offset == 32'h0000_0004 && !cycle.cpu.payload.write) begin
+                    complete = True; readData = 32'h0000_0600;
+                end
+                else if (offset >= 32'h0000_0100 && offset < 32'h0000_0120) begin
+                    Bit#(3) channel = truncate((offset - 32'h100) >> 2);
+                    complete = True;
+                    if (cycle.cpu.payload.write)
+                        ioChannels[channel] <= cycle.cpu.payload.writeData;
+                    else
+                        readData = ioChannels[channel];
+                end
+                else begin
+                    complete = True; fault = True;
+                end
+            end
+            else begin
+                Bit#(3) channel = truncate((offset - lightingPlio0WorkerBase) >> 16);
+                Bit#(32) map = ioChannels[channel];
+                Bool aligned = (cycle.cpu.payload.byteEnable == 4'hf)
+                    || (cycle.cpu.payload.byteEnable == 4'b0011 && cycle.cpu.payload.addr[0] == 0)
+                    || (cycle.cpu.payload.byteEnable == 4'b1100 && cycle.cpu.payload.addr[0] == 0)
+                    || (cycle.cpu.payload.byteEnable != 0 && workerByteEnableValid(cycle.cpu.payload.byteEnable));
+                if (map[31] == 0 || !aligned || !workerByteEnableValid(cycle.cpu.payload.byteEnable)) begin
+                    complete = True; fault = True;
+                end
+                else begin
+                    cpuMmioWorkerRequest <= HostWorkerRequest {
+                        slot: map[18:16],
+                        address: { 7'b0, map[8:0], cycle.cpu.payload.addr[15:0] },
+                        width: workerWidth(cycle.cpu.payload.byteEnable),
+                        write: cycle.cpu.payload.write,
+                        value: cycle.cpu.payload.writeData >> ({ 3'b0, cycle.cpu.payload.addr[1:0] } << 3)
+                    };
+                    cpuMmioWorkerPending <= True;
+                    cpuMmioWorkerIssued <= False;
+                end
+            end
+            if (complete) begin
+                cpuResponsePending <= True;
+                cpuResponseFault <= fault;
+                cpuResponseReadDataValid <= !fault && !cycle.cpu.payload.write;
+                cpuResponseReadData <= readData;
+            end
+        end
         cpuGrantHeld <= False;
         cpuRequestSeen <= True;
+    endrule
+
+    // A worker MMIO transfer is an asynchronous CPU transaction, but it is
+    // still driven exclusively by the real PLIO host state machine.  The CPU
+    // remains granted until the resulting ACK/ERR completion is registered.
+    rule captureCpuMmioWorkerCompletion (cpuMmioWorkerPending
+        && cpuMmioWorkerIssued && host.workerCompletionValid
+        && !cpuResponsePending);
+        let completion = host.workerCompletion;
+        cpuResponsePending <= True;
+        cpuResponseFault <= completion.status != HostSuccess;
+        cpuResponseReadDataValid <= completion.status == HostSuccess
+            && !cpuMmioWorkerRequest.write;
+        cpuResponseReadData <= completion.data;
+        cpuMmioWorkerPending <= False;
+        cpuMmioWorkerIssued <= False;
+        host.clearWorkerCompletion;
     endrule
 
     rule captureCpuMemoryResponse (!(cycleQ.notEmpty && cycleQ.first.reset)
@@ -254,8 +379,11 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         && (!cycleQ.first.cpu.busRequest || !preferCpu));
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
-        host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
+        Bool useCpuWorker = cpuMmioWorkerPending && !cpuMmioWorkerIssued;
+        host.advance(logicalCards, useCpuWorker ? True : cycle.workerValid,
+            useCpuWorker ? cpuMmioWorkerRequest : cycle.workerRequest,
             True, False, False, False, 0, False);
+        if (useCpuWorker) cpuMmioWorkerIssued <= True;
         memory.hostRequest(host.memoryWrite,
             host.memoryAddress,
             4'hf,
@@ -271,12 +399,15 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         && memory.hostResponseValid);
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
-        host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
+        Bool useCpuWorker = cpuMmioWorkerPending && !cpuMmioWorkerIssued;
+        host.advance(logicalCards, useCpuWorker ? True : cycle.workerValid,
+            useCpuWorker ? cpuMmioWorkerRequest : cycle.workerRequest,
             False, True,
             memory.hostResponseFault,
             memory.hostReadDataValid,
             memory.hostReadData,
             False);
+        if (useCpuWorker) cpuMmioWorkerIssued <= True;
         memory.hostResponseConsumed;
         memoryOwner <= MainMemNone;
         preferCpu <= True;
@@ -296,8 +427,11 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             && (!cycleQ.first.cpu.busRequest || !preferCpu)));
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
-        host.advance(logicalCards, cycle.workerValid, cycle.workerRequest,
+        Bool useCpuWorker = cpuMmioWorkerPending && !cpuMmioWorkerIssued;
+        host.advance(logicalCards, useCpuWorker ? True : cycle.workerValid,
+            useCpuWorker ? cpuMmioWorkerRequest : cycle.workerRequest,
             False, False, False, False, 0, False);
+        if (useCpuWorker) cpuMmioWorkerIssued <= True;
         cycleQ.deq;
     endrule
 
@@ -314,14 +448,15 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             Bool canArbitrate = memoryOwner == MainMemNone
                 && !cpuResponsePending
                 && !cpuGrantHeld
-                && memory.hostRequestReady;
+                && (memory.hostRequestReady || isLightingPlio0(cpu.payload.addr));
             Bool selectCpu = canArbitrate
                 && cpu.busRequest
                 && (!plioWaiting || preferCpu);
             Bool cpuOwnsBus = cpuGrantHeld
                 || selectCpu
                 || memoryOwner == MainMemCpu
-                || cpuResponsePending;
+                || cpuResponsePending
+                || cpuMmioWorkerPending;
             if (cpuOwnsBus) begin
                 out.busGrant = True;
                 if (cpuResponsePending) begin
