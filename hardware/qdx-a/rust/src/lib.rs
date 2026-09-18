@@ -2,7 +2,7 @@
 
 use plio_logical_model::BurstWords;
 use qli_model::{
-    DeviceToQic, DmaCompletion, DmaDirection, DmaRequest, DmaStatus, DmaWord, MmioRequest,
+    DeviceToQic, DmaDirection, DmaRequest, DmaStatus, DmaWord, MmioRequest,
     MmioResponse, NotificationRequest, QicToDevice,
 };
 
