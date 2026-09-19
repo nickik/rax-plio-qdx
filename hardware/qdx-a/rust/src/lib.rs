@@ -2,9 +2,11 @@
 
 use plio_logical_model::BurstWords;
 use qli_model::{
-    DeviceToQic, DmaCompletion, DmaDirection, DmaRequest, DmaStatus, DmaWord, MmioRequest,
+    DeviceToQic, DmaDirection, DmaRequest, DmaStatus, DmaWord, MmioRequest,
     MmioResponse, NotificationRequest, QicToDevice,
 };
+#[cfg(test)]
+use qli_model::DmaCompletion;
 
 pub const QDX_CAP_VALUE: u32 = 0x0032_4501;
 
