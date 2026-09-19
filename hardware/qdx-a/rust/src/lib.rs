@@ -478,6 +478,7 @@ fn status_value(state: QdxAState) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qli_model::DmaCompletion;
 
     fn mmio_write(address: u32, byte_enable: u8, data: u32) -> QicToDevice {
         QicToDevice {
