@@ -1,0 +1,51 @@
+SHELL := /bin/bash
+BSC ?= bsc
+ROOT := $(abspath ..)
+BUILD := $(abspath build/m6)
+SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
+
+.PHONY: test-m6.1 test-m6.2 test-m6.3 test-m6.4 test-m6.5 clean
+
+define run_bench
+	rm -rf $(BUILD)/$(1); mkdir -p $(BUILD)/$(1)
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(SEARCH)' -bdir $(BUILD)/$(1) -simdir $(BUILD)/$(1) -info-dir $(BUILD)/$(1) -g $(2) bluespec/$(3) 2>&1 | tee $(BUILD)/$(1)/compile.log
+	@if grep -q '(G0023)' $(BUILD)/$(1)/compile.log; then echo 'FAIL $(1) contains a BSC always-false rule'; exit 1; fi
+	$(BSC) +RTS -K8M -RTS -sim -parallel-sim-link 1 -p '$(SEARCH)' -bdir $(BUILD)/$(1) -simdir $(BUILD)/$(1) -e $(2) -o $(BUILD)/$(1)/tb
+	@if command -v timeout >/dev/null 2>&1; then set -o pipefail; timeout 45s $(BUILD)/$(1)/tb 2>&1 | tee $(BUILD)/$(1)/run.log; else set -o pipefail; $(BUILD)/$(1)/tb 2>&1 | tee $(BUILD)/$(1)/run.log; fi
+	@if grep -q '^FAIL|' $(BUILD)/$(1)/run.log; then exit 1; fi
+endef
+
+test-m6.1:
+	$(call run_bench,arbitration,mkTbMainboardM6ArbitrationV2,TbMainboardM6ArbitrationV2.bsv)
+	@grep -Fq 'M6ARBITRATION|winner=cpu|loser=plio|stall_cycles=4|owner_stable=1|pending_preserved=1|status=ok' $(BUILD)/arbitration/run.log
+	@grep -Fq 'M6ARBITRATION|winner=plio|loser=cpu|stall_cycles=4|owner_stable=1|no_duplicate=1|status=ok' $(BUILD)/arbitration/run.log
+	@grep -Fq 'PASS|m6.1|deterministic CPU/PLIO arbitration, stable ownership, preserved loser, backpressure, no loss or duplication' $(BUILD)/arbitration/run.log
+
+test-m6.2:
+	$(call run_bench,fault-cpu-read,mkTbMainboardM6CpuFaultIsolation,TbMainboardM6Faults.bsv)
+	@grep -Fq 'PASS|m6.2-cpu-isolation|CPU fault routed once, PLIO isolated and preserved through owner fault' $(BUILD)/fault-cpu-read/run.log
+	$(call run_bench,fault-cpu-write,mkTbMainboardM6CpuWriteFault,TbMainboardM6Faults.bsv)
+	@grep -Fq 'PASS|m6.2-cpu-write|CPU write fault routed exactly to CPU' $(BUILD)/fault-cpu-write/run.log
+	$(call run_bench,fault-plio-read,mkTbMainboardM6PlioReadFault,TbMainboardM6Faults.bsv)
+	@grep -Fq 'PASS|m6.2-plio|PLIO DMA fault routed exactly to PLIO|read=1' $(BUILD)/fault-plio-read/run.log
+	$(call run_bench,fault-plio-write,mkTbMainboardM6PlioWriteFault,TbMainboardM6Faults.bsv)
+	@grep -Fq 'PASS|m6.2-plio|PLIO DMA fault routed exactly to PLIO|read=0' $(BUILD)/fault-plio-write/run.log
+
+test-m6.3:
+	$(call run_bench,reset-cpu-owner,mkTbMainboardM6ResetCpuOwner,TbMainboardM6Reset.bsv)
+	@grep -Fq 'PASS|m6.3-cpu-owner|reset clears CPU owner and waiting PLIO, suppresses stale completion, fresh PLIO recovers' $(BUILD)/reset-cpu-owner/run.log
+	$(call run_bench,reset-plio-owner,mkTbMainboardM6ResetPlioOwner,TbMainboardM6Reset.bsv)
+	@grep -Fq 'PASS|m6.3-plio-owner|reset clears PLIO owner and waiting CPU, suppresses stale completion, fresh CPU recovers' $(BUILD)/reset-plio-owner/run.log
+
+# Production Mainboard + MemoryController + registered-backend proof: all
+# byte-enable masks, CPU partial write -> PLIO read, and PLIO full write ->
+# CPU read observe one serialized memory image.
+test-m6.4:
+	$(MAKE) -f Makefile test-memory-semantics
+
+# Complete M6 sign-off plus the established Mainboard regression suite.
+test-m6.5: test-m6.1 test-m6.2 test-m6.3 test-m6.4
+	$(MAKE) -f Makefile test
+
+clean:
+	rm -rf $(BUILD)

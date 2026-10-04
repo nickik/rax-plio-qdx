@@ -6,11 +6,59 @@ BUILD := $(abspath build)
 BASE_SEARCH := +:$(ROOT)/qli/bluespec:$(ROOT)/qic/bluespec:$(ROOT)/pti/bluespec:$(ROOT)/plio-tx/bluespec:$(ROOT)/plio-rax-host/bluespec:$(ROOT)/memory-controller/bluespec:$(abspath bluespec)
 QDXB_SEARCH := $(BASE_SEARCH):$(ROOT)/qli16/bluespec:$(ROOT)/testbench/bluespec:$(ROOT)/qdx-a/bluespec:$(ROOT)/qdx-b/bluespec:$(ROOT)/qdx-b-card/bluespec
 
-.PHONY: test test-isolated test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-core test-qdx-b verilog-sanity clean
+.PHONY: test test-isolated test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-core test-qdx-b test-lighting-plio0 test-lighting-plio0-dma-csr test-lighting-plio0-notify-claim test-lighting-plio0-claim-reset verilog-sanity clean
 
-test: test-isolated test-core test-qdx-b verilog-sanity
+test: test-isolated test-core test-qdx-b test-lighting-plio0 verilog-sanity
 
-test-isolated: test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage
+test-isolated: test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-lighting-plio0-dma-csr test-lighting-plio0-notify-claim test-lighting-plio0-claim-reset
+
+test-lighting-plio0-notify-claim:
+	rm -rf $(BUILD)/lighting-plio0-notify-claim
+	mkdir -p $(BUILD)/lighting-plio0-notify-claim
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0-notify-claim -simdir $(BUILD)/lighting-plio0-notify-claim -info-dir $(BUILD)/lighting-plio0-notify-claim \
+		-g mkTbMainboardLightingPlio0NotifyClaim bluespec/TbMainboardLightingPlio0NotifyClaim.bsv 2>&1 | tee $(BUILD)/lighting-plio0-notify-claim/compile.log
+	@if grep -q '(G0023)' $(BUILD)/lighting-plio0-notify-claim/compile.log; then echo 'FAIL Lighting PLIO0 notification/claim test contains a BSC always-false rule'; exit 1; fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0-notify-claim -simdir $(BUILD)/lighting-plio0-notify-claim \
+		-e mkTbMainboardLightingPlio0NotifyClaim -o $(BUILD)/lighting-plio0-notify-claim/tb
+	@if command -v timeout >/dev/null 2>&1; then set -o pipefail; timeout 30s $(BUILD)/lighting-plio0-notify-claim/tb 2>&1 | tee $(BUILD)/lighting-plio0-notify-claim/run.log; else set -o pipefail; $(BUILD)/lighting-plio0-notify-claim/tb 2>&1 | tee $(BUILD)/lighting-plio0-notify-claim/run.log; fi
+	@if grep -q '^FAIL|' $(BUILD)/lighting-plio0-notify-claim/run.log; then exit 1; fi
+	@grep -Fq 'PASS|lighting-plio0-notify-claim|CPU configures and atomically claims one card notification' $(BUILD)/lighting-plio0-notify-claim/run.log
+
+test-lighting-plio0-claim-reset:
+	rm -rf $(BUILD)/lighting-plio0-claim-reset
+	mkdir -p $(BUILD)/lighting-plio0-claim-reset
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0-claim-reset -simdir $(BUILD)/lighting-plio0-claim-reset -info-dir $(BUILD)/lighting-plio0-claim-reset \
+		-g mkTbMainboardLightingPlio0ClaimReset bluespec/TbMainboardLightingPlio0ClaimReset.bsv 2>&1 | tee $(BUILD)/lighting-plio0-claim-reset/compile.log
+	@if grep -q '(G0023)' $(BUILD)/lighting-plio0-claim-reset/compile.log; then echo 'FAIL Lighting PLIO0 claim/reset test contains a BSC always-false rule'; exit 1; fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0-claim-reset -simdir $(BUILD)/lighting-plio0-claim-reset \
+		-e mkTbMainboardLightingPlio0ClaimReset -o $(BUILD)/lighting-plio0-claim-reset/tb
+	@if command -v timeout >/dev/null 2>&1; then set -o pipefail; timeout 30s $(BUILD)/lighting-plio0-claim-reset/tb 2>&1 | tee $(BUILD)/lighting-plio0-claim-reset/run.log; else set -o pipefail; $(BUILD)/lighting-plio0-claim-reset/tb 2>&1 | tee $(BUILD)/lighting-plio0-claim-reset/run.log; fi
+	@if grep -q '^FAIL|' $(BUILD)/lighting-plio0-claim-reset/run.log; then exit 1; fi
+	@grep -Fq 'PASS|lighting-plio0-claim-reset|CPU MMIO configures, claims, and resets Mainboard PLIO controller state' $(BUILD)/lighting-plio0-claim-reset/run.log
+
+test-lighting-plio0-dma-csr:
+	rm -rf $(BUILD)/lighting-plio0-dma-csr
+	mkdir -p $(BUILD)/lighting-plio0-dma-csr
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0-dma-csr -simdir $(BUILD)/lighting-plio0-dma-csr -info-dir $(BUILD)/lighting-plio0-dma-csr \
+		-g mkTbMainboardLightingPlio0DmaCsr bluespec/TbMainboardLightingPlio0DmaCsr.bsv 2>&1 | tee $(BUILD)/lighting-plio0-dma-csr/compile.log
+	@if grep -q '(G0023)' $(BUILD)/lighting-plio0-dma-csr/compile.log; then \
+		echo 'FAIL Lighting PLIO0 DMA CSR test contains a BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0-dma-csr -simdir $(BUILD)/lighting-plio0-dma-csr \
+		-e mkTbMainboardLightingPlio0DmaCsr -o $(BUILD)/lighting-plio0-dma-csr/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 30s $(BUILD)/lighting-plio0-dma-csr/tb 2>&1 | tee $(BUILD)/lighting-plio0-dma-csr/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/lighting-plio0-dma-csr/tb 2>&1 | tee $(BUILD)/lighting-plio0-dma-csr/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/lighting-plio0-dma-csr/run.log; then exit 1; fi
+	@grep -Fq 'PASS|lighting-plio0-dma-csr|CPU programs frozen DMA table through Mainboard host state' $(BUILD)/lighting-plio0-dma-csr/run.log
 
 test-memory-semantics:
 	rm -rf $(BUILD)/diag-memory-semantics
@@ -213,6 +261,27 @@ test-qdx-b:
 	else \
 		set -o pipefail; $(BUILD)/qdxb/tb-mainboard-qdxb 2>&1 | tee $(BUILD)/qdxb/run.log; \
 	fi
+
+test-lighting-plio0:
+	rm -rf $(BUILD)/lighting-plio0
+	mkdir -p $(BUILD)/lighting-plio0
+	set -o pipefail; $(BSC) +RTS -K8M -RTS -u -sim -p '$(QDXB_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0 -simdir $(BUILD)/lighting-plio0 -info-dir $(BUILD)/lighting-plio0 \
+		-g mkTbMainboardLightingPlio0 bluespec/TbMainboardLightingPlio0.bsv 2>&1 | tee $(BUILD)/lighting-plio0/compile.log
+	@if grep -q '(G0023)' $(BUILD)/lighting-plio0/compile.log; then \
+		echo 'FAIL Lighting PLIO0 diagnostic contains a BSC always-false rule'; exit 1; \
+	fi
+	$(BSC) +RTS -K8M -RTS -sim -p '$(QDXB_SEARCH)' \
+		-bdir $(BUILD)/lighting-plio0 -simdir $(BUILD)/lighting-plio0 \
+		-e mkTbMainboardLightingPlio0 -o $(BUILD)/lighting-plio0/tb
+	@if command -v timeout >/dev/null 2>&1; then \
+		set -o pipefail; timeout 120s $(BUILD)/lighting-plio0/tb 2>&1 | tee $(BUILD)/lighting-plio0/run.log; \
+	else \
+		set -o pipefail; $(BUILD)/lighting-plio0/tb 2>&1 | tee $(BUILD)/lighting-plio0/run.log; \
+	fi
+	@if grep -q '^FAIL|' $(BUILD)/lighting-plio0/run.log; then exit 1; fi
+	@grep -Fq 'MAINBOARDPLIO0TRACE|cpu_mmio=ok|iochannel=0|slot=0|worker=00001000|cap=00324501' $(BUILD)/lighting-plio0/run.log
+	@grep -Fq 'PASS|lighting-plio0|CPU MMIO reaches physical QDX-B through Mainboard PLIO host' $(BUILD)/lighting-plio0/run.log
 
 verilog-sanity:
 	rm -rf $(BUILD)/rtl
