@@ -259,11 +259,11 @@ impl FakeMedia {
     }
 
     pub fn with_backends(ns512: Box<dyn BlockBackend>, ns1024: Box<dyn BlockBackend>) -> Result<Self, String> {
-        if ns512.block_size() != 512 || ns512.total_blocks() != NS_BLOCKS {
-            return Err("QDX-B namespace 1 must be 64 x 512-byte blocks".into());
+        if ns512.block_size() != 512 || ns512.total_blocks() == 0 {
+            return Err("QDX-B namespace 1 must contain nonempty 512-byte blocks".into());
         }
-        if ns1024.block_size() != 1024 || ns1024.total_blocks() != NS_BLOCKS {
-            return Err("QDX-B namespace 2 must be 64 x 1024-byte blocks".into());
+        if ns1024.block_size() != 1024 || ns1024.total_blocks() == 0 {
+            return Err("QDX-B namespace 2 must contain nonempty 1024-byte blocks".into());
         }
         Ok(Self { ns512, ns1024, flushes: 0 })
     }
@@ -304,10 +304,14 @@ impl FakeMedia {
         backend.write_block(lba, src).is_ok()
     }
 
-    pub fn flush(&mut self, ns: u16) {
-        if let Some(backend) = self.backend_mut(ns) {
-            if backend.flush().is_ok() { self.flushes = self.flushes.wrapping_add(1); }
-        }
+    pub fn total_blocks(&self, ns: u16) -> u32 {
+        match ns { 1 => self.ns512.total_blocks(), 2 => self.ns1024.total_blocks(), _ => 0 }
+    }
+
+    pub fn flush(&mut self, ns: u16) -> bool {
+        let ok = self.backend_mut(ns).is_some_and(|backend| backend.flush().is_ok());
+        if ok { self.flushes = self.flushes.wrapping_add(1); }
+        ok
     }
 }
 
@@ -436,7 +440,7 @@ impl QdxBEndpoint {
             return;
         }
 
-        let status = self.validate_command(cmd);
+        let status = self.validate_command(cmd, media);
         if status != ST_SUCCESS {
             self.finish(status, 0, 0);
             return;
@@ -445,8 +449,8 @@ impl QdxBEndpoint {
         match cmd.opcode {
             OP_NOP => self.finish(ST_SUCCESS, 0, 0),
             OP_FLUSH => {
-                media.flush(cmd.namespace_id);
-                self.finish(ST_SUCCESS, 0, 0);
+                let status = if media.flush(cmd.namespace_id) { ST_SUCCESS } else { ST_MEDIA_ERROR };
+                self.finish(status, 0, 0);
             }
             OP_IDENTIFY_CONTROLLER | OP_IDENTIFY_NAMESPACE | OP_GET_HEALTH | OP_READ | OP_WRITE | OP_WRITE_DURABLE => {
                 if cmd.sg_count > 0 {
@@ -460,7 +464,7 @@ impl QdxBEndpoint {
         }
     }
 
-    fn validate_command(&self, cmd: Command) -> u16 {
+    fn validate_command(&self, cmd: Command, media: &FakeMedia) -> u16 {
         if cmd.command_arg != 0 { return ST_INVALID_FIELD; }
         let valid_ns = matches!(cmd.namespace_id, 1 | 2);
         match cmd.opcode {
@@ -484,7 +488,7 @@ impl QdxBEndpoint {
             OP_READ | OP_WRITE | OP_WRITE_DURABLE => {
                 if !valid_ns { return ST_INVALID_NAMESPACE; }
                 if cmd.block_count == 0 || u32::from(cmd.block_count) > MAX_TRANSFER_BLOCKS { return ST_INVALID_FIELD; }
-                if cmd.lba >= NS_BLOCKS || cmd.lba.saturating_add(u32::from(cmd.block_count)) > NS_BLOCKS { return ST_LBA_RANGE; }
+                if cmd.lba >= media.total_blocks(cmd.namespace_id) || cmd.lba.saturating_add(u32::from(cmd.block_count)) > media.total_blocks(cmd.namespace_id) { return ST_LBA_RANGE; }
                 let bytes = FakeMedia::block_size(cmd.namespace_id).unwrap_or(0);
                 self.validate_data_buffer(cmd, bytes)
             }
@@ -518,7 +522,7 @@ impl QdxBEndpoint {
             }
             OP_IDENTIFY_NAMESPACE => {
                 self.payload = [0; 256];
-                self.build_identify_namespace(cmd.namespace_id);
+                self.build_identify_namespace(cmd.namespace_id, media);
                 self.transfer_words = 16;
                 self.state = HighState::Transfer;
                 self.start_payload_dma(DmaDirection::DeviceToHost);
@@ -725,11 +729,11 @@ impl QdxBEndpoint {
         put_ascii(&mut self.payload[8..12], b"SIM0000000000001");
     }
 
-    fn build_identify_namespace(&mut self, ns: u16) {
+    fn build_identify_namespace(&mut self, ns: u16, media: &FakeMedia) {
         let block_size = FakeMedia::block_size(ns).unwrap_or(0) as u32;
         self.payload[0] = u32::from(ns);
         self.payload[1] = block_size;
-        self.payload[2] = NS_BLOCKS;
+        self.payload[2] = media.total_blocks(ns);
         self.payload[3] = block_size;
         if ns == 1 {
             put_ascii(&mut self.payload[4..8], b"FAKE-512        ");
@@ -791,5 +795,72 @@ pub fn profile_dma_response(state: qdx_a_model::QdxAState, qic: &qli_model::QicT
         read: qic.dma_read,
         write_ready: qic.dma_write_ready,
         completion: qic.dma_completion,
+    }
+}
+
+#[cfg(test)]
+mod external_media_tests {
+    use super::*;
+
+    #[test]
+    fn namespace_capacity_drives_identify_and_command_bounds() {
+        let media = FakeMedia::with_backends(
+            Box::new(RamDisk::new(512, 512).unwrap()),
+            Box::new(RamDisk::new(19, 1024).unwrap()),
+        )
+        .unwrap();
+        let mut endpoint = QdxBEndpoint::new();
+        for (ns, blocks) in [(1, 512), (2, 19)] {
+            endpoint.build_identify_namespace(ns, &media);
+            assert_eq!(endpoint.payload[2], blocks);
+            let mut command = Command::decode([
+                u32::from(ns) << 16 | u32::from(OP_READ),
+                1,
+                blocks - 1,
+                1,
+                0x7000,
+                0,
+                0,
+                0,
+            ]);
+            assert_eq!(endpoint.validate_command(command, &media), ST_SUCCESS);
+            command.lba = blocks;
+            assert_eq!(endpoint.validate_command(command, &media), ST_LBA_RANGE);
+        }
+    }
+
+    struct FlushFailure(RamDisk);
+    impl BlockBackend for FlushFailure {
+        fn block_size(&self) -> usize {
+            self.0.block_size()
+        }
+        fn total_blocks(&self) -> u32 {
+            self.0.total_blocks()
+        }
+        fn read_only(&self) -> bool {
+            false
+        }
+        fn read_block(&mut self, lba: u32, dst: &mut [u32]) -> Result<(), String> {
+            self.0.read_block(lba, dst)
+        }
+        fn write_block(&mut self, lba: u32, src: &[u32]) -> Result<(), String> {
+            self.0.write_block(lba, src)
+        }
+        fn flush(&mut self) -> Result<(), String> {
+            Err("injected sync failure".into())
+        }
+    }
+
+    #[test]
+    fn flush_failure_reaches_guest_completion() {
+        let mut media = FakeMedia::with_backends(
+            Box::new(FlushFailure(RamDisk::new(512, 512).unwrap())),
+            Box::new(RamDisk::new(64, 1024).unwrap()),
+        )
+        .unwrap();
+        let mut endpoint = QdxBEndpoint::new();
+        endpoint.accept_command(Command::decode([0x10012, 1, 0, 0, 0, 0, 0, 0]), &mut media);
+        assert_eq!(endpoint.pending_status(), ST_MEDIA_ERROR);
+        assert_eq!(media.flushes, 0);
     }
 }
