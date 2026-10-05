@@ -22,7 +22,7 @@ The CPU side follows Lighting Memory Bus v0.1 semantics:
 - `BUS_GRANT` grants ownership;
 - the CPU asserts `REQ` only after observing `BUS_GRANT`;
 - `REQ` and the payload remain stable until completion;
-- `ADDR`, `WRITE_DATA`, `BE`, and `WRITE` form the payload;
+- `ADDR`, `WRITE_DATA`, `BE`, `WRITE`, `VALIDATE`, and `ACCESS_KIND` form the payload;
 - `READY` completes successfully;
 - `ERROR` completes unsuccessfully;
 - `READ_DATA` is meaningful on a successful read.
@@ -33,11 +33,29 @@ If a malformed/test master drops `BUS_REQ` before asserting `REQ`, the mainboard
 
 Because `advance()` is registered, a completed CPU `REQ` sample can still be present in the input pipeline on the cycle in which `READY`/`ERROR` becomes externally visible. The mainboard MUST remember that the request was already accepted and MUST NOT accept it again. It rearms CPU request acceptance only after a subsequently processed cycle observes `REQ=0`.
 
-### Temporary byte-enable restriction
+### Byte lanes and side-effect-free validation
 
-The current in-repository `MemoryControllerIfc.hostRequest` accepts only `(write, address, writeData)` and therefore cannot preserve arbitrary `BE[3:0]` semantics. Until that controller is extended, the mainboard MUST accept only `BE=0xf`. Any other `BE` MUST complete with `ERROR` and MUST NOT reach the memory backend.
+Normal requests preserve BE through the memory controller and external backend.
+The memory-controller address is word aligned; BE selects active lanes.
 
-This restriction is temporary and is not a change to the Lighting Memory Bus specification.
+VALIDATE is an explicit version-one CPU memory-bus operation. It MUST use an
+aligned address and BE=0xf. WRITE indicates the intended eventual direction;
+WRITE_DATA MUST NOT cause a write during validation. A successful read validation
+returns zero data; a successful write validation returns no data.
+
+The mainboard MUST reject PLIO controller/worker MMIO validation with ERROR,
+without issuing a worker request or modifying any CSR. Other addresses pass to
+the registered memory backend with a distinct backendValidate signal. The
+backend MUST classify the entire word as NORMAL readable/writable memory and
+check bounds/protection without reading or writing the target. Reserved ranges,
+MMIO and ROM writes MUST fail. Unsupported backends MUST fail closed.
+
+Validated NORMAL store commits MUST NOT subsequently produce recoverable
+per-word faults. Memory configuration must remain stable while the CPU commits
+its group. Validation does not imply atomic visibility to DMA or other masters.
+
+Legacy transports without the VALIDATE field MUST reject grouped validation;
+they MUST NOT encode it as a zero-BE request or an ordinary read/write.
 
 ## 3. PLIO/QDX slots
 
@@ -196,3 +214,18 @@ The focused mainboard verification MUST establish at least:
 17. a separate integration test instantiates the real `mkQDXBCard` against the mainboard slot boundary and feeds each newly completed physical card image back to the mainboard;
 18. the mainboard core elaborates to Verilog and passes a synthesis sanity check without requiring an embedded RAM implementation;
 19. after a successful PLIO DMA final beat, that final image is consumed through the registered FIFO, BG is observed low for at least one sampled cycle while BR remains asserted, and the same slot can later receive a fresh grant epoch.
+
+### Qualified CPU reads
+
+ACCESS_KIND=0 denotes ordinary data; 1 instruction; 2 page-table; 3 reserved.
+Nonzero kinds MUST be reads, MUST NOT request VALIDATE, and MUST NOT route to
+PLIO controller or worker MMIO. Reserved kind MUST fail before target access.
+Instruction reads MUST use BE=3 or BE=12; page-table reads MUST use BE=15; both
+MUST use word-aligned backend addresses. The registered backend receives
+`memoryBackendAccessKind`; it MUST reject side-effecting/non-normal targets.
+This is a host-internal CPU/backend qualification, not a universal PLIO field.
+
+The M6 transport compatibility closure carries CPU validation in flag bit3 and
+access kind in bits5:4. Its backend reply adds validation and access-kind fields
+(after the original15 fields, for17 total). Legacy adapters MUST fail closed
+rather than dropping either qualifier.

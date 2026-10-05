@@ -112,3 +112,11 @@
 - hot insertion
 - multiprocessor notification routing inside host profiles
 - faster/new physical layer that preserves QDX and capability semantics
+
+## Lighting CPU memory-bus validation and qualified-read compatibility
+
+- [x] Carry explicit CPU VALIDATE through MainboardFPGA and MemoryController's registered backend boundary; reject PLIO MMIO and malformed full-word validation before target access.
+- [x] Document version-one CPU/backend compatibility and stable NORMAL-memory commit requirements in `hardware/mainboard-fpga/SPEC.md`.
+- [ ] Require each deployed memory backend and transport to implement side-effect-free readable/writable NORMAL classification before enabling CPU grouped transfers. PLIO's universal peripheral protocol is unchanged.
+
+- [x] Carry instruction/page-table access kind across the registered backend and reject malformed/side-effecting CPU access before PLIO MMIO.
