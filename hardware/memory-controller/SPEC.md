@@ -125,3 +125,24 @@ The frozen MemoryController implementation is accepted only when one exact SHA p
 11. Dedicated iCE40 synthesis maps the integrated BRAM backend to native `SB_RAM40_4K` cells.
 
 MainboardFPGA tests are intentionally not part of this component acceptance gate; Mainboard integration is a separate follow-on stage.
+
+## Lighting host validation compatibility
+
+`hostValidate(write,address,byteEnable)` MUST reject unaligned addresses and
+BE other than 0xf before issuing a backend request. It MUST carry
+`backendValidate=True`, the intended write direction, and zero write data through
+backpressure until acceptance. Ordinary requests MUST carry `backendValidate=False`.
+
+A validation backend MUST check the entire word range and direction permissions
+without reading or writing its target. Reserved/MMIO ranges and ROM writes MUST
+fault; unsupported validation MUST fail closed. Range classification belongs to
+the backend, not PLIO. Successful read validation returns valid zero data and
+successful write validation returns no read data. The existing response protocol
+and reset cancellation apply unchanged.
+
+`hostReadQualified(kind,address,byteEnable)` accepts only kind1 instruction
+reads (BE=3/12) and kind2 page-table reads (BE=15), with aligned addresses.
+Malformed requests MUST fault without backend access. Qualified requests MUST
+carry stable `backendAccessKind` through backpressure; data and validation
+requests MUST carry kind0. No instruction/page-table interpretation is imposed
+on the universal PLIO peripheral protocol.

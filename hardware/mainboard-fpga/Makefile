@@ -298,3 +298,21 @@ verilog-sanity:
 
 clean:
 	rm -rf $(BUILD)
+
+.PHONY: test-validation
+test-validation:
+	mkdir -p $(BUILD)/validation
+	$(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' -bdir $(BUILD)/validation -simdir $(BUILD)/validation -info-dir $(BUILD)/validation -g mkTbMainboardValidation bluespec/TbMainboardValidation.bsv
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' -bdir $(BUILD)/validation -simdir $(BUILD)/validation -e mkTbMainboardValidation -o $(BUILD)/validation/tb
+	set -o pipefail; timeout 60s $(BUILD)/validation/tb | tee $(BUILD)/validation/run.log
+	! grep -q FAIL $(BUILD)/validation/run.log
+	grep -q "PASS validation" $(BUILD)/validation/run.log
+
+.PHONY: test-qualified
+test-qualified:
+	mkdir -p $(BUILD)/qualified
+	$(BSC) +RTS -K8M -RTS -u -sim -p '$(BASE_SEARCH)' -bdir $(BUILD)/qualified -simdir $(BUILD)/qualified -info-dir $(BUILD)/qualified -g mkTbMemoryQualified ../memory-controller/bluespec/TbMemoryQualified.bsv
+	$(BSC) +RTS -K8M -RTS -sim -p '$(BASE_SEARCH)' -bdir $(BUILD)/qualified -simdir $(BUILD)/qualified -e mkTbMemoryQualified -o $(BUILD)/qualified/tb
+	set -o pipefail; timeout 60s $(BUILD)/qualified/tb | tee $(BUILD)/qualified/run.log
+	! grep -q FAIL $(BUILD)/qualified/run.log
+	grep -q "PASS qualified" $(BUILD)/qualified/run.log
