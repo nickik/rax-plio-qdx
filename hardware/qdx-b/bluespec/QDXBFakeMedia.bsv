@@ -3,6 +3,7 @@ package QDXBFakeMedia;
 import RegFile::*;
 
 interface QDXBMediaIfc;
+    method Bit#(16) namespaceCount;
     method Bool validNamespace(Bit#(16) ns);
     method Bit#(32) blockSize(Bit#(16) ns);
     method Bit#(32) totalBlocks(Bit#(16) ns);
@@ -27,6 +28,7 @@ module mkQDXBFakeMedia(QDXBMediaIfc);
     RegFile#(Bit#(15),Bit#(32)) mem <- mkRegFileFull;
     Reg#(Bit#(32)) flushes <- mkReg(0);
 
+    method Bit#(16) namespaceCount = 2;
     method Bool validNamespace(Bit#(16) ns) = ns == 1 || ns == 2;
     method Bit#(32) blockSize(Bit#(16) ns) = (ns == 1) ? 512 : ((ns == 2) ? 1024 : 0);
     method Bit#(32) totalBlocks(Bit#(16) ns) = (ns == 1 || ns == 2) ? 64 : 0;

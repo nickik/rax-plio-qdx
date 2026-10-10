@@ -26,7 +26,7 @@ function LightingBusMasterDrive cpuRequest(Bit#(32) addr, Bit#(4) be, Bit#(32) d
     LightingBusMasterDrive cpu = lightingBusMasterDriveDefault();
     cpu.busRequest = True;
     cpu.request = True;
-    cpu.payload = LightingBusPayload {
+    cpu.payload = LightingBusPayload {accessKind: 0,
         addr: addr,
         writeData: data,
         byteEnable: be,

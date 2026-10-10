@@ -262,6 +262,13 @@ module mkPLIOQIC(PLIOQICIfc);
 
                     UWorkerOffer: begin
                         if (!timedOut()) begin
+                            // Finish an in-flight QLI DMA header before reversing
+                            // the half-duplex wire for MMIO. Queue one manager
+                            // request until this worker transaction completes.
+                            if (!workerResumeDma && !workerResumeNotification
+                                && !workerResumeDmaTail && !workerResumeDmaComplete
+                                && qli.dmaRequestValid && validDma(qli.dmaRequest))
+                                out.dmaRequestReady = True;
                             out.mmioRequestValid = True;
                             out.mmioRequest = MmioRequest {
                                 address: heldAddress,
@@ -331,6 +338,14 @@ module mkPLIOQIC(PLIOQICIfc);
             else begin
                 if (!bus.grant)
                     grantUsed <= False;
+
+                if (state == UWorkerOffer && !timedOut()
+                    && !workerResumeDma && !workerResumeNotification
+                    && !workerResumeDmaTail && !workerResumeDmaComplete
+                    && qli.dmaRequestValid && validDma(qli.dmaRequest)) begin
+                    dmaReq <= qli.dmaRequest;
+                    workerResumeDma <= True;
+                end
 
                 Bool tailWorker = workerCanPreemptDmaTail() && workerAddressCycleP2(bus);
 

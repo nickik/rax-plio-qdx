@@ -16,6 +16,8 @@ endfunction
 interface MemoryControllerIfc;
     method Bool hostRequestReady;
     method Action hostRequest(Bool write, Bit#(32) address, Bit#(4) byteEnable, Bit#(32) writeData);
+    method Action hostReadQualified(Bit#(2) accessKind, Bit#(32) address, Bit#(4) byteEnable);
+    method Action hostValidate(Bool write, Bit#(32) address, Bit#(4) byteEnable);
     method Bool hostResponseValid;
     method Bool hostResponseFault;
     method Bool hostReadDataValid;
@@ -23,6 +25,8 @@ interface MemoryControllerIfc;
     method Action hostResponseConsumed;
 
     method Bool backendRequestValid;
+    method Bool backendValidate;
+    method Bit#(2) backendAccessKind;
     method Bool backendWrite;
     method Bit#(32) backendAddress;
     method Bit#(4) backendByteEnable;
@@ -37,6 +41,8 @@ endinterface
 
 module mkMemoryController(MemoryControllerIfc);
     Reg#(MemoryControllerState) state <- mkReg(MemIdle);
+    Reg#(Bool) requestValidate <- mkReg(False);
+    Reg#(Bit#(2)) requestAccessKind <- mkReg(0);
     Reg#(Bool) requestWrite <- mkReg(False);
     Reg#(Bit#(32)) requestAddress <- mkReg(0);
     Reg#(Bit#(4)) requestByteEnable <- mkReg(0);
@@ -48,6 +54,8 @@ module mkMemoryController(MemoryControllerIfc);
     method Bool hostRequestReady = state == MemIdle;
 
     method Action hostRequest(Bool write, Bit#(32) address, Bit#(4) byteEnable, Bit#(32) writeData) if (state == MemIdle);
+        requestValidate <= False;
+        requestAccessKind <= 0;
         Bool misaligned = address[1:0] != 0;
         requestWrite <= write;
         requestAddress <= address;
@@ -57,6 +65,35 @@ module mkMemoryController(MemoryControllerIfc);
         responseReadDataValid <= False;
         responseReadData <= 0;
         state <= misaligned ? MemHostResponse : MemBackendRequest;
+    endmethod
+
+    method Action hostReadQualified(Bit#(2) accessKind, Bit#(32) address, Bit#(4) byteEnable) if (state == MemIdle);
+        Bool invalid = address[1:0] != 0 || !(accessKind == 1 || accessKind == 2)
+            || (accessKind == 1 ? !(byteEnable == 3 || byteEnable == 12) : byteEnable != 15);
+        requestValidate <= False;
+        requestAccessKind <= accessKind;
+        requestWrite <= False;
+        requestAddress <= address;
+        requestByteEnable <= byteEnable;
+        requestWriteData <= 0;
+        responseFault <= invalid;
+        responseReadDataValid <= False;
+        responseReadData <= 0;
+        state <= invalid ? MemHostResponse : MemBackendRequest;
+    endmethod
+
+    method Action hostValidate(Bool write, Bit#(32) address, Bit#(4) byteEnable) if (state == MemIdle);
+        Bool invalid = address[1:0] != 0 || byteEnable != 4'hf;
+        requestValidate <= True;
+        requestAccessKind <= 0;
+        requestWrite <= write;
+        requestAddress <= address;
+        requestByteEnable <= byteEnable;
+        requestWriteData <= 0;
+        responseFault <= invalid;
+        responseReadDataValid <= False;
+        responseReadData <= 0;
+        state <= invalid ? MemHostResponse : MemBackendRequest;
     endmethod
 
     method Bool hostResponseValid = state == MemHostResponse;
@@ -72,6 +109,8 @@ module mkMemoryController(MemoryControllerIfc);
     endmethod
 
     method Bool backendRequestValid = state == MemBackendRequest;
+    method Bool backendValidate = requestValidate;
+    method Bit#(2) backendAccessKind = requestAccessKind;
     method Bool backendWrite = requestWrite;
     method Bit#(32) backendAddress = requestAddress;
     method Bit#(4) backendByteEnable = requestByteEnable;
@@ -93,6 +132,8 @@ module mkMemoryController(MemoryControllerIfc);
 
     method Action resetController;
         state <= MemIdle;
+        requestValidate <= False;
+        requestAccessKind <= 0;
         requestWrite <= False;
         requestAddress <= 0;
         requestByteEnable <= 0;

@@ -22,7 +22,7 @@ The CPU side follows Lighting Memory Bus v0.1 semantics:
 - `BUS_GRANT` grants ownership;
 - the CPU asserts `REQ` only after observing `BUS_GRANT`;
 - `REQ` and the payload remain stable until completion;
-- `ADDR`, `WRITE_DATA`, `BE`, and `WRITE` form the payload;
+- `ADDR`, `WRITE_DATA`, `BE`, `WRITE`, and `VALIDATE` form the payload;
 - `READY` completes successfully;
 - `ERROR` completes unsuccessfully;
 - `READ_DATA` is meaningful on a successful read.
@@ -33,11 +33,29 @@ If a malformed/test master drops `BUS_REQ` before asserting `REQ`, the mainboard
 
 Because `advance()` is registered, a completed CPU `REQ` sample can still be present in the input pipeline on the cycle in which `READY`/`ERROR` becomes externally visible. The mainboard MUST remember that the request was already accepted and MUST NOT accept it again. It rearms CPU request acceptance only after a subsequently processed cycle observes `REQ=0`.
 
-### Temporary byte-enable restriction
+### Byte lanes and side-effect-free validation
 
-The current in-repository `MemoryControllerIfc.hostRequest` accepts only `(write, address, writeData)` and therefore cannot preserve arbitrary `BE[3:0]` semantics. Until that controller is extended, the mainboard MUST accept only `BE=0xf`. Any other `BE` MUST complete with `ERROR` and MUST NOT reach the memory backend.
+Normal requests preserve BE through the memory controller and external backend.
+The memory-controller address is word aligned; BE selects active lanes.
 
-This restriction is temporary and is not a change to the Lighting Memory Bus specification.
+VALIDATE is an explicit version-one CPU memory-bus operation. It MUST use an
+aligned address and BE=0xf. WRITE indicates the intended eventual direction;
+WRITE_DATA MUST NOT cause a write during validation. A successful read validation
+returns zero data; a successful write validation returns no data.
+
+The mainboard MUST reject PLIO controller/worker MMIO validation with ERROR,
+without issuing a worker request or modifying any CSR. Other addresses pass to
+the registered memory backend with a distinct backendValidate signal. The
+backend MUST classify the entire word as NORMAL readable/writable memory and
+check bounds/protection without reading or writing the target. Reserved ranges,
+MMIO and ROM writes MUST fail. Unsupported backends MUST fail closed.
+
+Validated NORMAL store commits MUST NOT subsequently produce recoverable
+per-word faults. Memory configuration must remain stable while the CPU commits
+its group. Validation does not imply atomic visibility to DMA or other masters.
+
+Legacy transports without the VALIDATE field MUST reject grouped validation;
+they MUST NOT encode it as a zero-BE request or an ordinary read/write.
 
 ## 3. PLIO/QDX slots
 
@@ -196,3 +214,24 @@ The focused mainboard verification MUST establish at least:
 17. a separate integration test instantiates the real `mkQDXBCard` against the mainboard slot boundary and feeds each newly completed physical card image back to the mainboard;
 18. the mainboard core elaborates to Verilog and passes a synthesis sanity check without requiring an embedded RAM implementation;
 19. after a successful PLIO DMA final beat, that final image is consumed through the registered FIFO, BG is observed low for at least one sampled cycle while BR remains asserted, and the same slot can later receive a fresh grant epoch.
+
+## Lighting memory bus v2 classified reads
+
+The CPU payload carries `accessKind`: 0=data (including NORMAL validation),
+1=instruction fetch, 2=physical page-table read, 3=reserved. Class 1 selects
+BE=3 or BE=c; class 2 selects BE=f. Non-data writes/validation, reserved class
+and malformed masks fault before any target access. Classified PLIO0 requests
+never enter controller or worker decode.
+
+MemoryController exposes `hostReadQualified` and retains the class in
+`backendAccessKind`; MainboardFPGA exports it as `memoryBackendAccessKind`.
+The backend must permit instruction reads only from installed NORMAL RAM/ROM,
+and page-table reads only from installed coherent RAM. Region rejection must
+precede MMIO side effects. Ordinary CPU data and PLIO DMA use class 0. This
+adds no page walker to PLIO and does not change its device-visible protocol.
+
+The Lighting standalone platform implements the region checks in hardware.
+Offline CPU/mainboard bridge frames carry the classification; legacy bridge
+implementations must reject unsupported qualified reads rather than discard
+the field. Held-payload, single-outstanding and registered-response rules remain
+unchanged.

@@ -43,11 +43,10 @@ interface QDXBCardIfc;
     method Bit#(32) fakeFlushCount;
 endinterface
 
-module mkQDXBCard(QDXBCardIfc);
+module mkQDXBCardWithMedia#(QDXBMediaIfc media)(QDXBCardIfc);
     PLIOQICIfc qic <- mkPLIOQIC;
     QLI16CodecIfc codec <- mkQLI16Codec;
     QDXAIfc qdx <- mkQDXA;
-    QDXBMediaIfc media <- mkQDXBFakeMedia;
     QDXBEndpointIfc qdxb <- mkQDXBEndpoint(media);
     PLIOTxCardHarnessIfc phy <- mkPLIOTxCardHarness;
 
@@ -138,6 +137,13 @@ module mkQDXBCard(QDXBCardIfc);
     method QdxBState qdxbState=qdxb.debugState;
     method Bit#(16) qdxbLastStatus=qdxb.debugLastStatus;
     method Bit#(32) fakeFlushCount=qdxb.debugFlushCount;
+endmodule
+
+// Compatibility constructor for existing card-unit fixtures.
+module mkQDXBCard(QDXBCardIfc);
+    QDXBMediaIfc media <- mkQDXBFakeMedia;
+    let card <- mkQDXBCardWithMedia(media);
+    return card;
 endmodule
 
 endpackage
