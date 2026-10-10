@@ -282,8 +282,13 @@ module mkPLIOQIC(PLIOQICIfc);
                     UWorkerResponse: begin
                         if (timedOut())
                             out.mmioCancel = True;
-                        else
+                        else begin
                             out.mmioResponseReady = bus.dataStrobe;
+                            if (!workerResumeDma && !workerResumeNotification
+                                && !workerResumeDmaTail && !workerResumeDmaComplete
+                                && qli.dmaRequestValid && validDma(qli.dmaRequest))
+                                out.dmaRequestReady = True;
+                        end
                     end
 
                     UDmaData: begin
@@ -339,12 +344,16 @@ module mkPLIOQIC(PLIOQICIfc);
                 if (!bus.grant)
                     grantUsed <= False;
 
-                if (state == UWorkerOffer && !timedOut()
+                Bool queuedDmaThisCycle = (state == UWorkerOffer || state == UWorkerResponse) && !timedOut()
                     && !workerResumeDma && !workerResumeNotification
                     && !workerResumeDmaTail && !workerResumeDmaComplete
-                    && qli.dmaRequestValid && validDma(qli.dmaRequest)) begin
+                    && qli.dmaRequestValid && validDma(qli.dmaRequest);
+                Bool completesWorkerThisCycle = state == UWorkerResponse
+                    && !timedOut() && bus.dataStrobe && qli.mmioResponseValid;
+                if (queuedDmaThisCycle) begin
                     dmaReq <= qli.dmaRequest;
-                    workerResumeDma <= True;
+                    if (!completesWorkerThisCycle)
+                        workerResumeDma <= True;
                 end
 
                 Bool tailWorker = workerCanPreemptDmaTail() && workerAddressCycleP2(bus);
@@ -542,7 +551,7 @@ module mkPLIOQIC(PLIOQICIfc);
                                 end
                                 else begin
                                     waitCount <= 0;
-                                    if (workerResumeDma) begin
+                                    if (workerResumeDma || queuedDmaThisCycle) begin
                                         workerResumeDma <= False;
                                         state <= URequestDma;
                                     end
