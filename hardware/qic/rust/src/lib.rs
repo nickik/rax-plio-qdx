@@ -138,6 +138,11 @@ impl Qic {
                     qli.mmio_cancel = true;
                 } else {
                     qli.mmio_response_ready = bus.data_strobe;
+                    if self.suspended.is_none() && self.suspended_tail.is_none() {
+                        if let Some(dma) = device.dma_request {
+                            qli.dma_request_ready = dma.validate().is_ok();
+                        }
+                    }
                     if bus.data_strobe {
                         if let Some(response) = device.mmio_response {
                             match response {
@@ -305,7 +310,7 @@ impl Qic {
             _ => {}
         }
 
-        if matches!(self.state, State::WorkerOffer { wait, .. } if !timed_out(wait))
+        if matches!(self.state, State::WorkerOffer { wait, .. } | State::WorkerResponse { wait, .. } if !timed_out(wait))
             && self.suspended.is_none() && self.suspended_tail.is_none()
         {
             if let Some(request) = device.dma_request {
@@ -994,6 +999,28 @@ mod tests {
         assert_eq!(qic.state,State::RequestBus(ManagerWork::Dma(dma)));
         qic.clock(&BusToCard { reset:true, ..Default::default() },&DeviceToQic::default());
         assert!(qic.is_idle(),"reset cancels queued work");
+    }
+
+    #[test]
+    fn worker_response_finishes_pending_dma_header_before_mmio_reply() {
+        let dma = DmaRequest { direction:DmaDirection::HostToDevice, address:0x1000, words:BurstWords::Four };
+        let mut qic = Qic::new();
+        qic.state = State::WorkerResponse { read:true, wait:0 };
+        let bus = BusToCard { data_strobe:true, ..Default::default() };
+        let device = DeviceToQic { dma_request:Some(dma), ..Default::default() };
+        assert!(qic.drive(&bus,&device).1.dma_request_ready,
+            "an in-flight DMA header must finish before the half-duplex MMIO reply");
+        qic.clock(&bus,&device);
+        assert_eq!(qic.suspended,Some(ManagerWork::Dma(dma)));
+        assert!(!qic.drive(&bus,&device).1.dma_request_ready);
+        qic.clock(&bus,&DeviceToQic { mmio_response:Some(MmioResponse::ReadOk(0)), ..Default::default() });
+        assert_eq!(qic.state,State::RequestBus(ManagerWork::Dma(dma)));
+        qic.clock(&BusToCard { reset:true, ..Default::default() },&DeviceToQic::default());
+        assert!(qic.is_idle());
+        // Semantic handshakes may coincide; the pending work must not be lost.
+        qic.state = State::WorkerResponse { read:true, wait:0 };
+        qic.clock(&bus,&DeviceToQic { dma_request:Some(dma), mmio_response:Some(MmioResponse::ReadOk(0)), ..Default::default() });
+        assert_eq!(qic.state,State::RequestBus(ManagerWork::Dma(dma)));
     }
 
 }
