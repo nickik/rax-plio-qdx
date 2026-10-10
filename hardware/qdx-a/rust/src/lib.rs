@@ -5,8 +5,6 @@ use qli_model::{
     DeviceToQic, DmaDirection, DmaRequest, DmaStatus, DmaWord, MmioRequest,
     MmioResponse, NotificationRequest, QicToDevice,
 };
-#[cfg(test)]
-use qli_model::DmaCompletion;
 
 pub const QDX_CAP_VALUE: u32 = 0x0032_4501;
 
@@ -221,17 +219,28 @@ impl QdxA {
 
         self.endpoint_reset_pulse = false;
 
-        // Match the PR #6 Bluespec control priority exactly. MMIO response
-        // consumption/cancel, MMIO request acceptance, and engine advancement
-        // are mutually exclusive within one cycle.
-        if self.mmio_response.is_some() && qic.mmio_response_ready {
-            self.mmio_response = None;
-            return;
-        } else if qic.mmio_cancel {
-            self.mmio_response = None;
-            return;
+        // MMIO may defer new work, but cannot discard an accepted link event.
+        let link_event = match self.state {
+            QdxAState::SqRequest | QdxAState::CqRequest => qic.dma_request_ready,
+            QdxAState::SqReceive => qic.dma_read.is_some(),
+            QdxAState::CqSend => qic.dma_write_ready,
+            QdxAState::SqCompletion | QdxAState::CqCompletion => qic.dma_completion.is_some(),
+            QdxAState::Notify => qic.notification_ready,
+            QdxAState::EndpointOffer => endpoint.command_ready,
+            QdxAState::EndpointCompletion => endpoint.completion.is_some() && self.cq_tail.wrapping_sub(self.cq_head) < 4,
+            _ => false,
+        };
+        let previous_state = self.state;
+        let pending_response = self.mmio_response.is_some();
+        if pending_response {
+            if qic.mmio_response_ready || qic.mmio_cancel {
+                self.mmio_response = None;
+            }
         } else if accepts_mmio {
             self.accept_mmio(req.expect("accepts_mmio implies request"));
+        }
+        // A reset or faulting control write takes priority over engine progress.
+        if self.state != previous_state || ((pending_response || accepts_mmio) && !link_event) {
             return;
         }
 
@@ -480,6 +489,7 @@ fn status_value(state: QdxAState) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qli_model::DmaCompletion;
 
     fn mmio_write(address: u32, byte_enable: u8, data: u32) -> QicToDevice {
         QicToDevice {
@@ -738,4 +748,53 @@ mod tests {
         assert_eq!(chip.qic_port(&QicToDevice::default()).mmio_response, Some(MmioResponse::WriteOk));
         assert!(chip.endpoint_port(&QicToDevice::default()).reset);
     }
+    #[test]
+    fn pending_mmio_response_cannot_discard_accepted_cq_dma_request() {
+        let mut chip = QdxA::new();
+        chip.state = QdxAState::CqRequest;
+        chip.mmio_response = Some(MmioResponse::ReadOk(0));
+        let input = QicToDevice {
+            mmio_response_ready: true,
+            dma_request_ready: true,
+            ..Default::default()
+        };
+        assert!(chip.qic_port(&input).dma_request.is_some());
+        chip.advance(&input, &EndpointIn::default());
+        assert_eq!(chip.state(), QdxAState::CqSend);
+        assert!(chip.mmio_response.is_none());
+    }
+
+    #[test]
+    fn pending_mmio_preserves_active_link_events_with_or_without_response_consumption() {
+        for consume in [false, true] {
+            for state in [QdxAState::SqRequest, QdxAState::SqReceive,
+                          QdxAState::SqCompletion, QdxAState::CqRequest,
+                          QdxAState::CqSend, QdxAState::CqCompletion, QdxAState::Notify,
+                          QdxAState::EndpointOffer, QdxAState::EndpointCompletion] {
+                let mut chip = QdxA::new();
+                chip.state = state;
+                chip.mmio_response = Some(MmioResponse::ReadOk(0));
+                let mut q = QicToDevice { mmio_response_ready: consume, ..Default::default() };
+                let mut endpoint = EndpointIn::default();
+                let expected = match state {
+                    QdxAState::SqRequest => { q.dma_request_ready = true; QdxAState::SqReceive }
+                    QdxAState::CqRequest => { q.dma_request_ready = true; QdxAState::CqSend }
+                    QdxAState::SqReceive => { q.dma_read = Some(qli_model::DmaWord { data: 0x12345678 }); QdxAState::SqReceive }
+                    QdxAState::CqSend => { q.dma_write_ready = true; QdxAState::CqSend }
+                    QdxAState::SqCompletion => { q.dma_completion = Some(DmaCompletion { status:DmaStatus::Ok, words_completed:8 }); QdxAState::EndpointOffer }
+                    QdxAState::CqCompletion => { q.dma_completion = Some(DmaCompletion { status:DmaStatus::Ok, words_completed:4 }); QdxAState::ReadyIdle }
+                    QdxAState::Notify => { q.notification_ready = true; QdxAState::ReadyIdle }
+                    QdxAState::EndpointOffer => { endpoint.command_ready = true; QdxAState::EndpointCompletion }
+                    QdxAState::EndpointCompletion => { endpoint.completion = Some([0; 4]); QdxAState::CqRequest }
+                    _ => unreachable!(),
+                };
+                chip.advance(&q, &endpoint);
+                assert_eq!(chip.state(), expected, "state={state:?} consume={consume}");
+                if state == QdxAState::SqReceive { assert_eq!(chip.sq_word, 1); }
+                if state == QdxAState::CqSend { assert_eq!(chip.cq_word, 1); }
+                assert_eq!(chip.mmio_response.is_none(), consume);
+            }
+        }
+    }
+
 }
