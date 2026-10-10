@@ -125,3 +125,24 @@ The frozen MemoryController implementation is accepted only when one exact SHA p
 11. Dedicated iCE40 synthesis maps the integrated BRAM backend to native `SB_RAM40_4K` cells.
 
 MainboardFPGA tests are intentionally not part of this component acceptance gate; Mainboard integration is a separate follow-on stage.
+
+## Lighting memory bus v2 classified reads
+
+The CPU payload carries `accessKind`: 0=data (including NORMAL validation),
+1=instruction fetch, 2=physical page-table read, 3=reserved. Class 1 selects
+BE=3 or BE=c; class 2 selects BE=f. Non-data writes/validation, reserved class
+and malformed masks fault before any target access. Classified PLIO0 requests
+never enter controller or worker decode.
+
+MemoryController exposes `hostReadQualified` and retains the class in
+`backendAccessKind`; MainboardFPGA exports it as `memoryBackendAccessKind`.
+The backend must permit instruction reads only from installed NORMAL RAM/ROM,
+and page-table reads only from installed coherent RAM. Region rejection must
+precede MMIO side effects. Ordinary CPU data and PLIO DMA use class 0. This
+adds no page walker to PLIO and does not change its device-visible protocol.
+
+The Lighting standalone platform implements the region checks in hardware.
+Offline CPU/mainboard bridge frames carry the classification; legacy bridge
+implementations must reject unsupported qualified reads rather than discard
+the field. Held-payload, single-outstanding and registered-response rules remain
+unchanged.

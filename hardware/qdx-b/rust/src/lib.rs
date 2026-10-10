@@ -377,6 +377,7 @@ impl QdxBEndpoint {
         match self.dma_phase {
             DmaPhase::Request => p.request = self.dma_req,
             DmaPhase::Transfer => {
+                p.completion_ready = true;
                 if let Some(req) = self.dma_req {
                     match req.direction {
                         DmaDirection::HostToDevice => p.read_ready = true,
@@ -600,6 +601,15 @@ impl QdxBEndpoint {
 
     fn clock_dma(&mut self, dma: ProfileDmaOut, media: &mut FakeMedia) {
         let Some(req) = self.dma_req else { return; };
+        // Errors can terminate a burst before any or all payload words arrive.
+        // Completion wins over data on an aborted burst; staged WRITE words
+        // never reach media unless every burst completes successfully.
+        if self.dma_phase == DmaPhase::Transfer && dma.completion.is_some() {
+            self.dma_phase = DmaPhase::Idle;
+            self.dma_req = None;
+            self.finish(ST_DMA_FAULT, 0, 0);
+            return;
+        }
         match self.dma_phase {
             DmaPhase::Request => {
                 if dma.request_ready { self.dma_phase = DmaPhase::Transfer; }

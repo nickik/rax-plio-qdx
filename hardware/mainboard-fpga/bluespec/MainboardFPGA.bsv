@@ -107,6 +107,8 @@ interface MainboardFPGAIfc;
     method LightingModuleInterrupts interrupts(Bool timerIrq, Bool machineFault);
 
     method Bool memoryBackendRequestValid;
+    method Bool memoryBackendValidate;
+    method Bit#(2) memoryBackendAccessKind;
     method Bool memoryBackendWrite;
     method Bit#(32) memoryBackendAddress;
     method Bit#(4) memoryBackendByteEnable;
@@ -380,8 +382,19 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 && (!host.memoryRequestValid || preferCpu))));
         let cycle = cycleQ.first;
         Bool plio0 = isLightingPlio0(cycle.cpu.payload.addr);
-        if (!plio0 && memory.hostRequestReady) begin
-            memory.hostRequest(cycle.cpu.payload.write,
+        if ((cycle.cpu.payload.validate && plio0) || (cycle.cpu.payload.accessKind != 0 && (plio0 || cycle.cpu.payload.write || cycle.cpu.payload.validate || cycle.cpu.payload.accessKind == 3))) begin
+            // Validation must never enter controller/worker MMIO or mutate CSRs.
+            cpuResponsePending <= True;
+            cpuResponseFault <= True;
+            cpuResponseReadDataValid <= False;
+            cpuResponseReadData <= 0;
+        end
+        else if (!plio0 && memory.hostRequestReady) begin
+            if (cycle.cpu.payload.validate)
+                memory.hostValidate(cycle.cpu.payload.write, cycle.cpu.payload.addr, cycle.cpu.payload.byteEnable);
+            else if (cycle.cpu.payload.accessKind != 0)
+                memory.hostReadQualified(cycle.cpu.payload.accessKind, cycle.cpu.payload.addr, cycle.cpu.payload.byteEnable);
+            else memory.hostRequest(cycle.cpu.payload.write,
                 cycle.cpu.payload.addr,
                 cycle.cpu.payload.byteEnable,
                 cycle.cpu.payload.writeData);
@@ -717,6 +730,9 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // PLIO request acceptance is one atomic rule: the MemoryController request
     // is created in the same clock that PLIOHostCore sees memoryRequestReady.
     // PLIO DMA remains a full 32-bit transfer and therefore always uses BE=f.
+    // A CPU worker request waits on the PLIO host, not on RAM. Let DMA
+    // progress while that request is pending, even when CPU priority is set;
+    // otherwise completion polling can deadlock behind its own DMA burst.
     rule advancePlioRequest (cycleQ.notEmpty && !cycleQ.first.reset
         && !plioSoftResetPending
         && !cpuResponsePending
@@ -724,7 +740,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         && !cpuGrantHeld
         && memory.hostRequestReady
         && host.memoryRequestValid
-        && (!cycleQ.first.cpu.busRequest || !preferCpu));
+        && (!cycleQ.first.cpu.busRequest || !preferCpu || cpuMmioWorkerPending));
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
         Bool useCpuWorker = cpuMmioWorkerPending && !cpuMmioWorkerIssued;
@@ -776,7 +792,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             && !cpuGrantHeld
             && memory.hostRequestReady
             && host.memoryRequestValid
-            && (!cycleQ.first.cpu.busRequest || !preferCpu)));
+            && (!cycleQ.first.cpu.busRequest || !preferCpu || cpuMmioWorkerPending)));
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
         Bool useCpuWorker = cpuMmioWorkerPending && !cpuMmioWorkerIssued;
@@ -833,6 +849,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endmethod
 
     method Bool memoryBackendRequestValid = memory.backendRequestValid;
+    method Bool memoryBackendValidate = memory.backendValidate;
+    method Bit#(2) memoryBackendAccessKind = memory.backendAccessKind;
     method Bool memoryBackendWrite = memory.backendWrite;
     method Bit#(32) memoryBackendAddress = memory.backendAddress;
     method Bit#(4) memoryBackendByteEnable = memory.backendByteEnable;
