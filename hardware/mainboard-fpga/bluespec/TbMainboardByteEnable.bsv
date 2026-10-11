@@ -30,7 +30,8 @@ function LightingBusMasterDrive cpuRequest(Bit#(32) addr, Bit#(4) be, Bit#(32) d
         addr: addr,
         writeData: data,
         byteEnable: be,
-        write: True
+        write: True,
+        validate: False
     };
     return cpu;
 endfunction
