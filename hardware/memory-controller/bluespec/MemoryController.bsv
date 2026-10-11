@@ -17,6 +17,7 @@ interface MemoryControllerIfc;
     method Bool hostRequestReady;
     method Action hostRequest(Bool write, Bit#(32) address, Bit#(4) byteEnable, Bit#(32) writeData);
     method Action hostReadQualified(Bit#(2) accessKind, Bit#(32) address, Bit#(4) byteEnable);
+    method Action hostContinueInstruction(Bit#(32) address);
     method Action hostValidate(Bool write, Bit#(32) address, Bit#(4) byteEnable);
     method Bool hostResponseValid;
     method Bool hostResponseFault;
@@ -69,7 +70,7 @@ module mkMemoryController(MemoryControllerIfc);
 
     method Action hostReadQualified(Bit#(2) accessKind, Bit#(32) address, Bit#(4) byteEnable) if (state == MemIdle);
         Bool invalid = address[1:0] != 0 || !(accessKind == 1 || accessKind == 2)
-            || (accessKind == 1 ? !(byteEnable == 3 || byteEnable == 12) : byteEnable != 15);
+            || (accessKind == 1 ? !(byteEnable == 3 || byteEnable == 12 || byteEnable == 15) : byteEnable != 15);
         requestValidate <= False;
         requestAccessKind <= accessKind;
         requestWrite <= False;
@@ -90,6 +91,20 @@ module mkMemoryController(MemoryControllerIfc);
         requestAddress <= address;
         requestByteEnable <= byteEnable;
         requestWriteData <= 0;
+        responseFault <= invalid;
+        responseReadDataValid <= False;
+        responseReadData <= 0;
+        state <= invalid ? MemHostResponse : MemBackendRequest;
+    endmethod
+
+    // Consume a successful instruction beat and submit its already-bounded
+    // successor atomically, without a host-idle/rearbitration bubble.
+    method Action hostContinueInstruction(Bit#(32) address) if (state == MemHostResponse);
+        Bool invalid = responseFault || requestAccessKind != 1 || requestWrite || requestValidate
+            || address[1:0] != 0 || address != requestAddress + 4
+            || address[31:11] != requestAddress[31:11];
+        requestAddress <= address;
+        requestByteEnable <= 15;
         responseFault <= invalid;
         responseReadDataValid <= False;
         responseReadData <= 0;

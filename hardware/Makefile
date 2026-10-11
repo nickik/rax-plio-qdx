@@ -31,6 +31,7 @@ test-memory-controller:
 	bash scripts/test-memory-controller.sh
 
 test-memory-controller-all:
+	bash scripts/test-memory-controller-instruction-word.sh
 	bash scripts/test-memory-controller.sh
 	bash scripts/test-memory-controller-backend.sh
 	bash scripts/test-memory-controller-semantics.sh

@@ -130,7 +130,7 @@ MainboardFPGA tests are intentionally not part of this component acceptance gate
 
 The CPU payload carries `accessKind`: 0=data (including NORMAL validation),
 1=instruction fetch, 2=physical page-table read, 3=reserved. Class 1 selects
-BE=3 or BE=c; class 2 selects BE=f. Non-data writes/validation, reserved class
+BE=3, BE=c or BE=f (a full instruction word); class 2 selects BE=f. Non-data writes/validation, reserved class
 and malformed masks fault before any target access. Classified PLIO0 requests
 never enter controller or worker decode.
 
@@ -146,3 +146,13 @@ Offline CPU/mainboard bridge frames carry the classification; legacy bridge
 implementations must reject unsupported qualified reads rather than discard
 the field. Held-payload, single-outstanding and registered-response rules remain
 unchanged.
+
+## Sequential instruction continuation
+
+`hostContinueInstruction(address)` consumes a successful class-1 response and
+submits the next word without an idle host state. It MUST reject a faulted,
+write, validation or non-instruction predecessor, a nonconsecutive/unaligned
+address, or a 2 KiB page crossing before backend access. BE becomes f. Backend
+requests remain single outstanding, individually classified NORMAL reads; no
+backend burst latency or RAM row-buffer behavior is assumed. The mainboard
+bounds the extent to four words and rearbitrates with PLIO afterward.

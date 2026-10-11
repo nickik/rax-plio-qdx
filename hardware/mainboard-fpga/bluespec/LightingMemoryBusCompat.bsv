@@ -5,6 +5,7 @@ package LightingMemoryBusCompat;
 // cross-repository hardware dependency is stable.
 
 typedef struct {
+    Bit#(2) streamWords; // extra sequential instruction words, 0..3
     Bit#(2) accessKind; // 0=data, 1=instruction, 2=page table, 3=reserved
     Bit#(32) addr;
     Bit#(32) writeData;
@@ -36,7 +37,7 @@ typedef struct {
 } LightingModuleInterrupts deriving (Bits, Eq, FShow);
 
 function LightingBusPayload lightingBusPayloadDefault();
-    return LightingBusPayload {accessKind: 0,
+    return LightingBusPayload {streamWords: 0, accessKind: 0,
         addr: 0,
         writeData: 0,
         byteEnable: 0,

@@ -10,7 +10,7 @@ QDXB_SEARCH := $(BASE_SEARCH):$(ROOT)/qli16/bluespec:$(ROOT)/testbench/bluespec:
 
 test: test-isolated test-core test-qdx-b test-lighting-plio0 verilog-sanity
 
-test-isolated: test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-lighting-plio0-dma-csr test-lighting-plio0-notify-claim test-lighting-plio0-claim-reset
+test-isolated: test-independent-backend test-instruction-handoff test-memory-semantics test-byte-enable test-cpu-grant test-cpu-write test-cpu-read test-reset-recovery test-plio-dma test-lifecycle-coverage test-lighting-plio0-dma-csr test-lighting-plio0-notify-claim test-lighting-plio0-claim-reset
 
 test-lighting-plio0-notify-claim:
 	rm -rf $(BUILD)/lighting-plio0-notify-claim
@@ -298,3 +298,11 @@ verilog-sanity:
 
 clean:
 	rm -rf $(BUILD)
+
+.PHONY: test-instruction-handoff
+test-instruction-handoff:
+	../scripts/test-mainboard-instruction-handoff.sh
+
+.PHONY: test-independent-backend
+test-independent-backend:
+	../scripts/test-mainboard-independent-backend.sh
