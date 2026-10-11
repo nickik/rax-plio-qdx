@@ -6,6 +6,7 @@ import PLIOQICPhase1::*;
 import PLIOTx::*;
 import QDXA::*;
 import QDXBEndpoint::*;
+import QDXBFakeMedia::*;
 import QDXBCard::*;
 
 typedef enum { WReset, WSqBase, WSqSize, WCqBase, WCqSize, WControl, WSqTail, WRun, WDone } Work deriving (Bits,Eq,FShow);
@@ -70,7 +71,11 @@ function PlioIn peerBus(PeerState p, Bool rd, Bit#(32) base, Bit#(5) beat, Bool 
 endfunction
 
 module mkTbQDXBCard(Empty);
-    QDXBCardIfc card <- mkQDXBCard;
+    // Instantiate the media outside the card.  This is the conformance proof
+    // that the card no longer owns or hard-wires its storage backend.
+    QDXBMediaIfc media <- mkQDXBFakeMedia;
+    QDXBCardIfc card <- mkQDXBCardWithMedia(media);
+
     Reg#(Work) work <- mkReg(WReset);
     Reg#(WorkerPhase) wp <- mkReg(WAddr);
     Reg#(PeerState) peer <- mkReg(PeerIdle);
