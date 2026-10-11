@@ -31,6 +31,8 @@ The mainboard MUST retain a CPU grant between the `BUS_REQ` arbitration cycle an
 
 If a malformed/test master drops `BUS_REQ` before asserting `REQ`, the mainboard may cancel the unused grant so PLIO cannot be deadlocked indefinitely. The real Lighting `ModuleBusAdapter` does not do this during a normal transaction.
 
+After a successful instruction-class read, the module MAY retain `BUS_REQ` for a bounded two-clock idle handoff. `REQ` MUST go low to retire the preceding completion, and the next request MUST wait until READY/ERROR are low. The mainboard MAY retain the grant at response retirement only when no PLIO memory request is waiting. Every word remains a separate checked transaction. An expired idle handoff releases BUS_REQ and the unused grant; it MUST NOT reserve memory indefinitely while the module holds a response.
+
 Because `advance()` is registered, a completed CPU `REQ` sample can still be present in the input pipeline on the cycle in which `READY`/`ERROR` becomes externally visible. The mainboard MUST remember that the request was already accepted and MUST NOT accept it again. It rearms CPU request acceptance only after a subsequently processed cycle observes `REQ=0`.
 
 ### Byte lanes and side-effect-free validation
@@ -235,3 +237,33 @@ Offline CPU/mainboard bridge frames carry the classification; legacy bridge
 implementations must reject unsupported qualified reads rather than discard
 the field. Held-payload, single-outstanding and registered-response rules remain
 unchanged.
+
+## Lighting memory bus v3 instruction extents
+
+STREAM_WORDS is a two-bit count of extra instruction words, zero through three.
+Nonzero extents MUST be aligned class-1 reads with BE=f, no validation/write,
+and remain within a 2 KiB page. Invalid headers MUST fault before backend access.
+The mainboard holds ownership through the bounded extent, emits one READY beat
+per ordered word, and terminates on any fault. The request header stays stable;
+backend addresses increment by four and every word retains class-1 checks.
+After the extent, waiting PLIO memory work MUST win before a further CPU extent.
+The module reserves four response slots before issue, so consumer backpressure
+requires no new acknowledgement pin. This is a CPU-memory contract, not PLIO.
+
+### Independent memory clock boundary
+
+The production Lighting machine uses `mkMainboardFPGAWithIndependentBackend(True)`.
+Its caller MUST perform backend acceptance through `acceptMemoryBackendRequest`
+and delivery through `acceptMemoryBackendResponse`, independently of peripheral
+cycle progress. Each call MUST share one atomic rule with the corresponding
+backend action: neither participant may advance if that rule cannot fire. Backend samples in `advance` / `advanceWithSlotPresence` are ignored in
+this mode. The legacy `mkMainboardFPGA` wrapper retains the registered cycle-driven
+backend contract for existing harnesses; callers MUST NOT mix the two modes.
+
+The independent path does not add outstanding transactions or alter arbitration,
+access classification, response shape checks, or the four-word instruction bound.
+Queued machine reset is mirrored by a reset-pending latch, avoiding a FIFO read
+in the independent handshake guards. Applying reset clears that latch and the
+controller; pending PLIO reset also suppresses backend state transitions.
+Memory request and response rules remain separate so their mutually exclusive
+controller guards do not disable the entire handshake path.

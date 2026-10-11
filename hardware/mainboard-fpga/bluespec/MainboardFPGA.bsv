@@ -115,6 +115,11 @@ interface MainboardFPGAIfc;
     method Bit#(32) memoryBackendWriteData;
     method Bool memoryBackendResponseReady;
 
+    // Independent backend samples once per memory clock; advance's backend
+    // samples are ignored in this implementation mode.
+    method Action acceptMemoryBackendRequest;
+    method Action acceptMemoryBackendResponse(Bool fault, Bool readValid, Bit#(32) data);
+
     method Action advance(Vector#(8, BackplaneDrive) cards,
         LightingBusMasterDrive cpu,
         Bool workerValid, HostWorkerRequest workerRequest,
@@ -170,7 +175,7 @@ interface MainboardFPGAIfc;
     method PLIOHostCoreFault debugPlioFault;
 endinterface
 
-module mkMainboardFPGA(MainboardFPGAIfc);
+module mkMainboardFPGAWithIndependentBackend#(Bool independentBackend)(MainboardFPGAIfc);
     PLIOHostCoreIfc host <- mkPLIOHostCore;
     MemoryControllerIfc memory <- mkMemoryController;
 
@@ -178,6 +183,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Reg#(Bool) preferCpu <- mkReg(True);
     Reg#(Bool) cpuGrantHeld <- mkReg(False);
     Reg#(Bool) cpuRequestSeen <- mkReg(False);
+    Reg#(Bit#(2)) cpuStreamRemaining <- mkReg(0);
+    Reg#(Bit#(32)) cpuStreamAddress <- mkReg(0);
 
     // CPU responses must survive the registered physical-cycle boundary. PLIO
     // request/response handshakes are completed atomically in dedicated rules
@@ -222,8 +229,13 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     Reg#(Bool) privilegedDmaBindWrite <- mkReg(False);
 
     FIFOF#(MainboardCycleInputs) cycleQ <- mkLFIFOF;
+    // Mirror queued reset intent without putting a FIFO read in the independent
+    // memory handshake. That FIFO dependency serialized ordinary peripheral work.
+    Reg#(Bool) backendResetPending <- mkReg(False);
 
-    rule applyReset (cycleQ.notEmpty && cycleQ.first.reset);
+    rule applyReset (cycleQ.notEmpty && cycleQ.first.reset
+        && (!independentBackend || backendResetPending));
+        backendResetPending <= False;
         let cycle = cycleQ.first;
         Vector#(8, PlioOut) logicalCards = plioCardsFromBackplane(cycle.cards);
         memory.resetController;
@@ -231,6 +243,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         preferCpu <= True;
         cpuGrantHeld <= False;
         cpuRequestSeen <= False;
+        cpuStreamRemaining <= 0;
+        cpuStreamAddress <= 0;
         cpuResponsePending <= False;
         cpuResponseFault <= False;
         cpuResponseReadDataValid <= False;
@@ -263,13 +277,14 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // soft reset remains exclusive and discards any older queued bind.
     rule applyPrivilegedDmaBind (privilegedDmaBindPending
         && !plioSoftResetPending
-        && !(cycleQ.notEmpty && cycleQ.first.reset));
+        && !(independentBackend ? backendResetPending : (cycleQ.notEmpty && cycleQ.first.reset)));
         host.bindDma(privilegedDmaBindSlot, privilegedDmaBindChannel,
             privilegedDmaBindBase, privilegedDmaBindLength,
             privilegedDmaBindRead, privilegedDmaBindWrite);
         privilegedDmaBindPending <= False;
     endrule
 
+    if (!independentBackend) begin
     rule acceptBackendRequest (cycleQ.notEmpty && !cycleQ.first.reset
         && !plioSoftResetPending
         && memory.backendRequestValid && cycleQ.first.backendRequestReady);
@@ -284,6 +299,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
             cycle.backendReadDataValid, cycle.backendReadData);
     endrule
 
+    end
     // CONTROL.RESET is a PLIO-host reset, not a machine-memory reset.  It
     // clears the host-visible control plane atomically with the reset image
     // delivered to PLIOHostCore and the physically attached cards.
@@ -297,6 +313,8 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         preferCpu <= True;
         cpuGrantHeld <= False;
         cpuRequestSeen <= False;
+        cpuStreamRemaining <= 0;
+        cpuStreamAddress <= 0;
         // Complete the initiating CONTROL.RESET write only after the host and
         // controller state have reached their reset image.
         cpuResponsePending <= True;
@@ -368,6 +386,11 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         cpuResponseReadDataValid <= False;
         cpuResponseReadData <= 0;
         cpuRequestSeen <= False;
+        // Retain only an instruction handoff, and never ahead of waiting DMA.
+        // The module bounds the idle lease; each completed word rearbitrates.
+        cpuGrantHeld <= cycleQ.first.cpu.busRequest
+            && cycleQ.first.cpu.payload.accessKind == 1
+            && !cpuResponseFault && !host.memoryRequestValid;
     endrule
 
     rule startCpuMemoryTransaction (cycleQ.notEmpty && !cycleQ.first.reset
@@ -382,7 +405,14 @@ module mkMainboardFPGA(MainboardFPGAIfc);
                 && (!host.memoryRequestValid || preferCpu))));
         let cycle = cycleQ.first;
         Bool plio0 = isLightingPlio0(cycle.cpu.payload.addr);
-        if ((cycle.cpu.payload.validate && plio0) || (cycle.cpu.payload.accessKind != 0 && (plio0 || cycle.cpu.payload.write || cycle.cpu.payload.validate || cycle.cpu.payload.accessKind == 3))) begin
+        cpuStreamRemaining <= cycle.cpu.payload.streamWords;
+        cpuStreamAddress <= cycle.cpu.payload.addr;
+        Bit#(12) streamEnd = zeroExtend(cycle.cpu.payload.addr[10:0]) + (zeroExtend(cycle.cpu.payload.streamWords) << 2);
+        Bool invalidStream = cycle.cpu.payload.streamWords != 0 &&
+            (cycle.cpu.payload.accessKind != 1 || cycle.cpu.payload.validate || cycle.cpu.payload.write ||
+             cycle.cpu.payload.byteEnable != 15 || cycle.cpu.payload.addr[1:0] != 0 || streamEnd > 2044);
+
+        if (invalidStream || (cycle.cpu.payload.validate && plio0) || (cycle.cpu.payload.accessKind != 0 && (plio0 || cycle.cpu.payload.write || cycle.cpu.payload.validate || cycle.cpu.payload.accessKind == 3))) begin
             // Validation must never enter controller/worker MMIO or mutate CSRs.
             cpuResponsePending <= True;
             cpuResponseFault <= True;
@@ -696,6 +726,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     // still driven exclusively by the real PLIO host state machine.  The CPU
     // remains granted until the resulting ACK/ERR completion is registered.
     rule captureCpuMmioWorkerCompletion (!plioSoftResetPending
+        && (!independentBackend || !backendResetPending)
         && cpuMmioWorkerPending
         && cpuMmioWorkerIssued && host.workerCompletionValid
         && !cpuResponsePending);
@@ -715,16 +746,35 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     endrule
 
     rule captureCpuMemoryResponse (!plioSoftResetPending
-        && !(cycleQ.notEmpty && cycleQ.first.reset)
+        && !(independentBackend ? backendResetPending : (cycleQ.notEmpty && cycleQ.first.reset))
         && memoryOwner == MainMemCpu
         && memory.hostResponseValid);
         cpuResponsePending <= True;
         cpuResponseFault <= memory.hostResponseFault;
         cpuResponseReadDataValid <= memory.hostReadDataValid;
         cpuResponseReadData <= memory.hostReadData;
-        preferCpu <= False;
-        memoryOwner <= MainMemNone;
-        memory.hostResponseConsumed;
+        if (cpuStreamRemaining != 0 && !memory.hostResponseFault) begin
+            cpuStreamRemaining <= cpuStreamRemaining - 1;
+            cpuStreamAddress <= cpuStreamAddress + 4;
+            memory.hostContinueInstruction(cpuStreamAddress + 4);
+        end
+        else begin
+            preferCpu <= False;
+            memoryOwner <= MainMemNone;
+            cpuStreamRemaining <= 0;
+            memory.hostResponseConsumed;
+        end
+    endrule
+
+    // Intermediate stream completions are one-clock beats, not held terminal
+    // responses. The adapter reserved four queue slots before asserting REQ.
+    rule retireCpuStreamBeat (!plioSoftResetPending
+        && !(independentBackend ? backendResetPending : (cycleQ.notEmpty && cycleQ.first.reset)) && cpuResponsePending
+        && memoryOwner == MainMemCpu);
+        cpuResponsePending <= False;
+        cpuResponseFault <= False;
+        cpuResponseReadDataValid <= False;
+        cpuResponseReadData <= 0;
     endrule
 
     // PLIO request acceptance is one atomic rule: the MemoryController request
@@ -857,6 +907,18 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     method Bit#(32) memoryBackendWriteData = memory.backendWriteData;
     method Bool memoryBackendResponseReady = memory.backendResponseReady;
 
+    method Action acceptMemoryBackendRequest if (independentBackend
+        && !plioSoftResetPending && !backendResetPending
+        && memory.backendRequestValid);
+        memory.backendRequestAccepted;
+    endmethod
+
+    method Action acceptMemoryBackendResponse(Bool fault, Bool readValid, Bit#(32) data)
+        if (independentBackend && !plioSoftResetPending
+            && !backendResetPending && memory.backendResponseReady);
+        memory.backendRespond(fault,readValid,data);
+    endmethod
+
     method Action advance(Vector#(8, BackplaneDrive) cards,
         LightingBusMasterDrive cpu,
         Bool workerValid, HostWorkerRequest workerRequest,
@@ -864,6 +926,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         Bool backendResponseValid, Bool backendFault,
         Bool backendReadDataValid, Bit#(32) backendReadData,
         Bool reset) if (cycleQ.notFull);
+        if (independentBackend && reset) backendResetPending <= True;
         cycleQ.enq(MainboardCycleInputs {
             cards: cards,
             slotPresent: replicate(False),
@@ -887,6 +950,7 @@ module mkMainboardFPGA(MainboardFPGAIfc);
         Bool backendResponseValid, Bool backendFault,
         Bool backendReadDataValid, Bit#(32) backendReadData,
         Bool reset) if (cycleQ.notFull);
+        if (independentBackend && reset) backendResetPending <= True;
         cycleQ.enq(MainboardCycleInputs {
             cards: cards,
             slotPresent: slotPresent,
@@ -969,6 +1033,12 @@ module mkMainboardFPGA(MainboardFPGAIfc);
     method PLIOHostCoreRole debugPlioRole = host.debugRole;
     method Bool debugPlioFaultValid = host.debugFaultValid;
     method PLIOHostCoreFault debugPlioFault = host.debugFault;
+endmodule
+
+// Legacy cycle-driven harnesses retain their registered backend contract.
+module mkMainboardFPGA(MainboardFPGAIfc);
+    let board <- mkMainboardFPGAWithIndependentBackend(False);
+    return board;
 endmodule
 
 endpackage
